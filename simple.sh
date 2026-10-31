@@ -2,94 +2,55 @@
 
 set -u
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+source "$SCRIPT_DIR/core/ui.sh"
+source "$SCRIPT_DIR/core/navigation.sh"
+
 APP_NAME="SIMPLE"
 
-exibir_cabecalho() {
-  printf '%s\n' \
-    '┌────────────────────────────────────────────────────────────────────┐' \
-    '│                                                                    │' \
-    '│   ███████╗██╗███╗   ███╗██████╗ ██╗     ███████╗                   │' \
-    '│   ██╔════╝██║████╗ ████║██╔══██╗██║     ██╔════╝                   │' \
-    '│   ███████╗██║██╔████╔██║██████╔╝██║     █████╗                     │' \
-    '│   ╚════██║██║██║╚██╔╝██║██╔═══╝ ██║     ██╔══╝                     │' \
-    '│   ███████║██║██║ ╚═╝ ██║██║     ███████╗███████╗                   │' \
-    '│   ╚══════╝╚═╝╚═╝     ╚═╝╚═╝     ╚══════╝╚══════╝                   │' \
-    '│                                                                    │' \
-    '│                     AMBIENTE DE APRENDIZAGEM                       │' \
-    '│                                                                    │' \
-    '└────────────────────────────────────────────────────────────────────┘'
-}
-
-exibir_menu() {
-  clear
-  exibir_cabecalho
-
-  printf '\n'
-  printf '  SISTEMA     : SIMPLE\n'
-  printf '  AMBIENTE    : TERMINAL\n'
-  printf '  STATUS      : OPERACIONAL\n'
-  printf '\n'
-  printf '%s\n' '────────────────────────────────────────────────────────────────────'
-  printf '  MENU PRINCIPAL\n'
-  printf '%s\n' '────────────────────────────────────────────────────────────────────'
-  printf '\n'
-  printf '  [1] Exercícios\n'
-  printf '  [2] Avaliações\n'
-  printf '  [3] Meu progresso\n'
-  printf '  [4] Meu perfil\n'
-  printf '  [0] Sair\n'
-  printf '\n'
-  printf '%s\n' '────────────────────────────────────────────────────────────────────'
-}
-
-pausar() {
-  printf '\n'
-  read -r -p "  Pressione ENTER para continuar..." _
-}
-
 while true; do
-  exibir_menu
 
-  printf '\n'
-  read -r -p "  SIMPLE > " escolha
+  menu_principal
 
   case "$escolha" in
   1)
-    clear
-    exibir_cabecalho
+    ui_clear
+    ui_header
     printf '\n  EXERCÍCIOS\n\n'
-    printf '  O catálogo de exercícios será implementado aqui.\n'
-    pausar
+    ui_message "O catálogo de exercícios será implementado aqui."
+    ui_pause
     ;;
   2)
-    clear
-    exibir_cabecalho
+    ui_clear
+    ui_header
     printf '\n  AVALIAÇÕES\n\n'
-    printf '  O sistema de avaliações será implementado aqui.\n'
-    pausar
+    ui_message "O sistema de avaliações será implementado aqui."
+    ui_pause
     ;;
   3)
-    clear
-    exibir_cabecalho
+    ui_clear
+    ui_header
     printf '\n  MEU PROGRESSO\n\n'
-    printf '  Seu histórico de exercícios e pontos aparecerá aqui.\n'
-    pausar
+    ui_message "Seu histórico de exercícios e pontos aparecerá aqui."
+    ui_pause
     ;;
   4)
-    clear
-    exibir_cabecalho
+    ui_clear
+    ui_header
     printf '\n  MEU PERFIL\n\n'
-    printf '  Seus dados de participante aparecerão aqui.\n'
-    pausar
+    ui_message "Seus dados de participante aparecerão aqui."
+    ui_pause
     ;;
   0)
-    clear
+    ui_clear
     printf '\n  SIMPLE encerrado.\n\n'
     break
     ;;
   *)
-    printf '\n  Opção inválida. Escolha uma opção do menu.\n'
-    pausar
+    ui_message "Opção inválida. Escolha uma opção do menu."
+    ui_pause
     ;;
   esac
+
 done
