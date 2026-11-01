@@ -1,0 +1,15 @@
+EXERCÍCIO SH00-EX02
+testShell00
+
+Crie o arquivo testShell00 no seu diretório de entrega.
+
+MISSÃO
+
+Você deverá fazer com que :
+Depois de resolver o exercício, execute o comando tar -cf testShell00.tar
+testShell00 para criar o arquivo a ser entr
+
+O
+1
+
+ASD
