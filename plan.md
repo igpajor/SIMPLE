@@ -240,7 +240,7 @@ O resultado não altera a linha de base da suíte existente.
 |---|---|---|---|
 | 3.0 — Senha em argv | concluído | Não foi necessário alterar código: o novo teste passou imediatamente após validar registro/login nos dois modos. | `core/auth.sh:11-12,31-33`; `broker/simple_broker.py:555-587`; `tests/test_phase3.py:76-128` |
 | 3.1 — Mensagem TUI (R-06/T-07) | concluído | Vermelho: T-07 falhou primeiro pela frase obsoleta. Verde: mesma tela não contém a frase antiga e confirma positivamente a descrição correta. | `modules/broker_ui.sh:1015`; `tests/test_phase2.py:425-463` |
-| 3.2 — Migração local/Broker (A-04/R-05) | parado | Validação exploratória: execução concorrente acusou `database is locked`; Broker permaneceu ativo com `trg_submission_validate` ausente. | `core/database.sh:48-68`; `broker/simple_broker.py:236-284,1960-1962`; tentativa em `tests/test_phase3.py` |
+| 3.2 — Migração local/Broker (A-04/R-05) | parado | Validação exploratória: execução concorrente acusou `database is locked`; Broker permaneceu ativo com `trg_submission_validate` ausente. | `core/database.sh:48-68`; `broker/simple_broker.py:236-284,1960-1962` |
 | 3.3 — Login local de conta inativa (S-01/R-01) | concluído | Vermelho: usuário inativo autenticava. Verde: login recusa com mensagem genérica. | `modules/users.sh:51-79`; `tests/test_phase3.py:133-166` |
 | 3.4 — Tentativas de login no Broker (B-02) | parado | Exige UID de origem no caminho Proxy→Broker, ausente no protocolo atual. | `broker/simple_proxy.py:258-278`; `broker/simple_broker.py:27-29,1747-1765` |
 | 3.5 — Imutabilidade no banco (S-02/R-03) | bloqueado | Depende de 3.2 para garantir criação/migração atômica no modo local. | `core/database.sh:48-68`; `database/schema.sql:40-53` |
