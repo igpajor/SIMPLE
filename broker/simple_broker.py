@@ -21,7 +21,7 @@ import threading
 import time
 from contextlib import closing
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 
 MAX_REQUEST_BYTES = 65536
@@ -483,8 +483,18 @@ def backup_database(database_path: Path, backup_path: Path) -> Path:
         os.close(descriptor)
 
 
+class _ServerWithReadiness(Protocol):
+    serve_ready: threading.Event
+
+    def serve_forever(self) -> None: ...
+
+    def shutdown(self) -> None: ...
+
+    def server_close(self) -> None: ...
+
+
 def _serve_until_stopped(
-    server: socketserver.BaseServer, socket_path: Path, service_name: str
+    server: _ServerWithReadiness, socket_path: Path, service_name: str
 ) -> None:
     socket_stat = socket_path.lstat()
     if not stat.S_ISSOCK(socket_stat.st_mode) or socket_stat.st_uid != os.geteuid():
@@ -495,16 +505,12 @@ def _serve_until_stopped(
         for signum in (signal.SIGINT, signal.SIGTERM)
     }
 
-    def stop_service(signum: int, _frame: Any) -> None:
-        def shutdown() -> None:
-            logging.info(
-                "%s recebeu sinal %s", service_name, signal.Signals(signum).name
-            )
-            server.shutdown()
+    stop_requested = threading.Event()
+    received_signal: list[int] = []
 
-        threading.Thread(
-            target=shutdown, name=f"{service_name}-shutdown", daemon=True
-        ).start()
+    def stop_service(signum: int, _frame: Any) -> None:
+        received_signal.append(signum)
+        stop_requested.set()
 
     try:
         for signum in previous_handlers:
@@ -513,6 +519,22 @@ def _serve_until_stopped(
             target=server.serve_forever, name=f"{service_name}-server"
         )
         server_thread.start()
+        shutdown_started = False
+        while server_thread.is_alive():
+            if (
+                stop_requested.is_set()
+                and server.serve_ready.is_set()
+                and not shutdown_started
+            ):
+                signum = received_signal[-1]
+                logging.info(
+                    "%s recebeu sinal %s",
+                    service_name,
+                    signal.Signals(signum).name,
+                )
+                server.shutdown()
+                shutdown_started = True
+            server_thread.join(timeout=0.1)
         server_thread.join()
     finally:
         for signum, previous_handler in previous_handlers.items():
@@ -581,11 +603,15 @@ class Broker:
     def _connect(self) -> sqlite3.Connection:
         _validate_database_files(self.database_path)
         connection = sqlite3.connect(self.database_path, timeout=5)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA busy_timeout = 5000")
-        _validate_database_files(self.database_path)
-        return connection
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA busy_timeout = 5000")
+            _validate_database_files(self.database_path)
+            return connection
+        except BaseException:
+            connection.close()
+            raise
 
     def _create_session_locked(self, user_id: int) -> str:
         token = secrets.token_urlsafe(32)
@@ -1701,6 +1727,9 @@ class BrokerRequestHandler(socketserver.StreamRequestHandler):
     def handle(self) -> None:
         try:
             raw_request = self.rfile.readline(MAX_REQUEST_BYTES + 1)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            logging.debug("Broker client disconnected before sending a complete message")
+            return
         except (OSError, TimeoutError):
             logging.warning("Broker request ended before a complete message arrived")
             return
@@ -1768,18 +1797,28 @@ class BrokerRequestHandler(socketserver.StreamRequestHandler):
         raise ValueError(f"Constante JSON inválida: {value}.")
 
     def _write_response(self, response: dict[str, Any]) -> None:
-        self.wfile.write(json.dumps(response, ensure_ascii=False).encode("utf-8") + b"\n")
+        try:
+            self.wfile.write(
+                json.dumps(response, ensure_ascii=False).encode("utf-8") + b"\n"
+            )
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            logging.debug("Broker client disconnected before response delivery")
 
 
 class BrokerServer(socketserver.ThreadingUnixStreamServer):
     daemon_threads = True
+    block_on_close = False
     allow_reuse_address = False
     request_queue_size = BROKER_MAX_CONNECTIONS
 
     def __init__(self, socket_path: Path, broker: Broker):
         self.broker = broker
         self.connection_slots = threading.BoundedSemaphore(BROKER_MAX_CONNECTIONS)
+        self.serve_ready = threading.Event()
         super().__init__(str(socket_path), BrokerRequestHandler)
+
+    def service_actions(self) -> None:
+        self.serve_ready.set()
 
     def process_request(self, request: socket.socket, client_address: Any) -> None:
         if not self.connection_slots.acquire(blocking=False):

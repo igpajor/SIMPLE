@@ -14,6 +14,7 @@ import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -67,12 +68,12 @@ class BrokerTests(unittest.TestCase):
         registered = self.create_user()
         self.assertTrue(registered["ok"])
         self.assertFalse(registered["is_admin"])
-        self.assertEqual(
-            1,
-            sqlite3.connect(self.database_path)
-            .execute("SELECT SUM(amount) FROM points_ledger WHERE user_id = ?", (registered["user_id"],))
-            .fetchone()[0],
-        )
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            balance = connection.execute(
+                "SELECT SUM(amount) FROM points_ledger WHERE user_id = ?",
+                (registered["user_id"],),
+            ).fetchone()[0]
+        self.assertEqual(1, balance)
 
         rejected = self.call(
             {"method": "auth.login", "username": "student", "password": "incorrect"}
@@ -116,7 +117,7 @@ class BrokerTests(unittest.TestCase):
         self.assertFalse(invalid["ok"])
         self.assertIn("usuário GitHub válido", invalid["error"])
 
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             connection.execute(
                 "INSERT INTO exercises (code, name, description) VALUES (?, ?, ?)",
                 ("C-01", "Exercício de catálogo", "Somente teste"),
@@ -126,7 +127,7 @@ class BrokerTests(unittest.TestCase):
 
     def test_temporary_password_is_enforced_by_broker(self) -> None:
         registered = self.create_user()
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             connection.execute(
                 "UPDATE users SET must_change_password = 1 WHERE id = ?",
                 (registered["user_id"],),
@@ -247,7 +248,7 @@ class BrokerTests(unittest.TestCase):
         self.assertTrue(
             self.call({"method": "profile.get", "token": other_user["token"]})["ok"]
         )
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             self.assertEqual("ok", connection.execute("PRAGMA integrity_check").fetchone()[0])
 
     def test_no_anonymous_or_arbitrary_sql_operation(self) -> None:
@@ -279,16 +280,15 @@ class BrokerTests(unittest.TestCase):
 
     def test_incompatible_schema_is_not_migrated_implicitly(self) -> None:
         legacy_database = self.root / "legacy.db"
-        with sqlite3.connect(legacy_database) as connection:
+        with closing(sqlite3.connect(legacy_database)) as connection, connection:
             connection.execute(
                 "CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT)"
             )
         os.chmod(legacy_database, 0o600)
         with self.assertRaisesRegex(RuntimeError, "migração explícita"):
             validate_database(legacy_database)
-        columns = sqlite3.connect(legacy_database).execute(
-            "PRAGMA table_info(users)"
-        ).fetchall()
+        with closing(sqlite3.connect(legacy_database)) as connection:
+            columns = connection.execute("PRAGMA table_info(users)").fetchall()
         self.assertEqual(["id", "username"], [column[1] for column in columns])
 
     def test_explicit_initialization_backs_up_an_existing_database(self) -> None:
@@ -302,9 +302,9 @@ class BrokerTests(unittest.TestCase):
             "    accepted_at DATETIME,\n",
         ):
             schema_text = schema_text.replace(definition, "", 1)
-        with sqlite3.connect(legacy_database) as connection:
+        with closing(sqlite3.connect(legacy_database)) as connection, connection:
             connection.executescript(schema_text)
-        with sqlite3.connect(legacy_database) as connection:
+        with closing(sqlite3.connect(legacy_database)) as connection, connection:
             connection.execute(
                 "INSERT INTO users (username, password_hash) VALUES (?, ?)",
                 ("preserved-user", "hash"),
@@ -320,7 +320,7 @@ class BrokerTests(unittest.TestCase):
         self.assertIsNotNone(backup_path)
         assert backup_path is not None
         self.assertEqual(0o600, backup_path.stat().st_mode & 0o777)
-        with sqlite3.connect(backup_path) as connection:
+        with closing(sqlite3.connect(backup_path)) as connection, connection:
             self.assertEqual(
                 ("Preservado",),
                 connection.execute(
@@ -331,7 +331,7 @@ class BrokerTests(unittest.TestCase):
                 "is_active",
                 {row[1] for row in connection.execute("PRAGMA table_info(users)")},
             )
-        with sqlite3.connect(legacy_database) as connection:
+        with closing(sqlite3.connect(legacy_database)) as connection, connection:
             self.assertIn(
                 "is_active",
                 {
@@ -358,7 +358,7 @@ class BrokerTests(unittest.TestCase):
             "    accepted_at DATETIME,\n",
         ):
             schema_text = schema_text.replace(definition, "", 1)
-        with sqlite3.connect(legacy_database) as connection:
+        with closing(sqlite3.connect(legacy_database)) as connection, connection:
             connection.executescript(schema_text)
             connection.execute(
                 "INSERT INTO users (username, password_hash) VALUES (?, ?)",
@@ -369,7 +369,7 @@ class BrokerTests(unittest.TestCase):
         def database_snapshot(
             path: Path,
         ) -> tuple[list[tuple[str, str, str]], list[str], tuple[str, str] | None]:
-            with sqlite3.connect(path) as connection:
+            with closing(sqlite3.connect(path)) as connection, connection:
                 schema = connection.execute(
                     """
                     SELECT type, name, sql FROM sqlite_master
@@ -508,7 +508,7 @@ class BrokerTests(unittest.TestCase):
         self.assertIn("Backup SQLite validado", completed.stderr)
         self.assertEqual(0o600, backup_path.stat().st_mode & 0o777)
         check_database_integrity(backup_path)
-        with sqlite3.connect(backup_path) as connection:
+        with closing(sqlite3.connect(backup_path)) as connection, connection:
             self.assertEqual(
                 1,
                 connection.execute(
@@ -586,6 +586,8 @@ class BrokerTests(unittest.TestCase):
             else:
                 self.fail("socket do Broker não ficou pronto")
 
+            self.assertTrue(self.server.daemon_threads)
+            self.assertFalse(self.server.block_on_close)
             process.send_signal(signal.SIGTERM)
             try:
                 _stdout, stderr = process.communicate(timeout=5)
@@ -594,14 +596,86 @@ class BrokerTests(unittest.TestCase):
                 _stdout, stderr = process.communicate(timeout=5)
                 self.fail(f"Broker não encerrou em SIGTERM: {stderr}")
             self.assertEqual(0, process.returncode, stderr)
+            self.assertNotIn("BrokenPipeError", stderr)
             self.assertFalse(socket_path.exists())
         finally:
             if process.poll() is None:
                 process.kill()
                 process.communicate(timeout=5)
 
+    def test_disconnected_client_releases_broker_slot_without_traceback(self) -> None:
+        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connection.connect(str(self.socket_path))
+
+        def available_slots() -> int:
+            acquired = 0
+            while acquired < simple_broker.BROKER_MAX_CONNECTIONS:
+                if not self.server.connection_slots.acquire(blocking=False):
+                    break
+                acquired += 1
+            for _ in range(acquired):
+                self.server.connection_slots.release()
+            return acquired
+
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and available_slots() != (
+            simple_broker.BROKER_MAX_CONNECTIONS - 1
+        ):
+            time.sleep(0.01)
+        self.assertEqual(
+            simple_broker.BROKER_MAX_CONNECTIONS - 1, available_slots()
+        )
+
+        with patch.object(
+            self.server, "handle_error", wraps=self.server.handle_error
+        ) as handle_error:
+            connection.close()
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and available_slots() != (
+                simple_broker.BROKER_MAX_CONNECTIONS
+            ):
+                time.sleep(0.01)
+            self.assertEqual(
+                simple_broker.BROKER_MAX_CONNECTIONS, available_slots()
+            )
+            handle_error.assert_not_called()
+
+    def test_broker_releases_connection_slot_when_worker_cannot_start(self) -> None:
+        client, peer = socket.socketpair()
+        try:
+            with patch.object(
+                threading.Thread, "start", side_effect=RuntimeError("thread start failed")
+            ):
+                with self.assertRaisesRegex(RuntimeError, "thread start failed"):
+                    self.server.process_request(client, None)
+
+            acquired = 0
+            while self.server.connection_slots.acquire(blocking=False):
+                acquired += 1
+            for _ in range(acquired):
+                self.server.connection_slots.release()
+            self.assertEqual(simple_broker.BROKER_MAX_CONNECTIONS, acquired)
+        finally:
+            client.close()
+            peer.close()
+
+    def test_broker_connect_closes_connection_when_setup_fails(self) -> None:
+        connection = sqlite3.connect(self.database_path)
+        with (
+            patch("simple_broker.sqlite3.connect", return_value=connection),
+            patch(
+                "simple_broker._validate_database_files",
+                side_effect=[self.database_path, RuntimeError("validation failed")],
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "validation failed"):
+                self.broker._connect()
+
+        with self.assertRaises(sqlite3.ProgrammingError):
+            connection.execute("SELECT 1")
+
     def test_database_validation_rejects_foreign_key_violations(self) -> None:
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             connection.execute("PRAGMA foreign_keys = OFF")
             connection.execute(
                 """
@@ -726,16 +800,15 @@ class BrokerTests(unittest.TestCase):
         )
         self.assertEqual(0, process.returncode, process.stderr)
         self.assertIn("Conta criada.", process.stdout)
-        self.assertEqual(
-            1,
-            sqlite3.connect(self.database_path)
-            .execute("SELECT COUNT(*) FROM users WHERE username = 'broker-user'")
-            .fetchone()[0],
-        )
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            user_count = connection.execute(
+                "SELECT COUNT(*) FROM users WHERE username = 'broker-user'"
+            ).fetchone()[0]
+        self.assertEqual(1, user_count)
 
     def test_broker_mode_profile_and_catalog(self) -> None:
         self.create_user()
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             connection.execute(
                 "INSERT INTO exercises (code, name, description) VALUES (?, ?, ?)",
                 ("C-01", "Exercício do broker", "Somente leitura"),
@@ -782,7 +855,7 @@ class BrokerTests(unittest.TestCase):
     def test_broker_submission_reservation_and_review_workflow(self) -> None:
         owner = self.create_user("exercise-owner")
         reviewer = self.create_user("exercise-reviewer")
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             connection.execute(
                 """
                 INSERT INTO exercises (code, name, description, statement)
@@ -877,7 +950,7 @@ class BrokerTests(unittest.TestCase):
         self.assertTrue(review["ok"], review)
         self.assertEqual("approved", review["status"])
         self.assertEqual(2, review["points"])
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             status = connection.execute(
                 "SELECT status FROM submissions WHERE id = ?",
                 (submission["submission_id"],),
@@ -907,7 +980,7 @@ class BrokerTests(unittest.TestCase):
         owner = self.create_user("slot-owner")
         reviewer_one = self.create_user("slot-reviewer-one")
         reviewer_two = self.create_user("slot-reviewer-two")
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             connection.execute(
                 "INSERT INTO exercises (code, name, description) VALUES (?, ?, ?)",
                 ("SLOT-01", "Slot concorrente", "Teste de concorrência"),
@@ -946,7 +1019,7 @@ class BrokerTests(unittest.TestCase):
         self.assertIn("Acesso administrativo", rejected["error"])
 
         admin = self.create_user("system-admin")
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             connection.execute(
                 "UPDATE users SET is_admin = 1 WHERE id = ?", (admin["user_id"],)
             )
@@ -1127,7 +1200,7 @@ class BrokerTests(unittest.TestCase):
         self.assertIn("Campos inválidos", declared_uid["error"])
 
         admin = self.create_user("identity-admin")
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             connection.execute(
                 "UPDATE users SET is_admin = 1 WHERE id = ?", (admin["user_id"],)
             )
@@ -1146,7 +1219,7 @@ class BrokerTests(unittest.TestCase):
             "user_id": str(participant["user_id"]),
         }
         self.assertTrue(self.call(binding)["ok"])
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             connection.row_factory = sqlite3.Row
             self.assertEqual(
                 participant["user_id"],
@@ -1182,7 +1255,7 @@ class BrokerTests(unittest.TestCase):
             }
         )
         self.assertTrue(updated["ok"], updated)
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             connection.row_factory = sqlite3.Row
             with self.assertRaisesRegex(PermissionError, "sem vínculo ativo"):
                 Broker._resolve_linux_uid(connection, "230001")
@@ -1199,7 +1272,7 @@ class BrokerTests(unittest.TestCase):
             }
         )
         self.assertTrue(revoked["ok"], revoked)
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             connection.row_factory = sqlite3.Row
             with self.assertRaisesRegex(PermissionError, "sem vínculo ativo"):
                 Broker._resolve_linux_uid(connection, "230002")
@@ -1220,7 +1293,7 @@ class BrokerTests(unittest.TestCase):
             }
         )
         self.assertTrue(disabled["ok"])
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             connection.row_factory = sqlite3.Row
             with self.assertRaisesRegex(
                 PermissionError, "conta SIMPLE vinculada está desativada"
@@ -1237,7 +1310,7 @@ class BrokerTests(unittest.TestCase):
     def test_admin_tui_can_create_a_uid_identity_binding(self) -> None:
         participant = self.create_user("tui-linked-user")
         admin = self.create_user("tui-identity-admin")
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             connection.execute(
                 "UPDATE users SET is_admin = 1 WHERE id = ?", (admin["user_id"],)
             )
@@ -1262,7 +1335,7 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual(0, process.returncode, process.stderr)
         self.assertIn("VÍNCULOS DE IDENTIDADE LINUX", process.stdout)
         self.assertIn("Vínculo criado.", process.stdout)
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             self.assertEqual(
                 (participant["user_id"], 1),
                 connection.execute(
@@ -1274,7 +1347,7 @@ class BrokerTests(unittest.TestCase):
         owner = self.create_user("tui-owner")
         reviewer = self.create_user("tui-reviewer")
         admin = self.create_user("tui-admin")
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             connection.execute(
                 "UPDATE users SET is_admin = 1 WHERE id = ?", (admin["user_id"],)
             )
@@ -1309,7 +1382,7 @@ class BrokerTests(unittest.TestCase):
         self.assertIn("Slot de avaliação:", submitted.stdout)
         self.assertNotIn("Acesso SQLite local bloqueado", submitted.stderr)
 
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             slot_id = connection.execute(
                 "SELECT id FROM evaluation_slots ORDER BY id DESC LIMIT 1"
             ).fetchone()[0]
@@ -1384,7 +1457,7 @@ class BrokerTests(unittest.TestCase):
 
     def test_broker_mode_requires_temporary_password_change(self) -> None:
         user = self.create_user()
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             connection.execute(
                 "UPDATE users SET must_change_password = 1 WHERE id = ?",
                 (user["user_id"],),
@@ -1412,14 +1485,11 @@ class BrokerTests(unittest.TestCase):
         )
         self.assertEqual(0, process.returncode, process.stderr)
         self.assertIn("Senha atualizada.", process.stdout)
-        self.assertEqual(
-            0,
-            sqlite3.connect(self.database_path)
-            .execute(
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            must_change_password = connection.execute(
                 "SELECT must_change_password FROM users WHERE username = 'student'"
-            )
-            .fetchone()[0],
-        )
+            ).fetchone()[0]
+        self.assertEqual(0, must_change_password)
 
 
 if __name__ == "__main__":

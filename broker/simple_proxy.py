@@ -406,7 +406,11 @@ class ProxyServer(socketserver.ThreadingUnixStreamServer):
     def __init__(self, socket_path: Path, service: ProxyService):
         self.service = service
         self.connection_slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
+        self.serve_ready = threading.Event()
         super().__init__(str(socket_path), ProxyRequestHandler)
+
+    def service_actions(self) -> None:
+        self.serve_ready.set()
 
     def process_request(self, request: socket.socket, client_address: Any) -> None:
         if not self.connection_slots.acquire(blocking=False):
