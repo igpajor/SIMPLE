@@ -148,29 +148,42 @@ evaluation_record_review "$4" 4 "phase two review"
             )
 
     def test_concurrent_submissions_cannot_overdraw_or_duplicate_active_attempt(self) -> None:
-        for iteration in range(20):
+        iterations = int(os.environ.get("SIMPLE_STRESS_ITERATIONS", "20"))
+        self.assertGreater(iterations, 0)
+        for iteration in range(iterations):
             with self.subTest(mode="broker", iteration=iteration):
                 user = self.create_user(f"broker-race-{iteration:02d}")
                 self.assertTrue(user["ok"], user)
-                code = f"BROKER-RACE-{iteration:02d}"
-                self.create_exercise(code)
-                request = {
-                    "method": "submissions.create",
-                    "token": user["token"],
-                    "exercise_code": code,
-                    "commit_url": COMMIT_URL,
-                    "delivery_directory": ".",
-                }
+                codes = [
+                    f"BROKER-RACE-A-{iteration:02d}",
+                    f"BROKER-RACE-B-{iteration:02d}",
+                ]
+                for code in codes:
+                    self.create_exercise(code)
+                requests = [
+                    {
+                        "method": "submissions.create",
+                        "token": user["token"],
+                        "exercise_code": code,
+                        "commit_url": COMMIT_URL,
+                        "delivery_directory": ".",
+                    }
+                    for code in codes
+                ]
                 barrier = threading.Barrier(2)
 
-                def submit_broker() -> dict[str, object]:
+                def submit_broker(index: int) -> dict[str, object]:
                     barrier.wait(timeout=5)
-                    return self.broker_call(request)
+                    return self.broker_call(requests[index])
 
                 with ThreadPoolExecutor(max_workers=2) as executor:
-                    responses = list(executor.map(lambda _index: submit_broker(), range(2)))
+                    responses = list(executor.map(submit_broker, range(2)))
 
                 self.assertEqual(1, sum(bool(response["ok"]) for response in responses), responses)
+                self.assertIn(
+                    "Saldo insuficiente",
+                    " ".join(str(response.get("error", "")) for response in responses),
+                )
                 user_id = int(user["user_id"])
                 with closing(sqlite3.connect(self.database_path)) as connection:
                     active_submissions, open_slots, debits = connection.execute(
@@ -186,29 +199,34 @@ evaluation_record_review "$4" 4 "phase two review"
                         """,
                         (user_id, user_id, user_id),
                     ).fetchone()
-                self.assertGreaterEqual(self.point_balance(user_id), 0)
-                self.assertLessEqual(active_submissions, 1)
-                self.assertLessEqual(open_slots, 1)
-                self.assertLessEqual(debits, 1)
+                self.assertEqual(0, self.point_balance(user_id))
+                self.assertEqual((1, 1, 1), (active_submissions, open_slots, debits))
 
             with self.subTest(mode="local", iteration=iteration):
                 user_id = self.insert_local_user(f"local-race-{iteration:02d}")
-                code = f"LOCAL-RACE-{iteration:02d}"
-                self.create_exercise(code)
+                codes = [
+                    f"LOCAL-RACE-A-{iteration:02d}",
+                    f"LOCAL-RACE-B-{iteration:02d}",
+                ]
+                for code in codes:
+                    self.create_exercise(code)
                 barrier = threading.Barrier(2)
 
-                def submit_local() -> subprocess.CompletedProcess[str]:
+                def submit_local(code: str) -> subprocess.CompletedProcess[str]:
                     barrier.wait(timeout=5)
                     return self.local_submit(user_id, code)
 
                 with ThreadPoolExecutor(max_workers=2) as executor:
-                    results = list(executor.map(lambda _index: submit_local(), range(2)))
+                    results = list(executor.map(submit_local, codes))
 
                 self.assertEqual(
                     1,
                     sum(result.returncode == 0 for result in results),
                     [(result.returncode, result.stdout, result.stderr) for result in results],
                 )
+                local_errors = " ".join(result.stderr for result in results)
+                self.assertNotIn("database is locked", local_errors.lower(), local_errors)
+                self.assertIn("Saldo insuficiente", local_errors, local_errors)
                 with closing(sqlite3.connect(self.database_path)) as connection:
                     active_submissions, open_slots, debits = connection.execute(
                         """
@@ -223,10 +241,8 @@ evaluation_record_review "$4" 4 "phase two review"
                         """,
                         (user_id, user_id, user_id),
                     ).fetchone()
-                self.assertGreaterEqual(self.point_balance(user_id), 0)
-                self.assertLessEqual(active_submissions, 1)
-                self.assertLessEqual(open_slots, 1)
-                self.assertLessEqual(debits, 1)
+                self.assertEqual(0, self.point_balance(user_id))
+                self.assertEqual((1, 1, 1), (active_submissions, open_slots, debits))
 
     def test_failed_submission_or_review_rolls_back_all_side_effects(self) -> None:
         broker_owner = self.create_user("rollback-broker-owner")

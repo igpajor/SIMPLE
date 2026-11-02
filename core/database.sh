@@ -23,11 +23,11 @@ db_ensure_column() {
     return 2
   fi
 
-  exists=$(sqlite3 -batch -bail "$DB_PATH" \
+  exists=$(sqlite3 -batch -bail -cmd ".timeout 5000" "$DB_PATH" \
     "SELECT COUNT(*) FROM pragma_table_info('$table') WHERE name = '$column';") || return 1
 
   if [[ "$exists" == "0" ]]; then
-    sqlite3 -batch -bail "$DB_PATH" \
+    sqlite3 -batch -bail -cmd ".timeout 5000" "$DB_PATH" \
       "ALTER TABLE $table ADD COLUMN $column $definition;" || return 1
   fi
 }
@@ -45,7 +45,7 @@ db_init() {
     return 1
   fi
 
-  if ! sqlite3 -batch -bail "$DB_PATH" <"$schema_path"; then
+  if ! sqlite3 -batch -bail -cmd ".timeout 5000" "$DB_PATH" <"$schema_path"; then
     printf '  Não foi possível inicializar o banco de dados: %s\n' "$DB_PATH" >&2
     return 1
   fi
@@ -81,7 +81,7 @@ db_query() {
     return 2
   fi
 
-  sqlite3 -batch -bail "$DB_PATH" "PRAGMA foreign_keys = ON; $query"
+  sqlite3 -batch -bail -cmd ".timeout 5000" "$DB_PATH" "PRAGMA foreign_keys = ON; $query"
 }
 
 db_sql_quote() {

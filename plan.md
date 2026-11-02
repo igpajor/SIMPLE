@@ -242,11 +242,11 @@ O resultado não altera a linha de base da suíte existente.
 | 3.1 — Mensagem TUI (R-06/T-07) | concluído | Vermelho: T-07 falhou primeiro pela frase obsoleta. Verde: mesma tela não contém a frase antiga e confirma positivamente a descrição correta. | `modules/broker_ui.sh:1015`; `tests/test_phase2.py:425-463` |
 | 3.2 — Migração local/Broker (A-04/R-05) | parado | Validação exploratória: execução concorrente acusou `database is locked`; Broker permaneceu ativo com `trg_submission_validate` ausente. | `core/database.sh:48-68`; `broker/simple_broker.py:236-284,1960-1962`; tentativa em `tests/test_phase3.py` |
 | 3.3 — Login local de conta inativa (S-01/R-01) | concluído | Vermelho: usuário inativo autenticava. Verde: login recusa com mensagem genérica. | `modules/users.sh:51-79`; `tests/test_phase3.py:133-166` |
-| 3.4 — Tentativas de login no Broker (B-02) | pendente | — | — |
-| 3.5 — Imutabilidade no banco (S-02/R-03) | pendente | — | — |
-| 3.6 — Limites/paginação (R-04) | pendente | — | — |
-| 3.7 — Controles de terminal (S-03/T-04) | pendente | — | — |
-| 3.8 — Reforço de concorrência (T-01) | pendente | — | — |
+| 3.4 — Tentativas de login no Broker (B-02) | parado | Exige UID de origem no caminho Proxy→Broker, ausente no protocolo atual. | `broker/simple_proxy.py:258-278`; `broker/simple_broker.py:27-29,1747-1765` |
+| 3.5 — Imutabilidade no banco (S-02/R-03) | bloqueado | Depende de 3.2 para garantir criação/migração atômica no modo local. | `core/database.sh:48-68`; `database/schema.sql:40-53` |
+| 3.6 — Limites/paginação (R-04) | parado | Cursor e navegação afetam allowlist/API e todas as telas; ultrapassa o limite de diff. | `broker/simple_broker.py:60-105,1095-1660`; `core/broker_client.sh` |
+| 3.7 — Controles de terminal (S-03/T-04) | parado | Sanitização ampla em validators e renderers excede o limite de diff do item. | `broker/simple_broker.py:856-863`; `core/ui.sh:132-161,195-224` |
+| 3.8 — Reforço de concorrência (T-01) | concluído | Vermelho: stress local falhou por `database is locked`. Verde: 20 repetições, dois exercícios distintos, falha por saldo corretamente identificada. | `tests/test_phase2.py:150-253`; `core/database.sh:26,30,48,84` |
 
 ### 3.1 — R-06 + T-07
 
@@ -267,36 +267,69 @@ O resultado não altera a linha de base da suíte existente.
 
 ### 3.2 — A-04 / R-05: migração local atômica e validação de triggers
 
-- **Parado antes de alterar implementação.** A validação exploratória mostrou
-  que uma chamada local concorrente pode falhar com `database is locked`
-  (`core/database.sh:26-31,48-68`), e que o Broker inicia mesmo após remover
-  `trg_submission_validate`: o processo permaneceu ativo até o timeout. A
-  inicialização de serviço chama `validate_database()` mas a verificação atual
-  cobre colunas/FKs, não triggers (`broker/simple_broker.py:236-284,1960-1962`).
-- O teste de falha de schema inserida entre `DROP TRIGGER` e `CREATE TRIGGER`
-  não reproduziu trigger ausente no código atual; portanto não prova atomicidade
-  da sequência posterior de ALTERs. As tentativas exploratórias não foram
-  mantidas como testes finais e nenhum patch/commit foi criado para este item.
-- **Motivo da parada:** satisfazer em conjunto a migração indivisível, o teste
-  de falha no meio dos ALTERs, a corrida com submissões e a validação de cinco
-  triggers requer uma decisão de arquitetura/backup e excede o limite aproximado
-  de 150 linhas de diff definido para esta fase. A escolha pendente é se `db_init`
-  deve reutilizar a migração transacional do Broker (que cria backup em bancos
-  existentes) ou receber um caminho transacional local compartilhado, sem
-  backup automático por inicialização. A atualização de validação ainda deve
-  exigir os cinco triggers também no Broker.
-- **Resultado dos testes exploratórios:** rollback após erro entre DROP/CREATE
-  manteve o trigger no caso testado; corrida mostrou uma submissão aceita e a
-  outra falhando com `database is locked`; inicialização do Broker sem o trigger
-  não foi recusada. O teste de corrida e de inicialização falharam pelos motivos
-  acima. Sem commit no item 3.2.
-- **Risco pendente:** integridade de regras depende da presença dos triggers;
-  falta uma verificação explícita em startup. A idempotência dos outros quatro
-  triggers usa `CREATE TRIGGER IF NOT EXISTS`
-  (`database/schema.sql:136,167,180,197`), então a redefinição futura de seus
-  corpos não chega a bancos já existentes sem migração que os substitua.
-  Recomenda-se `PRAGMA user_version` para migrações locais versionadas, mas a
-  implementação fica pendente junto com a decisão arquitetural acima.
+- **Parado, sem patch/commit:** escopo excede ~150 linhas. Decidir entre
+  migração Broker com backup ou caminho local transacional sem backup automático
+  (`core/database.sh:48-68`). Broker iniciou sem trigger obrigatório
+  (`broker/simple_broker.py:236-284,1960-1962`); concorrência local reportou
+  `database is locked`. O teste de falha entre DROP/CREATE manteve o trigger,
+  mas não cobre ALTERs. Os outros quatro triggers usam `IF NOT EXISTS`
+  (`database/schema.sql:136,167,180,197`); recomenda-se `PRAGMA user_version`.
+
+### 3.4 — B-02: limite de tentativas no Broker
+
+- **Parado por protocolo:** Proxy encaminha login sem UID
+  (`broker/simple_proxy.py:258-278`); `simple-proxy-v1` só transporta
+  `identity.resolve` (`broker/simple_broker.py:27-29,1747-1765`). Decidir
+  evolução compatível para UID confiável. Sem throttle/teste/commit.
+
+### 3.5 — S-02 / R-03: imutabilidade de submissão
+
+- **Bloqueado por 3.2:** sem trigger/teste; colunas imutáveis são as da Fase 2
+  (`database/schema.sql:40-53`).
+
+### 3.6 — R-04: limite de resposta e paginação
+
+- **Parado por escopo/compatibilidade:** cursor altera allowlist/API e navegação
+  CLI (`broker/simple_broker.py:60-105,1095-1660`). Decidir requests antigos e
+  resposta >131.072 bytes; nenhum endpoint/teste alterado.
+
+### 3.7 — S-03 / T-04: controles de terminal
+
+- **Parado por escopo (~150 linhas):** validar Broker e sanitizar todos os
+  renderers/dados legados requer mudanças amplas (`core/ui.sh:132-161,195-224`;
+  `broker/simple_broker.py:856-863`). Nenhuma regra parcial aplicada.
+
+### 3.8 — T-01 reforço / busy timeout local
+
+- **Vermelho:** 17/20 disputas locais falharam com `database is locked`.
+- **Correção:** `.timeout 5000` nas chamadas SQLite locais (consulta/ALTER/schema/
+  `db_query`, `core/database.sh:26,30,48,84`), igual ao Broker
+  (`broker/simple_broker.py:608-609`). T-01 exige uma submissão/débito, rejeição
+  por saldo e aceita `SIMPLE_STRESS_ITERATIONS` (default 20)
+  (`tests/test_phase2.py:150-253`).
+- **Verde:** teste direcionado com 20 disputas Broker + 20 locais passou.
+  Suíte: `SIMPLE_STRESS_ITERATIONS=20 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_broker.py tests/test_proxy.py tests/test_deployment.py tests/test_phase2.py tests/test_phase3.py` — **51, 50 passaram, 1 pulou** (root), 33,863 s; `bash tests/test_cli.sh` passou. Tudo temporário.
+- B-04 melhorou; modo local segue dev/teste/uso individual. A migração atômica
+  de 3.2 continua pendente; timeout não substitui transação de migração.
+
+## Recomendações para o servidor (Oracle)
+
+Não executadas em produção; Oracle permanece pendente.
+
+1. Sem reiniciar serviços: revisar ownership/paths; executar
+   `systemd-analyze verify deploy/systemd/simple-broker.service deploy/systemd/simple-proxy.service`
+   e `systemd-analyze security simple-broker.service simple-proxy.service`;
+   validar staging com DB/socket temporários e suítes antes de agendar produção.
+2. Executar o teste root/multi-UID (`tests/test_proxy.py:454-456`) em host Linux
+   isolado, nunca com DB de produção.
+3. Avaliar em staging `ProtectProc=invisible`, `SystemCallFilter=`,
+   `RestrictNamespaces=`, `CapabilityBoundingSet=` e `MemoryDenyWriteExecute=`;
+   testar Python 3.14, serviços, sockets, SQLite e syscalls via tracing.
+4. Avaliar impacto de `hidepid` no host em systemd, monitoramento/diagnóstico.
+5. Proxy e Broker usam `simple-broker`, proprietário do DB
+   (`deploy/systemd/simple-proxy.service:8-10`,
+   `deploy/systemd/simple-broker.service:8-11`); avaliar UID separado para
+   impedir acesso direto do Proxy ao arquivo, preservando SO_PEERCRED/socket.
 
 ### 3.3 — S-01 / R-01: login local de conta inativa
 
