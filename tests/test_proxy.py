@@ -393,7 +393,23 @@ class ProxyTests(unittest.TestCase):
 
     @unittest.skipUnless(os.geteuid() == 0, "requer root para assumir UIDs distintos")
     def test_real_distinct_uids_share_proxy_without_cross_identity_access(self) -> None:
-        first_uid, second_uid = 1001, 1002
+        import pwd
+
+        try:
+            passwd_uids = {entry.pw_uid for entry in pwd.getpwall()}
+        except OSError as error:
+            self.fail(f"não foi possível consultar os UIDs do sistema: {error}")
+        available_uids = [
+            uid
+            for uid in range(1000, 65534)
+            if uid != os.geteuid() and uid not in passwd_uids
+        ]
+        if len(available_uids) < 2:
+            self.skipTest(
+                "requer dois UIDs livres entre 1000 e 65533, não cadastrados em /etc/passwd"
+            )
+        first_uid, second_uid = available_uids[:2]
+        self.assertNotEqual(first_uid, second_uid)
         shared_gid = 65534
         with closing(sqlite3.connect(self.database_path)) as connection, connection:
             first = connection.execute(
@@ -447,7 +463,7 @@ login = call({"method":"auth.login","username":username,"password":password})
 if not login.get("ok"):
     raise SystemExit(json.dumps(login))
 profile = call({"method":"profile.get","token":login["token"]})
-spoof = call({"method":"profile.get","token":login["token"],"uid":"1002"})
+spoof = call({"method":"profile.get","token":login["token"],"uid":sys.argv[6]})
 wrong_account = call({"method":"auth.login","username":"uid-one","password":password})
 private_socket_denied = False
 try:
@@ -471,7 +487,9 @@ print(json.dumps({
 }))
 """
 
-        def run_as_uid(uid: int, username: str) -> dict[str, object]:
+        def run_as_uid(
+            uid: int, username: str, spoof_uid: int
+        ) -> dict[str, object]:
             completed = subprocess.run(
                 [
                     sys.executable,
@@ -482,6 +500,7 @@ print(json.dumps({
                     "secure-pass-123",
                     str(self.broker_socket_path),
                     str(self.database_path),
+                    str(spoof_uid),
                 ],
                 capture_output=True,
                 text=True,
@@ -499,7 +518,10 @@ print(json.dumps({
         with ThreadPoolExecutor(max_workers=2) as executor:
             first_result, second_result = executor.map(
                 lambda args: run_as_uid(*args),
-                ((first_uid, "uid-one"), (second_uid, "uid-two")),
+                (
+                    (first_uid, "uid-one", second_uid),
+                    (second_uid, "uid-two", first_uid),
+                ),
             )
         self.assertEqual("uid-one", first_result["profile"]["username"])
         self.assertEqual("uid-two", second_result["profile"]["username"])
