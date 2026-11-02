@@ -20,6 +20,7 @@ from unittest.mock import patch
 ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT_DIR / "broker"))
 
+import simple_broker
 from simple_broker import (
     Broker,
     BrokerServer,
@@ -345,6 +346,118 @@ class BrokerTests(unittest.TestCase):
                 ).fetchone()[0],
             )
         validate_database(legacy_database)
+
+    def test_failed_migration_rolls_back_and_preserves_valid_backup(self) -> None:
+        legacy_database = self.root / "legacy-failed-migration.db"
+        schema_text = (ROOT_DIR / "database" / "schema.sql").read_text(
+            encoding="utf-8"
+        )
+        for definition in (
+            "    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),\n",
+            "    accepted_by INTEGER REFERENCES users(id),\n",
+            "    accepted_at DATETIME,\n",
+        ):
+            schema_text = schema_text.replace(definition, "", 1)
+        with sqlite3.connect(legacy_database) as connection:
+            connection.executescript(schema_text)
+            connection.execute(
+                "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+                ("rollback-user", "unchanged-hash"),
+            )
+        os.chmod(legacy_database, 0o600)
+
+        def database_snapshot(
+            path: Path,
+        ) -> tuple[list[tuple[str, str, str]], list[str], tuple[str, str] | None]:
+            with sqlite3.connect(path) as connection:
+                schema = connection.execute(
+                    """
+                    SELECT type, name, sql FROM sqlite_master
+                    WHERE name NOT LIKE 'sqlite_%'
+                    ORDER BY type, name
+                    """
+                ).fetchall()
+                users_columns = [
+                    row[1] for row in connection.execute("PRAGMA table_info(users)")
+                ]
+                user = connection.execute(
+                    "SELECT username, password_hash FROM users WHERE username = ?",
+                    ("rollback-user",),
+                ).fetchone()
+            return schema, users_columns, user
+
+        original_snapshot = database_snapshot(legacy_database)
+        failed_migrations = (
+            *simple_broker.MIGRATIONS,
+            ("users", "temporary_migration_column", "TEXT"),
+            ("users", "invalid_migration_column", "TEXT, extra_column TEXT"),
+        )
+        with patch("simple_broker.MIGRATIONS", failed_migrations):
+            with self.assertRaises(sqlite3.OperationalError):
+                initialize_database(
+                    legacy_database, ROOT_DIR / "database" / "schema.sql"
+                )
+
+        self.assertEqual(original_snapshot, database_snapshot(legacy_database))
+        backups = list(self.root.glob("legacy-failed-migration.db.backup-*.sqlite"))
+        self.assertEqual(1, len(backups))
+        validate_database(backups[0], allow_pre_migration_schema=True)
+        check_database_integrity(backups[0])
+        self.assertEqual(original_snapshot, database_snapshot(backups[0]))
+
+    def test_invalid_backup_stops_migration_and_removes_incomplete_backup(self) -> None:
+        original_snapshot = self.database_path.read_bytes()
+        original_validate = validate_database
+
+        def corrupt_backup(path: Path, *, allow_pre_migration_schema: bool = False) -> None:
+            if ".backup-" in path.name:
+                path.write_bytes(b"incomplete SQLite backup")
+            original_validate(
+                path, allow_pre_migration_schema=allow_pre_migration_schema
+            )
+
+        with patch("simple_broker.validate_database", side_effect=corrupt_backup):
+            with self.assertRaises((RuntimeError, sqlite3.Error)):
+                initialize_database(
+                    self.database_path, ROOT_DIR / "database" / "schema.sql"
+                )
+
+        self.assertEqual(original_snapshot, self.database_path.read_bytes())
+        self.assertEqual([], list(self.root.glob("simple.db.backup-*.sqlite")))
+
+    def test_failed_backup_copy_removes_incomplete_backup(self) -> None:
+        original_snapshot = self.database_path.read_bytes()
+        original_connect = sqlite3.connect
+
+        def fail_source_connection(
+            database: str | Path, *args: object, **kwargs: object
+        ):
+            if Path(database) == self.database_path:
+                raise sqlite3.OperationalError("simulated source read failure")
+            return original_connect(database, *args, **kwargs)
+
+        with patch("simple_broker.sqlite3.connect", side_effect=fail_source_connection):
+            with self.assertRaisesRegex(sqlite3.OperationalError, "source read failure"):
+                initialize_database(
+                    self.database_path, ROOT_DIR / "database" / "schema.sql"
+                )
+
+        self.assertEqual(original_snapshot, self.database_path.read_bytes())
+        self.assertEqual([], list(self.root.glob("simple.db.backup-*.sqlite")))
+
+    def test_schema_transaction_controls_are_rejected_before_backup(self) -> None:
+        schema_path = self.root / "incompatible-schema.sql"
+        schema_path.write_text(
+            "CREATE TABLE migration_marker (id INTEGER);\nCOMMIT;\n",
+            encoding="utf-8",
+        )
+        original_snapshot = self.database_path.read_bytes()
+
+        with self.assertRaisesRegex(RuntimeError, "incompatível"):
+            initialize_database(self.database_path, schema_path)
+
+        self.assertEqual(original_snapshot, self.database_path.read_bytes())
+        self.assertEqual([], list(self.root.glob("simple.db.backup-*.sqlite")))
 
     def test_one_shot_database_initialization_refuses_existing_database(self) -> None:
         database_path = self.root / "production-candidate.db"

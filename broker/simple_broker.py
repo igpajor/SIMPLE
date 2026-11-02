@@ -25,6 +25,7 @@ from typing import Any
 
 
 MAX_REQUEST_BYTES = 65536
+BROKER_MAX_CONNECTIONS = 64
 PROXY_INTERNAL_PROTOCOL = "simple-proxy-v1"
 SESSION_TTL_SECONDS = 8 * 60 * 60
 USERNAME_PATTERN = re.compile(r"^[a-zA-Z0-9._-]{3,32}$")
@@ -189,100 +190,52 @@ def _validate_database_files(database_path: Path, require_main: bool = True) -> 
     return path
 
 
-def initialize_database(
-    database_path: Path, schema_path: Path, *, allow_existing: bool = True
-) -> Path | None:
-    if not database_path.is_absolute():
-        raise RuntimeError("O caminho do banco deve ser absoluto.")
-    database_path = _validate_private_directory(database_path.parent) / database_path.name
-    schema_sql = schema_path.read_text(encoding="utf-8")
-    try:
-        database_path.lstat()
-    except FileNotFoundError:
-        created = True
-    else:
-        if not allow_existing:
-            raise RuntimeError("O banco já existe; a inicialização foi cancelada.")
-        created = False
-        _validate_database_files(database_path)
-    backup_path = None
-    if not created:
-        for _ in range(10):
-            candidate = database_path.with_name(
-                f"{database_path.name}.backup-{time.time_ns()}-{secrets.token_hex(4)}.sqlite"
+def _transactional_schema_statements(schema_sql: str) -> list[str]:
+    statements: list[str] = []
+    pending: list[str] = []
+    for character in schema_sql:
+        pending.append(character)
+        if character != ";":
+            continue
+        candidate = "".join(pending)
+        if not sqlite3.complete_statement(candidate):
+            continue
+        statement = candidate.strip()
+        pending.clear()
+        normalized = re.sub(
+            r"/\*.*?\*/|--[^\r\n]*", " ", statement, flags=re.DOTALL
+        ).strip()
+        if not normalized:
+            continue
+        if re.match(
+            r"^(?:BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE|VACUUM|ATTACH|DETACH)\b",
+            normalized,
+            flags=re.IGNORECASE,
+        ):
+            raise RuntimeError(
+                "schema.sql contém comando incompatível com a transação explícita."
             )
-            try:
-                descriptor = os.open(
-                    candidate,
-                    os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
-                    0o600,
+        if re.match(r"^PRAGMA\b", normalized, flags=re.IGNORECASE):
+            if not re.fullmatch(
+                r"PRAGMA\s+foreign_keys\s*=\s*(?:ON|1)\s*;?",
+                normalized,
+                flags=re.IGNORECASE,
+            ):
+                raise RuntimeError(
+                    "schema.sql contém PRAGMA incompatível com a transação explícita."
                 )
-            except FileExistsError:
-                continue
-            try:
-                backup_stat = os.fstat(descriptor)
-                if not stat.S_ISREG(backup_stat.st_mode) or backup_stat.st_uid != os.geteuid():
-                    raise RuntimeError("Não foi possível criar o backup SQLite com segurança.")
-                os.fchmod(descriptor, 0o600)
-            finally:
-                os.close(descriptor)
-            backup_path = candidate
-            break
-        if backup_path is None:
-            raise RuntimeError("Não foi possível reservar um nome seguro para o backup.")
-        try:
-            _validate_private_directory(backup_path.parent)
-            with closing(sqlite3.connect(database_path)) as source, closing(
-                sqlite3.connect(backup_path)
-            ) as backup:
-                source.backup(backup)
-        except (OSError, sqlite3.Error):
-            backup_path.unlink(missing_ok=True)
-            raise
-        _validate_database_files(database_path)
-        _validate_regular_owned_file(backup_path, "O backup SQLite")
-    if created:
-        try:
-            descriptor = os.open(
-                database_path,
-                os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
-                0o600,
-            )
-        except FileExistsError as error:
-            raise RuntimeError("O caminho do banco foi ocupado durante a criação.") from error
-        try:
-            os.fchmod(descriptor, 0o600)
-        finally:
-            os.close(descriptor)
-        _validate_regular_owned_file(database_path, "O banco SQLite")
-    with closing(sqlite3.connect(database_path)) as connection, connection:
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.executescript(schema_sql)
-        for table, column, definition in MIGRATIONS:
-            columns = {
-                row[1]
-                for row in connection.execute(f"PRAGMA table_info({table})")
-            }
-            if column not in columns:
-                connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-        connection.commit()
-    _validate_database_files(database_path)
-    return backup_path
+            continue
+        statements.append(statement)
+
+    remainder = "".join(pending)
+    if re.sub(r"/\*.*?\*/|--[^\r\n]*", "", remainder, flags=re.DOTALL).strip():
+        raise RuntimeError("schema.sql contém uma instrução SQL incompleta.")
+    return statements
 
 
-def check_database_integrity(database_path: Path) -> None:
-    database_path = _validate_database_files(database_path)
-    with closing(sqlite3.connect(database_path)) as connection:
-        result = connection.execute("PRAGMA integrity_check").fetchone()
-        if result != ("ok",):
-            raise RuntimeError("Banco SQLite falhou na verificação de integridade.")
-        if connection.execute("PRAGMA foreign_key_check").fetchmany(1):
-            raise RuntimeError("Banco SQLite contém violações de integridade referencial.")
-    _validate_database_files(database_path)
-
-
-def validate_database(database_path: Path) -> None:
-    database_path = _validate_database_files(database_path)
+def _validate_database_connection(
+    connection: sqlite3.Connection, *, allow_pre_migration_schema: bool = False
+) -> None:
     required_columns = {
         "users": {
             "id", "username", "password_hash", "is_admin", "must_change_password",
@@ -315,19 +268,164 @@ def validate_database(database_path: Path) -> None:
             "id", "linux_uid", "user_id", "is_active", "created_at", "updated_at",
         },
     }
-    with closing(sqlite3.connect(database_path)) as connection:
-        for table, expected_columns in required_columns.items():
+    if allow_pre_migration_schema:
+        for table, column, _definition in MIGRATIONS:
+            required_columns.get(table, set()).discard(column)
+
+    for table, expected_columns in required_columns.items():
+        columns = {
+            row[1] for row in connection.execute(f"PRAGMA table_info({table})")
+        }
+        if not expected_columns.issubset(columns):
+            raise RuntimeError(
+                f"Schema do broker incompatível: tabela {table} requer migração explícita."
+            )
+    violations = connection.execute("PRAGMA foreign_key_check").fetchmany(1)
+    if violations:
+        raise RuntimeError("Banco SQLite contém violações de integridade referencial.")
+
+
+def _check_database_integrity_connection(connection: sqlite3.Connection) -> None:
+    result = connection.execute("PRAGMA integrity_check").fetchone()
+    if result != ("ok",):
+        raise RuntimeError("Banco SQLite falhou na verificação de integridade.")
+    if connection.execute("PRAGMA foreign_key_check").fetchmany(1):
+        raise RuntimeError("Banco SQLite contém violações de integridade referencial.")
+
+
+def initialize_database(
+    database_path: Path, schema_path: Path, *, allow_existing: bool = True
+) -> Path | None:
+    if not database_path.is_absolute():
+        raise RuntimeError("O caminho do banco deve ser absoluto.")
+    database_path = _validate_private_directory(database_path.parent) / database_path.name
+    schema_sql = schema_path.read_text(encoding="utf-8")
+    schema_statements = _transactional_schema_statements(schema_sql)
+    try:
+        database_path.lstat()
+    except FileNotFoundError:
+        created = True
+    else:
+        if not allow_existing:
+            raise RuntimeError("O banco já existe; a inicialização foi cancelada.")
+        created = False
+        _validate_database_files(database_path)
+    backup_path = None
+    if not created:
+        for _ in range(10):
+            candidate = database_path.with_name(
+                f"{database_path.name}.backup-{time.time_ns()}-{secrets.token_hex(4)}.sqlite"
+            )
+            backup_identity: tuple[int, int] | None = None
+            try:
+                descriptor = os.open(
+                    candidate,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                )
+            except FileExistsError:
+                continue
+            backup_path = candidate
+            try:
+                try:
+                    backup_stat = os.fstat(descriptor)
+                    backup_identity = (backup_stat.st_dev, backup_stat.st_ino)
+                    if not stat.S_ISREG(backup_stat.st_mode) or backup_stat.st_uid != os.geteuid():
+                        raise RuntimeError("Não foi possível criar o backup SQLite com segurança.")
+                    os.fchmod(descriptor, 0o600)
+                finally:
+                    os.close(descriptor)
+            except BaseException:
+                _remove_incomplete_backup(candidate, backup_identity)
+                raise
+            break
+        if backup_path is None:
+            raise RuntimeError("Não foi possível reservar um nome seguro para o backup.")
+        try:
+            _validate_private_directory(backup_path.parent)
+            with closing(sqlite3.connect(database_path)) as source, closing(
+                sqlite3.connect(backup_path)
+            ) as backup:
+                source.backup(backup)
+            _validate_database_files(database_path)
+            _validate_regular_owned_file(backup_path, "O backup SQLite")
+            validate_database(backup_path, allow_pre_migration_schema=True)
+            check_database_integrity(backup_path)
+        except BaseException:
+            _remove_incomplete_backup(backup_path, backup_identity)
+            raise
+    if created:
+        try:
+            descriptor = os.open(
+                database_path,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+        except FileExistsError as error:
+            raise RuntimeError("O caminho do banco foi ocupado durante a criação.") from error
+        try:
+            os.fchmod(descriptor, 0o600)
+        finally:
+            os.close(descriptor)
+        _validate_regular_owned_file(database_path, "O banco SQLite")
+    connection = sqlite3.connect(database_path)
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("BEGIN IMMEDIATE")
+        for statement in schema_statements:
+            connection.execute(statement)
+        for table, column, definition in MIGRATIONS:
             columns = {
                 row[1]
                 for row in connection.execute(f"PRAGMA table_info({table})")
             }
-            if not expected_columns.issubset(columns):
-                raise RuntimeError(
-                    f"Schema do broker incompatível: tabela {table} requer migração explícita."
-                )
-        violations = connection.execute("PRAGMA foreign_key_check").fetchmany(1)
-        if violations:
-            raise RuntimeError("Banco SQLite contém violações de integridade referencial.")
+            if column not in columns:
+                connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        _validate_database_connection(connection)
+        _check_database_integrity_connection(connection)
+        _validate_database_files(database_path)
+        connection.commit()
+    except BaseException:
+        if connection.in_transaction:
+            connection.rollback()
+        raise
+    finally:
+        connection.close()
+    return backup_path
+
+
+def _remove_incomplete_backup(
+    backup_path: Path, backup_identity: tuple[int, int] | None
+) -> None:
+    if backup_identity is None:
+        return
+    try:
+        backup_stat = backup_path.lstat()
+    except FileNotFoundError:
+        return
+    if (
+        stat.S_ISREG(backup_stat.st_mode)
+        and backup_stat.st_uid == os.geteuid()
+        and (backup_stat.st_dev, backup_stat.st_ino) == backup_identity
+    ):
+        backup_path.unlink()
+
+
+def check_database_integrity(database_path: Path) -> None:
+    database_path = _validate_database_files(database_path)
+    with closing(sqlite3.connect(database_path)) as connection:
+        _check_database_integrity_connection(connection)
+    _validate_database_files(database_path)
+
+
+def validate_database(
+    database_path: Path, *, allow_pre_migration_schema: bool = False
+) -> None:
+    database_path = _validate_database_files(database_path)
+    with closing(sqlite3.connect(database_path)) as connection:
+        _validate_database_connection(
+            connection, allow_pre_migration_schema=allow_pre_migration_schema
+        )
     _validate_database_files(database_path)
 
 
@@ -1676,10 +1774,30 @@ class BrokerRequestHandler(socketserver.StreamRequestHandler):
 class BrokerServer(socketserver.ThreadingUnixStreamServer):
     daemon_threads = True
     allow_reuse_address = False
+    request_queue_size = BROKER_MAX_CONNECTIONS
 
     def __init__(self, socket_path: Path, broker: Broker):
         self.broker = broker
+        self.connection_slots = threading.BoundedSemaphore(BROKER_MAX_CONNECTIONS)
         super().__init__(str(socket_path), BrokerRequestHandler)
+
+    def process_request(self, request: socket.socket, client_address: Any) -> None:
+        if not self.connection_slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self.connection_slots.release()
+            raise
+
+    def process_request_thread(
+        self, request: socket.socket, client_address: Any
+    ) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.connection_slots.release()
 
 
 def _prepare_socket_path(socket_path: Path) -> None:

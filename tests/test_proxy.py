@@ -292,8 +292,8 @@ class ProxyTests(unittest.TestCase):
         def concurrent_call(_index: int) -> dict[str, object]:
             return self.proxy_call(request)
 
-        with ThreadPoolExecutor(max_workers=8) as executor:
-            responses = list(executor.map(concurrent_call, range(16)))
+        with ThreadPoolExecutor(max_workers=64) as executor:
+            responses = list(executor.map(concurrent_call, range(64)))
         self.assertTrue(all(response["ok"] for response in responses), responses)
 
         malformed_requests = (
@@ -315,6 +315,40 @@ class ProxyTests(unittest.TestCase):
         self.assertTrue(
             self.proxy_call({"method": "profile.get", "token": login["token"]})["ok"]
         )
+
+    @unittest.skipIf(os.geteuid() == 0, "use the root-only multi-UID integration test")
+    def test_proxy_recovers_after_broker_unavailability(self) -> None:
+        uid = os.geteuid()
+        user = self.create_user("broker-recovery-user")
+        self.bind_for_test(uid, int(user["user_id"]))
+        login = self.proxy_call(
+            {
+                "method": "auth.login",
+                "username": "broker-recovery-user",
+                "password": "secure-pass-123",
+            }
+        )
+        self.assertTrue(login["ok"], login)
+
+        self.broker_server.shutdown()
+        self.broker_server.server_close()
+        self.broker_thread.join(timeout=5)
+        self.assertFalse(self.broker_thread.is_alive())
+        self.broker_socket_path.unlink(missing_ok=True)
+
+        unavailable = self.proxy_call(
+            {"method": "profile.get", "token": login["token"]}
+        )
+        self.assertFalse(unavailable["ok"])
+
+        self.broker_server = BrokerServer(self.broker_socket_path, self.broker)
+        os.chmod(self.broker_socket_path, 0o600)
+        self.broker_thread = threading.Thread(target=self.broker_server.serve_forever)
+        self.broker_thread.start()
+        recovered = self.proxy_call(
+            {"method": "profile.get", "token": login["token"]}
+        )
+        self.assertTrue(recovered["ok"], recovered)
 
     def test_proxy_socket_permissions_and_stale_socket_handling(self) -> None:
         self.assertEqual(0o660, self.public_socket_path.stat().st_mode & 0o777)

@@ -12,7 +12,7 @@ O proxy usa Linux `SO_PEERCRED` em cada conexão; UID/GID/PID não são aceitos 
 
 Vínculo é identificação, não autenticação: a pessoa ainda fornece usuário e senha SIMPLE. No login, o proxy só encaminha `auth.login` se o nome corresponder à conta vinculada ao UID do kernel. `auth.register` fica bloqueado; um administrador deve provisionar a conta e criar o vínculo antes do primeiro login. O proxy associa o token recebido a UID, ID da conta e ID do vínculo ativo. Para cada chamada seguinte, verifica novamente o vínculo e rejeita tokens de outra identidade ou de uma associação revogada/substituída. O Broker continua validando o token, a conta ativa e as permissões administrativas.
 
-O serviço é concorrente, limitado a 64 conexões simultâneas, com timeout de 10 segundos e limite de 65.536 bytes por requisição. As mensagens são JSON em uma linha; chaves repetidas e constantes inválidas são rejeitadas. Logs registram UID, método e resultado, nunca credenciais ou tokens. Os tokens e sua associação ao UID ficam em memória no proxy; após reiniciar o proxy, participantes devem fazer login novamente.
+O serviço é concorrente, limitado a 64 conexões simultâneas, com timeout de 10 segundos e limite de 65.536 bytes por requisição. O Broker aplica o mesmo limite de handlers e dimensiona o backlog do socket privado para comportar o pico permitido pelo proxy; conexões excedentes não criam threads adicionais. As mensagens são JSON em uma linha; chaves repetidas e constantes inválidas são rejeitadas. Logs registram UID, método e resultado, nunca credenciais ou tokens. Os tokens e sua associação ao UID ficam em memória no proxy; após reiniciar o proxy, participantes devem fazer login novamente.
 
 ## Preparação de permissões
 
@@ -99,9 +99,11 @@ O `ExecStart` não passa `--initialize-database`: o banco é criado em operaçã
 one-shot explícita antes de habilitar o serviço. `--initialize-database-only`,
 `--migrate-database-only`, `--validate-database-only` e `--backup-database`
 executam tarefas SQLite pelo próprio Broker e encerram sem abrir um socket de
-serviço. O banco persistente não deve estar no checkout Git. SIGTERM/SIGINT
-encerram o servidor e removem apenas o socket que a instância criou, sem tocar
-em socket substituto ou no banco.
+serviço. Antes de migrar, o Broker valida o backup SQLite; o schema e as
+migrações são aplicados em uma transação e falhas causam rollback, mantendo o
+backup para recuperação. O banco persistente não deve estar no checkout Git.
+SIGTERM/SIGINT encerram o servidor e removem apenas o socket que a instância
+criou, sem tocar em socket substituto ou no banco.
 
 ## Validação e limitações
 

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from simple_broker import (
+    BROKER_MAX_CONNECTIONS,
     MAX_REQUEST_BYTES,
     METHOD_FIELDS,
     PROXY_INTERNAL_PROTOCOL,
@@ -31,7 +32,7 @@ from simple_broker import (
 MAX_RESPONSE_BYTES = 131072
 CLIENT_TIMEOUT_SECONDS = 10
 BROKER_TIMEOUT_SECONDS = 10
-MAX_CONNECTIONS = 64
+MAX_CONNECTIONS = BROKER_MAX_CONNECTIONS
 ALLOWED_METHODS = frozenset(METHOD_FIELDS) - {"auth.register"}
 
 
