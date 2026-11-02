@@ -1012,7 +1012,7 @@ broker_admin_identity_menu() {
       done <<<"$rows"
     fi
     printf '\n  [1] Criar vínculo  [2] Alterar UID  [3] Revogar vínculo  [0] Voltar\n'
-    ui_wrap_text "Este cadastro administrativo ainda não autentica usuários Linux; o proxy SO_PEERCRED não está implementado." \
+    ui_wrap_text "O proxy identifica o UID real com SO_PEERCRED e exige vínculo ativo." \
       "$(ui_width)" 2
     ui_read_line choice "  VÍNCULOS > " || return 0
     case "$choice" in

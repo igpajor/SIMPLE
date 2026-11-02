@@ -239,7 +239,7 @@ O resultado não altera a linha de base da suíte existente.
 | Item | Estado | Teste vermelho → verde | Evidência |
 |---|---|---|---|
 | 3.0 — Senha em argv | concluído | Não foi necessário alterar código: o novo teste passou imediatamente após validar registro/login nos dois modos. | `core/auth.sh:11-12,31-33`; `broker/simple_broker.py:555-587`; `tests/test_phase3.py:76-128` |
-| 3.1 — Mensagem TUI (R-06/T-07) | pendente | T-07 ainda falha pela mensagem antiga. | `modules/broker_ui.sh:1015`; `tests/test_phase2.py:425-457` |
+| 3.1 — Mensagem TUI (R-06/T-07) | concluído | Vermelho: T-07 falhou primeiro pela frase obsoleta. Verde: mesma tela não contém a frase antiga e confirma positivamente a descrição correta. | `modules/broker_ui.sh:1015`; `tests/test_phase2.py:425-463` |
 | 3.2 — Migração local/Broker (A-04/R-05) | pendente | — | — |
 | 3.3 — Login local de conta inativa (S-01/R-01) | pendente | — | — |
 | 3.4 — Tentativas de login no Broker (B-02) | pendente | — | — |
@@ -247,3 +247,20 @@ O resultado não altera a linha de base da suíte existente.
 | 3.6 — Limites/paginação (R-04) | pendente | — | — |
 | 3.7 — Controles de terminal (S-03/T-04) | pendente | — | — |
 | 3.8 — Reforço de concorrência (T-01) | pendente | — | — |
+
+### 3.1 — R-06 + T-07
+
+- Teste atualizado primeiro e reproduzido vermelho pela antiga afirmação
+  (`tests/test_phase2.py:456-457`); após a correção, passou com verificação da
+  ausência do texto obsoleto e presença da nova mensagem
+  (`tests/test_phase2.py:456-463`).
+- Correção restrita ao texto de vínculos UID: “O proxy identifica o UID real
+  com SO_PEERCRED e exige vínculo ativo.” (`modules/broker_ui.sh:1015`). O
+  proxy obtém as credenciais do kernel e resolve o vínculo ativo
+  (`broker/simple_proxy.py:40-48,221-230`).
+- **Suíte completa:** `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_broker.py tests/test_proxy.py tests/test_deployment.py tests/test_phase2.py tests/test_phase3.py`
+  — **50 testes, 49 passaram, 0 falharam, 1 pulou**, 33,774 s. O pulado é o
+  teste multi-UID exclusivo de root (`tests/test_proxy.py:454-456`).
+  `bash tests/test_cli.sh` passou. Tudo usa recursos temporários.
+- **Riscos remanescentes:** os itens 3.2–3.8 ainda não foram executados; não
+  há regressões observadas nas suítes desta etapa.
