@@ -86,8 +86,25 @@ O proxy envia logs ao stderr do processo (e portanto ao supervisor que o iniciou
 - **Reinício do proxy:** tokens de cliente precisam de novo login; tokens não são persistidos.
 - **Falha de resposta após uma operação:** confirme o estado pela interface antes de repetir ações não idempotentes, como envio, avaliação ou ajuste de pontos.
 
+## Execução supervisionada em Ubuntu
+
+Os serviços systemd e o procedimento de preparação para Ubuntu 22.04 estão em
+[DEPLOYMENT_UBUNTU.md](./DEPLOYMENT_UBUNTU.md), com arquivos em `deploy/systemd/`.
+As unidades usam o mesmo usuário `simple-broker`; o Proxy executa com grupo
+primário `simple-users` para criar o socket `0660`. O systemd prepara os
+diretórios de runtime, inicia o Broker antes do Proxy e limita o acesso gravável
+ao diretório de dados/socket necessário.
+
+O `ExecStart` não passa `--initialize-database`: o banco é criado em operação
+one-shot explícita antes de habilitar o serviço. `--initialize-database-only`,
+`--migrate-database-only`, `--validate-database-only` e `--backup-database`
+executam tarefas SQLite pelo próprio Broker e encerram sem abrir um socket de
+serviço. O banco persistente não deve estar no checkout Git. SIGTERM/SIGINT
+encerram o servidor e removem apenas o socket que a instância criou, sem tocar
+em socket substituto ou no banco.
+
 ## Validação e limitações
 
-Os testes automatizados exercitam o `SO_PEERCRED` real do processo atual, resolução, revogação/reatribuição, autenticação por senha, autorização no Broker, bloqueio de campos de identidade declarados, protocolo, desconexão e concorrência. Um teste adicional executa dois UIDs reais distintos quando a suíte roda como root; sem root, ele é ignorado e a validação multiusuário real continua pendente.
+Os testes automatizados exercitam o `SO_PEERCRED` real do processo atual, resolução, revogação/reatribuição, autenticação por senha, autorização no Broker, bloqueio de campos de identidade declarados, protocolo, desconexão e concorrência. Também verificam inicialização sem servidor, recusa de banco existente, backup validado e remoção do socket em SIGTERM. Um teste adicional executa dois UIDs reais distintos quando a suíte roda como root; sem root, ele é ignorado e a validação multiusuário real continua pendente.
 
-O proxy deve ser executado como o usuário confiável do serviço. Processos maliciosos que já executem sob esse mesmo UID podem acessar o socket privado e estão fora da fronteira de isolamento. A solução também depende da administração correta dos membros do grupo público e dos vínculos. Não há validação de TTY/SSH, confinamento de shell, implantação como serviço, alta disponibilidade nem auditoria de um host de produção. Portanto, esta implementação não declara o SIMPLE pronto para produção ou SSH público.
+O proxy deve ser executado como o usuário confiável do serviço. Processos maliciosos que já executem sob esse mesmo UID podem acessar o socket privado e estão fora da fronteira de isolamento. A solução também depende da administração correta dos membros do grupo público e dos vínculos. A preparação systemd não implementa validação de TTY/SSH, confinamento de shell, alta disponibilidade nem auditoria de um host de produção. Portanto, esta implementação não declara o SIMPLE pronto para produção ou SSH público.

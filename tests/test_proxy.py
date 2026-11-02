@@ -345,51 +345,77 @@ class ProxyTests(unittest.TestCase):
             _prepare_socket_path(non_socket_path, os.getegid())
 
     def test_proxy_service_entrypoint_applies_and_cleans_socket_permissions(self) -> None:
-        socket_path = self.public_directory / "entrypoint.sock"
         environment = os.environ.copy()
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
-        process = subprocess.Popen(
-            [
-                sys.executable,
-                str(ROOT_DIR / "broker" / "simple_proxy.py"),
-                "--socket",
-                str(socket_path),
-                "--broker-socket",
-                str(self.broker_socket_path),
-                "--socket-group",
-                str(os.getegid()),
-            ],
-            cwd=ROOT_DIR,
-            env=environment,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        try:
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline:
-                if process.poll() is not None:
-                    stdout, stderr = process.communicate(timeout=1)
-                    self.fail(f"proxy saiu na inicialização: {stdout}{stderr}")
-                if socket_path.exists():
-                    socket_stat = socket_path.stat()
-                    if (
-                        (socket_stat.st_mode & 0o777) == 0o660
-                        and socket_stat.st_gid == os.getegid()
-                    ):
-                        break
-                time.sleep(0.05)
-            else:
-                self.fail("socket do proxy não ficou pronto")
+        for shutdown_signal, socket_name in (
+            (signal.SIGINT, "entrypoint-int.sock"),
+            (signal.SIGTERM, "entrypoint-term.sock"),
+        ):
+            socket_path = self.public_directory / socket_name
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    str(ROOT_DIR / "broker" / "simple_proxy.py"),
+                    "--socket",
+                    str(socket_path),
+                    "--broker-socket",
+                    str(self.broker_socket_path),
+                    "--socket-group",
+                    str(os.getegid()),
+                ],
+                cwd=ROOT_DIR,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    if process.poll() is not None:
+                        stdout, stderr = process.communicate(timeout=1)
+                        self.fail(f"proxy saiu na inicialização: {stdout}{stderr}")
+                    if socket_path.exists():
+                        socket_stat = socket_path.stat()
+                        if (
+                            (socket_stat.st_mode & 0o777) == 0o660
+                            and socket_stat.st_gid == os.getegid()
+                        ):
+                            try:
+                                with socket.socket(
+                                    socket.AF_UNIX, socket.SOCK_STREAM
+                                ) as probe:
+                                    probe.connect(str(socket_path))
+                                break
+                            except OSError:
+                                pass
+                    time.sleep(0.05)
+                else:
+                    self.fail("socket do proxy não ficou pronto")
 
-            process.send_signal(signal.SIGINT)
-            _stdout, stderr = process.communicate(timeout=5)
-            self.assertEqual(0, process.returncode, stderr)
-            self.assertFalse(socket_path.exists())
-        finally:
-            if process.poll() is None:
-                process.kill()
-                process.communicate(timeout=5)
+                process.send_signal(shutdown_signal)
+                _stdout, stderr = process.communicate(timeout=5)
+                self.assertEqual(0, process.returncode, stderr)
+                self.assertFalse(socket_path.exists())
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate(timeout=5)
+
+    def test_deployment_preflight_waits_for_a_live_broker_socket(self) -> None:
+        completed = subprocess.run(
+            [
+                "bash",
+                str(ROOT_DIR / "deploy" / "wait-for-broker.sh"),
+                str(self.broker_socket_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
 
     @unittest.skipUnless(os.geteuid() == 0, "requer root para assumir UIDs distintos")
     def test_real_distinct_uids_share_proxy_without_cross_identity_access(self) -> None:

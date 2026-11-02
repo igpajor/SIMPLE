@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import secrets
+import signal
 import socket
 import socketserver
 import sqlite3
@@ -188,7 +189,9 @@ def _validate_database_files(database_path: Path, require_main: bool = True) -> 
     return path
 
 
-def initialize_database(database_path: Path, schema_path: Path) -> Path | None:
+def initialize_database(
+    database_path: Path, schema_path: Path, *, allow_existing: bool = True
+) -> Path | None:
     if not database_path.is_absolute():
         raise RuntimeError("O caminho do banco deve ser absoluto.")
     database_path = _validate_private_directory(database_path.parent) / database_path.name
@@ -198,6 +201,8 @@ def initialize_database(database_path: Path, schema_path: Path) -> Path | None:
     except FileNotFoundError:
         created = True
     else:
+        if not allow_existing:
+            raise RuntimeError("O banco já existe; a inicialização foi cancelada.")
         created = False
         _validate_database_files(database_path)
     backup_path = None
@@ -265,6 +270,17 @@ def initialize_database(database_path: Path, schema_path: Path) -> Path | None:
     return backup_path
 
 
+def check_database_integrity(database_path: Path) -> None:
+    database_path = _validate_database_files(database_path)
+    with closing(sqlite3.connect(database_path)) as connection:
+        result = connection.execute("PRAGMA integrity_check").fetchone()
+        if result != ("ok",):
+            raise RuntimeError("Banco SQLite falhou na verificação de integridade.")
+        if connection.execute("PRAGMA foreign_key_check").fetchmany(1):
+            raise RuntimeError("Banco SQLite contém violações de integridade referencial.")
+    _validate_database_files(database_path)
+
+
 def validate_database(database_path: Path) -> None:
     database_path = _validate_database_files(database_path)
     required_columns = {
@@ -313,6 +329,107 @@ def validate_database(database_path: Path) -> None:
         if violations:
             raise RuntimeError("Banco SQLite contém violações de integridade referencial.")
     _validate_database_files(database_path)
+
+
+def backup_database(database_path: Path, backup_path: Path) -> Path:
+    if not backup_path.is_absolute():
+        raise RuntimeError("O caminho do backup deve ser absoluto.")
+    source = _validate_database_files(database_path)
+    destination = _validate_private_directory(backup_path.parent) / backup_path.name
+    if destination == source or destination.name in {"", ".", ".."}:
+        raise RuntimeError("O caminho de destino do backup é inválido.")
+    validate_database(source)
+    check_database_integrity(source)
+    try:
+        destination.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        raise RuntimeError("O arquivo de backup já existe; nenhum arquivo foi alterado.")
+    try:
+        descriptor = os.open(
+            destination,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+    except FileExistsError as error:
+        raise RuntimeError("O arquivo de backup já existe; nenhum arquivo foi alterado.") from error
+    backup_identity: tuple[int, int] | None = None
+    try:
+        backup_stat = os.fstat(descriptor)
+        backup_identity = (backup_stat.st_dev, backup_stat.st_ino)
+        if not stat.S_ISREG(backup_stat.st_mode) or backup_stat.st_uid != os.geteuid():
+            raise RuntimeError("Não foi possível criar o backup SQLite com segurança.")
+        os.fchmod(descriptor, 0o600)
+        with closing(sqlite3.connect(source)) as database, closing(
+            sqlite3.connect(destination)
+        ) as backup:
+            database.backup(backup)
+        validate_database(destination)
+        check_database_integrity(destination)
+        return destination
+    except (OSError, sqlite3.Error, RuntimeError):
+        try:
+            current_stat = destination.lstat()
+            if (
+                stat.S_ISREG(current_stat.st_mode)
+                and current_stat.st_uid == os.geteuid()
+                and backup_identity is not None
+                and (current_stat.st_dev, current_stat.st_ino) == backup_identity
+            ):
+                destination.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+    finally:
+        os.close(descriptor)
+
+
+def _serve_until_stopped(
+    server: socketserver.BaseServer, socket_path: Path, service_name: str
+) -> None:
+    socket_stat = socket_path.lstat()
+    if not stat.S_ISSOCK(socket_stat.st_mode) or socket_stat.st_uid != os.geteuid():
+        raise RuntimeError("O socket criado não pertence ao serviço.")
+    socket_identity = (socket_stat.st_dev, socket_stat.st_ino)
+    previous_handlers = {
+        signum: signal.getsignal(signum)
+        for signum in (signal.SIGINT, signal.SIGTERM)
+    }
+
+    def stop_service(signum: int, _frame: Any) -> None:
+        def shutdown() -> None:
+            logging.info(
+                "%s recebeu sinal %s", service_name, signal.Signals(signum).name
+            )
+            server.shutdown()
+
+        threading.Thread(
+            target=shutdown, name=f"{service_name}-shutdown", daemon=True
+        ).start()
+
+    try:
+        for signum in previous_handlers:
+            signal.signal(signum, stop_service)
+        server_thread = threading.Thread(
+            target=server.serve_forever, name=f"{service_name}-server"
+        )
+        server_thread.start()
+        server_thread.join()
+    finally:
+        for signum, previous_handler in previous_handlers.items():
+            signal.signal(signum, previous_handler)
+        server.server_close()
+        try:
+            current_stat = socket_path.lstat()
+            if (
+                stat.S_ISSOCK(current_stat.st_mode)
+                and current_stat.st_uid == os.geteuid()
+                and (current_stat.st_dev, current_stat.st_ino) == socket_identity
+            ):
+                socket_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _password_hash(password: str) -> str:
@@ -1593,7 +1710,7 @@ def _prepare_socket_path(socket_path: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Broker local do SIMPLE")
-    parser.add_argument("--socket", required=True, type=Path)
+    parser.add_argument("--socket", type=Path)
     parser.add_argument("--database", required=True, type=Path)
     parser.add_argument(
         "--schema",
@@ -1605,9 +1722,80 @@ def main() -> int:
         action="store_true",
         help="cria/atualiza o schema antes de iniciar (faça backup antes de usar em dados existentes)",
     )
+    parser.add_argument(
+        "--initialize-database-only",
+        action="store_true",
+        help="cria um banco novo, valida a integridade e encerra sem iniciar o serviço",
+    )
+    parser.add_argument(
+        "--migrate-database-only",
+        action="store_true",
+        help="faz backup, aplica migrações explícitas, valida e encerra sem iniciar o serviço",
+    )
+    parser.add_argument(
+        "--validate-database-only",
+        action="store_true",
+        help="valida o schema e a integridade do banco e encerra",
+    )
+    parser.add_argument(
+        "--backup-database",
+        type=Path,
+        metavar="DESTINO",
+        help="cria e valida um backup SQLite sem iniciar o serviço",
+    )
     arguments = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
+    one_shot_modes = (
+        arguments.initialize_database_only,
+        arguments.migrate_database_only,
+        arguments.validate_database_only,
+        arguments.backup_database is not None,
+    )
+    if sum(one_shot_modes) > 1:
+        parser.error("selecione apenas um modo one-shot")
+    if any(one_shot_modes) and arguments.initialize_database:
+        parser.error("--initialize-database não pode ser combinado com um modo one-shot")
+    if arguments.initialize_database_only:
+        database_path = Path(os.path.abspath(arguments.database))
+        for suffix in SQLITE_AUXILIARY_SUFFIXES:
+            auxiliary_path = Path(f"{database_path}{suffix}")
+            try:
+                auxiliary_path.lstat()
+            except FileNotFoundError:
+                continue
+            raise RuntimeError(
+                f"Arquivo auxiliar preexistente impede banco novo: {auxiliary_path.name}."
+            )
+        backup_path = initialize_database(
+            arguments.database, arguments.schema, allow_existing=False
+        )
+        if backup_path is not None:
+            raise RuntimeError("A inicialização de banco novo não deve criar backup.")
+        validate_database(arguments.database)
+        check_database_integrity(arguments.database)
+        logging.info("Banco SQLite inicializado e íntegro.")
+        return 0
+    if arguments.migrate_database_only:
+        _validate_database_files(arguments.database)
+        backup_path = initialize_database(arguments.database, arguments.schema)
+        if backup_path is None:
+            raise RuntimeError("Não foi criado backup antes da migração.")
+        validate_database(arguments.database)
+        check_database_integrity(arguments.database)
+        logging.info("Banco SQLite migrado e íntegro. Backup: %s", backup_path)
+        return 0
+    if arguments.validate_database_only:
+        validate_database(arguments.database)
+        check_database_integrity(arguments.database)
+        logging.info("Banco SQLite íntegro.")
+        return 0
+    if arguments.backup_database is not None:
+        destination = backup_database(arguments.database, arguments.backup_database)
+        logging.info("Backup SQLite validado em %s", destination)
+        return 0
+    if arguments.socket is None:
+        parser.error("--socket é obrigatório ao iniciar o Broker")
     if arguments.initialize_database:
         backup_path = initialize_database(arguments.database, arguments.schema)
         if backup_path is not None:
@@ -1617,13 +1805,8 @@ def main() -> int:
     server = BrokerServer(arguments.socket, Broker(arguments.database))
     os.chmod(arguments.socket, 0o600)
     logging.info("Broker SIMPLE iniciado em %s", arguments.socket)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        logging.info("Broker SIMPLE encerrado")
-    finally:
-        server.server_close()
-        arguments.socket.unlink(missing_ok=True)
+    _serve_until_stopped(server, arguments.socket, "Broker SIMPLE")
+    logging.info("Broker SIMPLE encerrado")
     return 0
 
 

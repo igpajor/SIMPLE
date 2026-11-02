@@ -1,0 +1,37 @@
+[Unit]
+Description=SIMPLE multiuser Unix Proxy
+Requires=simple-broker.service
+BindsTo=simple-broker.service
+PartOf=simple-broker.service
+After=simple-broker.service
+
+[Service]
+Type=simple
+User=simple-broker
+Group=simple-users
+WorkingDirectory=/opt/simple
+ExecStartPre=/usr/bin/bash /opt/simple/deploy/wait-for-broker.sh
+ExecStart=/usr/bin/python3 /opt/simple/broker/simple_proxy.py --socket /run/simple-public/proxy.sock --broker-socket /run/simple-private/broker.sock --socket-group simple-users
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=15s
+KillSignal=SIGTERM
+UMask=0117
+RuntimeDirectory=simple-public
+RuntimeDirectoryMode=0710
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX
+ReadOnlyPaths=/run/simple-private
+ReadWritePaths=/run/simple-public
+
+[Install]
+WantedBy=multi-user.target

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import socket
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -21,6 +23,8 @@ sys.path.insert(0, str(ROOT_DIR / "broker"))
 from simple_broker import (
     Broker,
     BrokerServer,
+    backup_database,
+    check_database_integrity,
     initialize_database,
     validate_database,
 )
@@ -341,6 +345,147 @@ class BrokerTests(unittest.TestCase):
                 ).fetchone()[0],
             )
         validate_database(legacy_database)
+
+    def test_one_shot_database_initialization_refuses_existing_database(self) -> None:
+        database_path = self.root / "production-candidate.db"
+        command = [
+            sys.executable,
+            str(ROOT_DIR / "broker" / "simple_broker.py"),
+            "--database",
+            str(database_path),
+            "--schema",
+            str(ROOT_DIR / "database" / "schema.sql"),
+            "--initialize-database-only",
+        ]
+        initialized = subprocess.run(
+            command, capture_output=True, text=True, check=False, timeout=10
+        )
+        self.assertEqual(0, initialized.returncode, initialized.stderr)
+        self.assertIn("inicializado e íntegro", initialized.stderr)
+        self.assertEqual(0o600, database_path.stat().st_mode & 0o777)
+        check_database_integrity(database_path)
+        original_contents = database_path.read_bytes()
+
+        rejected = subprocess.run(
+            command, capture_output=True, text=True, check=False, timeout=10
+        )
+        self.assertNotEqual(0, rejected.returncode)
+        self.assertIn("O banco já existe", rejected.stderr)
+        self.assertEqual(original_contents, database_path.read_bytes())
+
+    def test_broker_backup_is_private_verified_and_never_overwritten(self) -> None:
+        self.create_user("backup-user")
+        backup_path = self.root / "backups" / "simple-copy.sqlite"
+        backup_path.parent.mkdir(mode=0o700)
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT_DIR / "broker" / "simple_broker.py"),
+                "--database",
+                str(self.database_path),
+                "--backup-database",
+                str(backup_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("Backup SQLite validado", completed.stderr)
+        self.assertEqual(0o600, backup_path.stat().st_mode & 0o777)
+        check_database_integrity(backup_path)
+        with sqlite3.connect(backup_path) as connection:
+            self.assertEqual(
+                1,
+                connection.execute(
+                    "SELECT COUNT(*) FROM users WHERE username = 'backup-user'"
+                ).fetchone()[0],
+            )
+        original_contents = backup_path.read_bytes()
+        with self.assertRaisesRegex(RuntimeError, "já existe"):
+            backup_database(self.database_path, backup_path)
+        self.assertEqual(original_contents, backup_path.read_bytes())
+
+    def test_explicit_migration_mode_creates_backup_and_does_not_start_server(self) -> None:
+        existing_socket_identity = (
+            self.socket_path.stat().st_dev,
+            self.socket_path.stat().st_ino,
+        )
+        command = [
+            sys.executable,
+            str(ROOT_DIR / "broker" / "simple_broker.py"),
+            "--database",
+            str(self.database_path),
+            "--schema",
+            str(ROOT_DIR / "database" / "schema.sql"),
+            "--migrate-database-only",
+        ]
+        migrated = subprocess.run(
+            command, capture_output=True, text=True, check=False, timeout=10
+        )
+
+        self.assertEqual(0, migrated.returncode, migrated.stderr)
+        self.assertIn("Banco SQLite migrado e íntegro", migrated.stderr)
+        self.assertEqual(
+            existing_socket_identity,
+            (self.socket_path.stat().st_dev, self.socket_path.stat().st_ino),
+        )
+        self.assertEqual(
+            1,
+            len(list(self.root.glob("simple.db.backup-*.sqlite"))),
+        )
+        check_database_integrity(self.database_path)
+
+    def test_broker_entrypoint_removes_its_socket_after_sigterm(self) -> None:
+        socket_path = self.root / "broker-sigterm.sock"
+        environment = os.environ.copy()
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                str(ROOT_DIR / "broker" / "simple_broker.py"),
+                "--socket",
+                str(socket_path),
+                "--database",
+                str(self.database_path),
+            ],
+            cwd=ROOT_DIR,
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    stdout, stderr = process.communicate(timeout=1)
+                    self.fail(f"Broker saiu na inicialização: {stdout}{stderr}")
+                if socket_path.exists():
+                    try:
+                        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+                            probe.connect(str(socket_path))
+                        break
+                    except OSError:
+                        pass
+                time.sleep(0.05)
+            else:
+                self.fail("socket do Broker não ficou pronto")
+
+            process.send_signal(signal.SIGTERM)
+            try:
+                _stdout, stderr = process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                _stdout, stderr = process.communicate(timeout=5)
+                self.fail(f"Broker não encerrou em SIGTERM: {stderr}")
+            self.assertEqual(0, process.returncode, stderr)
+            self.assertFalse(socket_path.exists())
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate(timeout=5)
 
     def test_database_validation_rejects_foreign_key_violations(self) -> None:
         with sqlite3.connect(self.database_path) as connection:

@@ -24,6 +24,7 @@ from simple_broker import (
     METHOD_FIELDS,
     PROXY_INTERNAL_PROTOCOL,
     SESSION_TTL_SECONDS,
+    _serve_until_stopped,
 )
 
 
@@ -456,18 +457,8 @@ def main() -> int:
     os.chown(arguments.socket, os.geteuid(), group_id)
     os.chmod(arguments.socket, 0o660)
     logging.info("Proxy SIMPLE iniciado em %s", arguments.socket)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        logging.info("Proxy SIMPLE encerrado")
-    finally:
-        server.server_close()
-        try:
-            socket_stat = arguments.socket.lstat()
-            if stat.S_ISSOCK(socket_stat.st_mode) and socket_stat.st_uid == os.geteuid():
-                arguments.socket.unlink()
-        except FileNotFoundError:
-            pass
+    _serve_until_stopped(server, arguments.socket, "Proxy SIMPLE")
+    logging.info("Proxy SIMPLE encerrado")
     return 0
 
 

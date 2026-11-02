@@ -48,9 +48,9 @@ As alterações de schema são aditivas e aplicadas por `db_init` quando o SIMPL
 
 ## Implantação remota por SSH
 
-O SIMPLE ainda não confina sessões SSH nem substitui os controles do sistema operacional. A autenticação do aplicativo não impede que uma conta Unix abra um shell ou leia arquivos acessíveis ao processo. Portanto, não exponha o comando diretamente a participantes em um servidor compartilhado sem uma configuração de acesso restrito revisada e testada.
+O SIMPLE ainda não confina sessões SSH nem substitui os controles do sistema operacional. A autenticação do aplicativo não impede que uma conta Unix abra um shell ou leia arquivos acessíveis ao processo. Portanto, não exponha o comando diretamente a participantes em um servidor compartilhado sem uma configuração de acesso restrito revisada e testada. A preparação para `systemd` em Ubuntu também não habilita SSH nem significa que a aplicação está pronta para participantes remotos.
 
-Antes de uma implantação, defina e valide o modelo de isolamento do host: entrada forçada no aplicativo com TTY, shell/SFTP e encaminhamentos desabilitados, permissões mínimas nos dados e isolamento entre processos de participantes. Uma conta Unix compartilhada, por si só, não isola usuários entre si. O SIMPLE nunca deve executar código submetido.
+Antes de uma implantação, defina e valide o modelo de isolamento do host: entrada forçada no aplicativo com TTY, shell/SFTP e encaminhamentos desabilitados, permissões mínimas nos dados e isolamento entre processos de participantes. Uma conta Unix compartilhada, por si só, não isola usuários entre si. O SIMPLE nunca deve executar código submetido. Consulte [DEPLOYMENT_UBUNTU.md](./DEPLOYMENT_UBUNTU.md) para a preparação dos serviços e a análise das etapas de confinamento ainda pendentes.
 
 ## Broker local (não é uma implantação SSH)
 
@@ -81,6 +81,8 @@ bash simple.sh
 O socket e um banco novo são criados com permissão `0600`. O broker valida o schema por padrão e não migra o banco automaticamente. `--initialize-database` é explícito, aplica o schema/migrações aditivas e cria antes uma cópia SQLite consistente com permissão `0600` quando o banco já existe. Preserve o backup até confirmar a migração. Os testes usam bancos temporários: `python3 -m unittest tests/test_broker.py tests/test_proxy.py`.
 
 Esta cobertura funcional ainda não é uma configuração de produção nem oferece isolamento entre usuários Unix que compartilham a mesma conta. O socket `0600` não permite acesso direto por sessões com UIDs diferentes. Não exponha o socket privado a containers nem habilite SSH com base apenas nesta implementação. O proxy Unix local está implementado, mas o confinamento de SSH e o isolamento do host precisam de projeto e validação próprios; o SIMPLE nunca executa código submetido.
+
+Para implantação local supervisionada em Ubuntu 22.04, há unidades systemd, inicialização one-shot do banco, backup validado pelo Broker e procedimentos operacionais em [DEPLOYMENT_UBUNTU.md](./DEPLOYMENT_UBUNTU.md). Esses arquivos não configuram SSH nem tornam o SIMPLE pronto para receber participantes por SSH.
 
 ## Identidade Unix e acesso multiusuário
 
