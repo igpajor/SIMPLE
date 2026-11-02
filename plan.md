@@ -240,8 +240,8 @@ O resultado não altera a linha de base da suíte existente.
 |---|---|---|---|
 | 3.0 — Senha em argv | concluído | Não foi necessário alterar código: o novo teste passou imediatamente após validar registro/login nos dois modos. | `core/auth.sh:11-12,31-33`; `broker/simple_broker.py:555-587`; `tests/test_phase3.py:76-128` |
 | 3.1 — Mensagem TUI (R-06/T-07) | concluído | Vermelho: T-07 falhou primeiro pela frase obsoleta. Verde: mesma tela não contém a frase antiga e confirma positivamente a descrição correta. | `modules/broker_ui.sh:1015`; `tests/test_phase2.py:425-463` |
-| 3.2 — Migração local/Broker (A-04/R-05) | pendente | — | — |
-| 3.3 — Login local de conta inativa (S-01/R-01) | pendente | — | — |
+| 3.2 — Migração local/Broker (A-04/R-05) | parado | Validação exploratória: execução concorrente acusou `database is locked`; Broker permaneceu ativo com `trg_submission_validate` ausente. | `core/database.sh:48-68`; `broker/simple_broker.py:236-284,1960-1962`; tentativa em `tests/test_phase3.py` |
+| 3.3 — Login local de conta inativa (S-01/R-01) | concluído | Vermelho: usuário inativo autenticava. Verde: login recusa com mensagem genérica. | `modules/users.sh:51-79`; `tests/test_phase3.py:133-166` |
 | 3.4 — Tentativas de login no Broker (B-02) | pendente | — | — |
 | 3.5 — Imutabilidade no banco (S-02/R-03) | pendente | — | — |
 | 3.6 — Limites/paginação (R-04) | pendente | — | — |
@@ -262,5 +262,55 @@ O resultado não altera a linha de base da suíte existente.
   — **50 testes, 49 passaram, 0 falharam, 1 pulou**, 33,774 s. O pulado é o
   teste multi-UID exclusivo de root (`tests/test_proxy.py:454-456`).
   `bash tests/test_cli.sh` passou. Tudo usa recursos temporários.
-- **Riscos remanescentes:** os itens 3.2–3.8 ainda não foram executados; não
-  há regressões observadas nas suítes desta etapa.
+- **Riscos remanescentes:** o item 3.2 está parado conforme explicado abaixo;
+  os itens 3.4–3.8 ainda não foram executados. Não há regressões observadas.
+
+### 3.2 — A-04 / R-05: migração local atômica e validação de triggers
+
+- **Parado antes de alterar implementação.** A validação exploratória mostrou
+  que uma chamada local concorrente pode falhar com `database is locked`
+  (`core/database.sh:26-31,48-68`), e que o Broker inicia mesmo após remover
+  `trg_submission_validate`: o processo permaneceu ativo até o timeout. A
+  inicialização de serviço chama `validate_database()` mas a verificação atual
+  cobre colunas/FKs, não triggers (`broker/simple_broker.py:236-284,1960-1962`).
+- O teste de falha de schema inserida entre `DROP TRIGGER` e `CREATE TRIGGER`
+  não reproduziu trigger ausente no código atual; portanto não prova atomicidade
+  da sequência posterior de ALTERs. As tentativas exploratórias não foram
+  mantidas como testes finais e nenhum patch/commit foi criado para este item.
+- **Motivo da parada:** satisfazer em conjunto a migração indivisível, o teste
+  de falha no meio dos ALTERs, a corrida com submissões e a validação de cinco
+  triggers requer uma decisão de arquitetura/backup e excede o limite aproximado
+  de 150 linhas de diff definido para esta fase. A escolha pendente é se `db_init`
+  deve reutilizar a migração transacional do Broker (que cria backup em bancos
+  existentes) ou receber um caminho transacional local compartilhado, sem
+  backup automático por inicialização. A atualização de validação ainda deve
+  exigir os cinco triggers também no Broker.
+- **Resultado dos testes exploratórios:** rollback após erro entre DROP/CREATE
+  manteve o trigger no caso testado; corrida mostrou uma submissão aceita e a
+  outra falhando com `database is locked`; inicialização do Broker sem o trigger
+  não foi recusada. O teste de corrida e de inicialização falharam pelos motivos
+  acima. Sem commit no item 3.2.
+- **Risco pendente:** integridade de regras depende da presença dos triggers;
+  falta uma verificação explícita em startup. A idempotência dos outros quatro
+  triggers usa `CREATE TRIGGER IF NOT EXISTS`
+  (`database/schema.sql:136,167,180,197`), então a redefinição futura de seus
+  corpos não chega a bancos já existentes sem migração que os substitua.
+  Recomenda-se `PRAGMA user_version` para migrações locais versionadas, mas a
+  implementação fica pendente junto com a decisão arquitetural acima.
+
+### 3.3 — S-01 / R-01: login local de conta inativa
+
+- **Vermelho:** `test_local_login_rejects_inactive_user` registrou e desativou
+  conta em DB temporário; antes da correção, `auth_login` retornou sucesso
+  (`tests/test_phase3.py:133-166`).
+- **Verde:** o mesmo teste passou após `auth_login` incluir `is_active` na
+  consulta e recusar conta inativa com a mesma mensagem genérica de credenciais
+  inválidas (`modules/users.sh:51-79`). A verificação da senha continua sendo
+  feita antes da decisão de estado da conta.
+- **Suíte completa:** `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests/test_broker.py tests/test_proxy.py tests/test_deployment.py tests/test_phase2.py tests/test_phase3.py`
+  — **51 testes: 50 passaram, 0 falharam, 1 pulou**, 34,241 s. O pulado é
+  multi-UID/root (`tests/test_proxy.py:454-456`). `bash tests/test_cli.sh`
+  passou. Os testes usam DB temporário.
+- **Risco remanescente:** login local continua sendo modo individual/dev/teste,
+  conforme decisão desta fase; limitação de tentativas do Broker (3.4) ainda
+  está pendente. Nenhuma regressão observada.

@@ -130,6 +130,40 @@ auth_login local-shim-user "$password"
             }
         self.assertTrue({"local-shim-user", "broker-shim-user"}.issubset(usernames))
 
+    def test_local_login_rejects_inactive_user(self) -> None:
+        password = "phase3-inactive-secret"
+        script = """
+SCRIPT_DIR=$1
+DB_PATH=$2
+source "$SCRIPT_DIR/core/database.sh"
+source "$SCRIPT_DIR/core/auth.sh"
+source "$SCRIPT_DIR/modules/users.sh"
+db_init
+IFS= read -r -s password
+auth_register inactive-phase3-user "$password"
+db_query "UPDATE users SET is_active = 0 WHERE username = 'inactive-phase3-user';"
+auth_login inactive-phase3-user "$password"
+"""
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                script,
+                "phase3-inactive-login",
+                str(ROOT_DIR),
+                str(self.database_path),
+            ],
+            cwd=ROOT_DIR,
+            env=self.environment,
+            input=f"{password}\n",
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("Usuário ou senha inválidos.", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

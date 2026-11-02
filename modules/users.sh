@@ -55,6 +55,7 @@ auth_login() {
   local user_row
   local user_id
   local stored_hash
+  local is_active
 
   username="${username,,}"
   if [[ "${BROKER_MODE:-0}" == "1" ]]; then
@@ -63,15 +64,15 @@ auth_login() {
   fi
 
   username_sql=$(db_sql_quote "$username")
-  user_row=$(db_query "SELECT id || '|' || password_hash FROM users WHERE username = $username_sql LIMIT 1;") || return 1
+  user_row=$(db_query "SELECT id || '|' || password_hash || '|' || is_active FROM users WHERE username = $username_sql LIMIT 1;") || return 1
 
   if [[ -z "$user_row" ]]; then
     printf '  Usuário ou senha inválidos.\n'
     return 1
   fi
 
-  IFS='|' read -r user_id stored_hash <<<"$user_row"
-  if ! auth_verify_password "$password" "$stored_hash"; then
+  IFS='|' read -r user_id stored_hash is_active <<<"$user_row"
+  if ! auth_verify_password "$password" "$stored_hash" || [[ "$is_active" != "1" ]]; then
     printf '  Usuário ou senha inválidos.\n'
     return 1
   fi
