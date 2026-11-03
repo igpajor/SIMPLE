@@ -65,6 +65,8 @@ class DeploymentTests(unittest.TestCase):
             ROOT_DIR / "deploy" / "init-production-database.sh"
         ).read_text(encoding="utf-8")
         self.assertIn("EUID != 0", script)
+        self.assertIn("command -v runuser", script)
+        self.assertIn('"$RUNUSER" -u simple-broker', script)
         self.assertIn("simple-broker:700", script)
         self.assertIn("o banco já existe", script)
         self.assertIn("--initialize-database-only", script)
