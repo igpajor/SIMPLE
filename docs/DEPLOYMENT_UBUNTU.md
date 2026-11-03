@@ -233,12 +233,13 @@ sudo sshd -t
 sudo systemctl reload ssh
 ```
 
-O launcher rejeita comandos SSH e sessões sem TTY, limpa o ambiente recebido e
-inicia somente a CLI em modo Proxy. A conta do participante precisa usar
-`/bin/bash` para que o OpenSSH execute o comando forçado; isso **não** concede
-um shell, pois a configuração `Match` força o launcher em toda sessão do grupo.
-Use apenas chave pública autorizada e mantenha autenticação por senha desativada
-para o grupo.
+O launcher rejeita comandos SSH e sessões sem TTY, limpa o ambiente recebido,
+define `LANG=C.UTF-8` para manter o cálculo correto da largura dos caracteres
+Unicode e inicia somente a CLI em modo Proxy. A conta do participante precisa
+usar `/bin/bash` para que o OpenSSH execute o comando forçado; isso **não**
+concede um shell, pois a configuração `Match` força o launcher em toda sessão
+do grupo. Use apenas chave pública autorizada e mantenha autenticação por senha
+desativada para o grupo.
 
 ### Testar antes do convite
 

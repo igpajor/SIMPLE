@@ -78,6 +78,25 @@ class DeploymentTests(unittest.TestCase):
 
     def test_restricted_ssh_launcher_rejects_commands_and_non_tty_sessions(self) -> None:
         launcher = ROOT_DIR / "deploy" / "simple-ssh-entrypoint.sh"
+        launcher_text = launcher.read_text(encoding="utf-8")
+        self.assertIn("LANG=C.UTF-8", launcher_text)
+        locale_check = subprocess.run(
+            [
+                "env",
+                "-i",
+                "LANG=C.UTF-8",
+                "bash",
+                "-c",
+                '[[ "${#1}" == 46 ]]',
+                "bash",
+                "███████╗██╗███╗   ███╗██████╗ ██╗     ███████╗",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(0, locale_check.returncode)
+
         environment = os.environ.copy()
         environment["SSH_ORIGINAL_COMMAND"] = "id"
         command = subprocess.run(

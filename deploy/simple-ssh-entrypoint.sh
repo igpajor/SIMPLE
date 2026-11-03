@@ -21,6 +21,7 @@ exec /usr/bin/env -i \
   USER="$USER" \
   LOGNAME="$USER" \
   SHELL=/bin/bash \
+  LANG=C.UTF-8 \
   TERM="$terminal_type" \
   PATH=/usr/bin:/bin \
   SIMPLE_MODE=proxy \
