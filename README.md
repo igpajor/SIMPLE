@@ -38,10 +38,13 @@ Unix.
 1. Escolha um exercício e leia seu enunciado, especificações e exemplos.
 2. Registre a solução por meio da URL do commit no GitHub e do diretório de
    entrega.
-3. Outro participante revisa a referência, dá uma nota de 0 a 5 e escreve um
-   feedback. A nota mínima para aprovação é 3.
-4. A pessoa avaliada pode responder ao feedback e avaliar o avaliador.
-5. Consulte **Meu progresso** para acompanhar entregas, avaliações, respostas,
+3. Outro participante solicita autorização para avaliar; a pessoa autora aceita
+   ou recusa o pedido em **Minhas entregas**. Pedidos sem resposta expiram em
+   24 horas e são liberados na próxima operação do sistema que processar pedidos.
+4. Após o aceite, o avaliador consulta o exercício e a referência, dá uma nota
+   de 0 a 5 e escreve um feedback. A nota mínima para aprovação é 3.
+5. A pessoa avaliada pode responder ao feedback e avaliar o avaliador.
+6. Consulte **Meu progresso** para acompanhar entregas, avaliações, respostas,
    notificações e pontos.
 
 ## Recursos
@@ -99,21 +102,22 @@ esse comando inicia o modo local.
 
 ## Provisionar participantes
 
-1. No cliente administrativo, escolha **Criar Conta** e crie uma conta SIMPLE
-   de participante. O nome deve ter de 3 a 32 caracteres, começar com letra
-   minúscula ou sublinhado e conter somente letras minúsculas, números, hífen
-   ou sublinhado.
-2. No servidor, execute o provisionador com esse nome:
+No servidor já configurado, execute:
 
-   ```bash
-   sudo /usr/bin/python3 /opt/simple/deploy/provision-participant.py NOME
-   ```
+```bash
+cd /opt/simple
+./cadastro NOME
+```
 
-3. Cole a chave pública SSH do participante e autentique-se com uma conta
-   SIMPLE administradora. O comando cria a conta Linux, instala a chave,
-   associa o UID à conta SIMPLE e só então habilita o acesso SSH restrito.
-4. O participante conecta-se com a chave privada que permanece em seu
-   dispositivo e entra na CLI usando a senha da conta SIMPLE.
+O comando solicita a chave pública SSH e credenciais de uma conta SIMPLE
+administradora. Ele cria as contas Linux e SIMPLE, instala a chave, associa o
+UID e configura uma senha SIMPLE temporária, que deverá ser alterada no primeiro
+login. A senha Linux fica bloqueada; o SSH usa somente chave pública. O comando
+SSH exibido ao final usa `163.176.181.196`. A senha temporária é mostrada uma
+única vez: compartilhe-a somente por um canal seguro.
+
+Use `./cadastro --help` para ver as opções e `./cadastro --version` para
+consultar a versão do utilitário.
 
 O provisionador requer que o servidor já esteja configurado para acesso SSH
 restrito. Consulte o [guia de implantação Ubuntu](./docs/DEPLOYMENT_UBUNTU.md)

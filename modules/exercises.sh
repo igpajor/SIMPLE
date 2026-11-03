@@ -494,6 +494,19 @@ exercise_submit_prompt() {
 
   printf '\n  A submissão registra apenas a referência; o SIMPLE não recebe nem executa arquivos de código.\n'
   printf '  Um ponto será usado para abrir uma avaliação por outra pessoa.\n'
+  ui_section "COMO ENCONTRAR O LINK DO COMMIT"
+  ui_wrap_text \
+    "Envie sua solução ao GitHub. No repositório, abra Commits/History, selecione o commit que contém sua solução e copie o endereço da página." \
+    "$(ui_width)" 2
+  ui_wrap_text \
+    "O link deve conter /commit/SHA; links /blob/ (arquivo) e /tree/ (pasta ou branch) não servem." \
+    "$(ui_width)" 2
+  ui_wrap_text \
+    "Exemplo: https://github.com/USUARIO/REPOSITORIO/commit/abcdef0" \
+    "$(ui_width)" 2
+  ui_wrap_text \
+    "No diretório, informe a pasta da entrega (ex.: ex00) ou . se os arquivos estiverem na raiz." \
+    "$(ui_width)" 2
   ui_read_line commit_url "  URL direta do commit GitHub > " || return 1
   ui_read_line delivery_directory "  Diretório no repositório (use . para a raiz) > " || return 1
   if ! ui_confirm "Enviar esta referência para avaliação?"; then

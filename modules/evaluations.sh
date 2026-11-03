@@ -30,18 +30,41 @@ evaluation_record_review() {
   fi
 
   feedback_sql=$(db_sql_quote "$feedback")
-  db_query "
+  local inserted
+  inserted=$(db_query "
     BEGIN IMMEDIATE;
     INSERT INTO reviews (slot_id, reviewer_id, score, feedback)
-    VALUES ($slot_id, $CURRENT_USER_ID, $score, $feedback_sql);
+    SELECT $slot_id, $CURRENT_USER_ID, $score, $feedback_sql
+    WHERE EXISTS (
+      SELECT 1
+      FROM evaluation_slots slot
+      JOIN submissions submission ON submission.id = slot.submission_id
+      JOIN evaluation_requests request
+        ON request.slot_id = slot.id
+       AND request.reviewer_id = $CURRENT_USER_ID
+       AND request.status = 'accepted'
+      WHERE slot.id = $slot_id AND slot.status = 'open'
+        AND slot.accepted_by = $CURRENT_USER_ID
+        AND submission.user_id != $CURRENT_USER_ID
+    );
+    SELECT changes();
     INSERT INTO notifications (user_id, type, review_id)
     SELECT s.user_id, 'review_received',
            (SELECT id FROM reviews WHERE slot_id = $slot_id)
     FROM evaluation_slots slot
     JOIN submissions s ON s.id = slot.submission_id
-    WHERE slot.id = $slot_id;
+    WHERE slot.id = $slot_id AND changes() = 1;
+    UPDATE evaluation_requests
+    SET status = 'completed', responded_at = CURRENT_TIMESTAMP
+    WHERE slot_id = $slot_id AND reviewer_id = $CURRENT_USER_ID
+      AND status = 'accepted'
+      AND EXISTS (SELECT 1 FROM reviews WHERE slot_id = $slot_id);
     COMMIT;
-  "
+  ") || return 1
+  if [[ "$inserted" != "1" ]]; then
+    printf '  O autor ainda não aceitou este pedido ou o slot está indisponível.\n'
+    return 1
+  fi
 }
 
 evaluation_respond_to_review() {
@@ -109,6 +132,250 @@ evaluation_respond_to_review() {
   return 0
 }
 
+evaluation_expire_pending_requests() {
+  db_query "
+    BEGIN IMMEDIATE;
+    UPDATE evaluation_requests
+    SET status = 'expired', responded_at = CURRENT_TIMESTAMP
+    WHERE status = 'pending'
+      AND requested_at <= datetime('now', '-24 hours');
+    UPDATE evaluation_slots
+    SET accepted_by = NULL, accepted_at = NULL
+    WHERE status = 'open'
+      AND EXISTS (
+        SELECT 1 FROM evaluation_requests request
+        WHERE request.slot_id = evaluation_slots.id
+          AND request.reviewer_id = evaluation_slots.accepted_by
+          AND request.status = 'expired'
+          AND request.requested_at <= datetime('now', '-24 hours')
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM evaluation_requests active
+        WHERE active.slot_id = evaluation_slots.id
+          AND active.reviewer_id = evaluation_slots.accepted_by
+          AND active.status IN ('pending', 'accepted')
+      );
+    COMMIT;
+  " >/dev/null
+}
+
+evaluation_pending_requests() {
+  local response
+
+  if [[ "${BROKER_MODE:-0}" == "1" ]]; then
+    response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
+      broker_request evaluations.requests.list token) || return 1
+    if ! broker_check_response "$response"; then
+      return 1
+    fi
+    broker_response_rows "$response" requests
+    return $?
+  fi
+
+  evaluation_expire_pending_requests || return 1
+  db_query "
+    SELECT request.id || '|' || slot.id || '|' ||
+           hex(evaluator.username) || '|' || hex(exercise.code) || '|' ||
+           hex(exercise.name) || '|' || hex(request.requested_at)
+    FROM evaluation_requests request
+    JOIN evaluation_slots slot ON slot.id = request.slot_id
+    JOIN submissions submission ON submission.id = slot.submission_id
+    JOIN users evaluator ON evaluator.id = request.reviewer_id
+    JOIN exercises exercise ON exercise.id = submission.exercise_id
+    WHERE submission.user_id = $CURRENT_USER_ID
+      AND slot.status = 'open'
+      AND slot.accepted_by = request.reviewer_id
+      AND request.status = 'pending'
+    ORDER BY request.requested_at, request.id;
+  "
+}
+
+evaluation_respond_to_request() {
+  local request_id="$1"
+  local decision="$2"
+
+  if [[ "${BROKER_MODE:-0}" == "1" ]]; then
+    local response
+    response=$(printf '%s\0%s\0%s\0' \
+      "$CURRENT_SESSION_TOKEN" "$request_id" "$decision" |
+      broker_request evaluations.request.respond token request_id decision) || return 1
+    broker_check_response "$response"
+    return $?
+  fi
+
+  [[ "$request_id" =~ ^[0-9]+$ ]] || return 2
+  [[ "$decision" == "accept" || "$decision" == "decline" ]] || return 2
+  local next_status="accepted"
+  [[ "$decision" == "decline" ]] && next_status="declined"
+  local result
+  result=$(db_query "
+    BEGIN IMMEDIATE;
+    UPDATE evaluation_requests
+    SET status = '$next_status', responded_at = CURRENT_TIMESTAMP
+    WHERE id = $request_id AND status = 'pending'
+      AND slot_id IN (
+        SELECT slot.id
+        FROM evaluation_slots slot
+        JOIN submissions submission ON submission.id = slot.submission_id
+        WHERE submission.user_id = $CURRENT_USER_ID
+          AND slot.status = 'open'
+      );
+    SELECT changes();
+    UPDATE evaluation_slots
+    SET accepted_by = NULL, accepted_at = NULL
+    WHERE id = (
+        SELECT slot_id FROM evaluation_requests WHERE id = $request_id
+      )
+      AND accepted_by = (
+        SELECT reviewer_id FROM evaluation_requests WHERE id = $request_id
+      )
+      AND EXISTS (
+        SELECT 1 FROM evaluation_requests request
+        WHERE request.id = $request_id AND request.status = 'declined'
+      );
+    COMMIT;
+  ") || return 1
+  if [[ "$result" != "1" ]]; then
+    printf '  Pedido indisponível ou já respondido.\n'
+    return 1
+  fi
+  return 0
+}
+
+evaluation_start_request() {
+  local slot_id="$1"
+
+  if [[ "${BROKER_MODE:-0}" == "1" ]]; then
+    local response
+    response=$(printf '%s\0%s\0' "$CURRENT_SESSION_TOKEN" "$slot_id" |
+      broker_request evaluations.accept token slot_id) || return 1
+    broker_check_response "$response"
+    return $?
+  fi
+
+  [[ "$slot_id" =~ ^[0-9]+$ ]] || return 2
+  local result
+  result=$(db_query "
+    BEGIN IMMEDIATE;
+    INSERT INTO evaluation_requests (slot_id, reviewer_id, status)
+    SELECT slot.id, $CURRENT_USER_ID, 'pending'
+    FROM evaluation_slots slot
+    JOIN submissions submission ON submission.id = slot.submission_id
+    WHERE slot.id = $slot_id AND slot.status = 'open'
+      AND submission.user_id != $CURRENT_USER_ID
+      AND slot.accepted_by IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM evaluation_requests declined
+        WHERE declined.slot_id = slot.id
+          AND declined.reviewer_id = $CURRENT_USER_ID
+          AND declined.status = 'declined'
+      );
+    UPDATE evaluation_slots
+    SET accepted_by = $CURRENT_USER_ID, accepted_at = CURRENT_TIMESTAMP
+    WHERE id = $slot_id AND status = 'open' AND accepted_by IS NULL
+      AND EXISTS (
+        SELECT 1 FROM evaluation_requests request
+        WHERE request.slot_id = $slot_id
+          AND request.reviewer_id = $CURRENT_USER_ID
+          AND request.status = 'pending'
+      );
+    SELECT changes();
+    COMMIT;
+  ") || return 1
+  if [[ "$result" != "1" ]]; then
+    printf '  Slot indisponível ou você já teve um pedido recusado para esta entrega.\n'
+    return 1
+  fi
+}
+
+evaluation_cancel_request() {
+  local slot_id="$1"
+
+  if [[ "${BROKER_MODE:-0}" == "1" ]]; then
+    local response
+    response=$(printf '%s\0%s\0' "$CURRENT_SESSION_TOKEN" "$slot_id" |
+      broker_request evaluations.cancel token slot_id) || return 1
+    broker_check_response "$response"
+    return $?
+  fi
+
+  [[ "$slot_id" =~ ^[0-9]+$ ]] || return 2
+  local result
+  result=$(db_query "
+    BEGIN IMMEDIATE;
+    UPDATE evaluation_requests
+    SET status = 'cancelled', responded_at = CURRENT_TIMESTAMP
+    WHERE id = (
+      SELECT id FROM evaluation_requests
+      WHERE slot_id = $slot_id AND reviewer_id = $CURRENT_USER_ID
+        AND status IN ('pending', 'accepted')
+      ORDER BY id DESC LIMIT 1
+    );
+    SELECT changes();
+    UPDATE evaluation_slots
+    SET accepted_by = NULL, accepted_at = NULL
+    WHERE id = $slot_id AND status = 'open'
+      AND accepted_by = $CURRENT_USER_ID;
+    COMMIT;
+  ") || return 1
+  if [[ "$result" != "1" ]]; then
+    printf '  Não há pedido seu que possa ser cancelado.\n'
+    return 1
+  fi
+}
+
+evaluation_handle_pending_requests() {
+  local rows
+  local encoded
+  local request_id
+  local slot_id
+  local reviewer
+  local exercise_code
+  local exercise_name
+  local requested_at
+  local choice
+  local decision
+  local result
+  local -a requests
+
+  rows=$(evaluation_pending_requests) || return 1
+  [[ -n "$rows" ]] || return 0
+  mapfile -t requests <<<"$rows"
+  for encoded in "${requests[@]}"; do
+    IFS=$'\t' read -r request_id slot_id reviewer exercise_code \
+      exercise_name requested_at <<<"$encoded"
+    request_id=$(db_hex_decode "$request_id") || return 1
+    slot_id=$(db_hex_decode "$slot_id") || return 1
+    reviewer=$(db_hex_decode "$reviewer") || return 1
+    exercise_code=$(db_hex_decode "$exercise_code") || return 1
+    exercise_name=$(db_hex_decode "$exercise_name") || return 1
+    requested_at=$(db_hex_decode "$requested_at") || return 1
+    ui_panel "PEDIDO PARA AVALIAR · $exercise_code"
+    ui_wrap_text "Avaliador: $reviewer" "$(ui_width)" 2
+    ui_wrap_text "Exercício: $exercise_name" "$(ui_width)" 2
+    ui_wrap_text "Pedido recebido: $requested_at" "$(ui_width)" 2
+    ui_panel_end
+    if ! ui_menu_choice choice "PEDIDO $request_id" \
+      "1|Aceitar avaliação" \
+      "2|Recusar avaliação" \
+      "0|Decidir depois"; then
+      return 1
+    fi
+    case "$choice" in
+      1) decision="accept" ;;
+      2) decision="decline" ;;
+      *) continue ;;
+    esac
+    result=$(evaluation_respond_to_request "$request_id" "$decision") || return 1
+    if [[ "$decision" == "accept" ]]; then
+      ui_success "Pedido aceito. O avaliador já pode consultar a entrega."
+    else
+      ui_message "Pedido recusado. A entrega voltou à lista de avaliações."
+    fi
+    ui_pause
+  done
+}
+
 evaluation_review_prompt() {
   local slot_id="$1"
   local submission_info
@@ -116,6 +383,9 @@ evaluation_review_prompt() {
   local safe_submission_content
   local submitter
   local exercise_code
+  local exercise_name
+  local exercise_description
+  local exercise_statement
   local content_kind
   local commit_url
   local delivery_directory
@@ -128,20 +398,26 @@ evaluation_review_prompt() {
   fi
 
   submission_info=$(db_query "
-    SELECT slot.id || '|' || u.username || '|' || e.code || '|' ||
-           s.content_kind || '|' || COALESCE(s.commit_url, '') || '|' ||
-           COALESCE(s.delivery_directory, '')
+    SELECT hex(u.username) || '|' || hex(e.code) || '|' || hex(e.name) || '|' ||
+           hex(e.description) || '|' || hex(COALESCE(e.statement, '')) || '|' ||
+           hex(s.content_kind) || '|' || hex(COALESCE(s.commit_url, '')) || '|' ||
+           hex(COALESCE(s.delivery_directory, ''))
     FROM evaluation_slots slot
     JOIN submissions s ON s.id = slot.submission_id
     JOIN users u ON u.id = s.user_id
     JOIN exercises e ON e.id = s.exercise_id
+    JOIN evaluation_requests request
+      ON request.slot_id = slot.id
+     AND request.reviewer_id = $CURRENT_USER_ID
+     AND request.status = 'accepted'
     WHERE slot.id = $slot_id
       AND slot.status = 'open'
+      AND slot.accepted_by = $CURRENT_USER_ID
       AND s.user_id != $CURRENT_USER_ID;
   ") || return 1
 
   if [[ -z "$submission_info" ]]; then
-    ui_message "Esse slot não existe, já foi avaliado ou pertence a você."
+    ui_message "Esse pedido ainda não foi aceito, o slot está indisponível ou pertence a você."
     ui_pause
     return 1
   fi
@@ -153,17 +429,44 @@ evaluation_review_prompt() {
     WHERE slot.id = $slot_id AND s.content_kind = 'legacy';
   ") || return 1
   safe_submission_content=$(ui_sanitize "$submission_content") || return 1
-  IFS='|' read -r _ submitter exercise_code content_kind commit_url delivery_directory <<<"$submission_info"
+  local submitter_hex
+  local exercise_code_hex
+  local exercise_name_hex
+  local exercise_description_hex
+  local exercise_statement_hex
+  local content_kind_hex
+  local commit_url_hex
+  local delivery_directory_hex
+  IFS='|' read -r submitter_hex exercise_code_hex exercise_name_hex \
+    exercise_description_hex exercise_statement_hex content_kind_hex \
+    commit_url_hex delivery_directory_hex <<<"$submission_info"
+  submitter=$(db_hex_decode "$submitter_hex") || return 1
+  exercise_code=$(db_hex_decode "$exercise_code_hex") || return 1
+  exercise_name=$(db_hex_decode "$exercise_name_hex") || return 1
+  exercise_description=$(db_hex_decode "$exercise_description_hex") || return 1
+  exercise_statement=$(db_hex_decode "$exercise_statement_hex") || return 1
+  content_kind=$(db_hex_decode "$content_kind_hex") || return 1
+  commit_url=$(db_hex_decode "$commit_url_hex") || return 1
+  delivery_directory=$(db_hex_decode "$delivery_directory_hex") || return 1
 
   ui_screen_begin "AVALIAR SUBMISSÃO $slot_id"
-  ui_panel "SUBMISSÃO $slot_id"
+  ui_panel "$exercise_code — $exercise_name"
   ui_color_dim
-  ui_wrap_text "Usuário: $(ui_sanitize "$submitter") | Exercício: $(ui_sanitize "$exercise_code")" "$(ui_width)" 2
+  ui_wrap_text "Avaliado: $(ui_sanitize "$submitter")" "$(ui_width)" 2
+  ui_wrap_text "Avaliador: $(ui_sanitize "$CURRENT_USERNAME")" "$(ui_width)" 2
   ui_color_reset
+  [[ -n "$exercise_description" ]] && {
+    ui_section "DESCRIÇÃO"
+    ui_wrap_text "$exercise_description" "$(ui_width)" 2
+  }
+  [[ -n "$exercise_statement" ]] && {
+    ui_section "EXERCÍCIO"
+    ui_wrap_text "$exercise_statement" "$(ui_width)" 2
+  }
   printf '\n'
   if [[ "$content_kind" == "github_commit" ]]; then
     printf '  Referência da entrega:\n'
-    ui_wrap_text "Commit: $(ui_sanitize "$commit_url")" "$(ui_width)" 2
+    ui_wrap_text "GitHub: $(ui_sanitize "$commit_url")" "$(ui_width)" 2
     ui_wrap_text "Diretório: $(ui_sanitize "$delivery_directory")" "$(ui_width)" 2
     printf '\n'
   else
@@ -274,9 +577,15 @@ evaluations_menu() {
   local slots
   local slot
   local choice
+  local username
+  local code
+  local created_at
+  local request_status
+  local exercise_name
+  local response
+  local selected_slot
   local -a slot_list
   local -a menu_options
-  local index
 
   if [[ "${BROKER_MODE:-0}" == "1" ]]; then
     broker_evaluations_menu
@@ -288,14 +597,31 @@ evaluations_menu() {
   while true; do
     ui_screen_begin "AVALIAÇÕES ABERTAS"
 
+    evaluation_expire_pending_requests || {
+      nav_pop
+      return 1
+    }
     slots=$(db_query "
-      SELECT slot.id || '|' || u.username || '|' || e.code || '|' || slot.created_at
+      SELECT slot.id || '|' || hex(u.username) || '|' || hex(e.code) || '|' ||
+             hex(slot.created_at) || '|' || COALESCE(request.status, '') || '|' ||
+             hex(e.name)
       FROM evaluation_slots slot
       JOIN submissions s ON s.id = slot.submission_id
       JOIN users u ON u.id = s.user_id
       JOIN exercises e ON e.id = s.exercise_id
+      LEFT JOIN evaluation_requests request
+        ON request.slot_id = slot.id
+       AND request.reviewer_id = $CURRENT_USER_ID
+       AND request.status IN ('pending', 'accepted')
       WHERE slot.status = 'open'
         AND s.user_id != $CURRENT_USER_ID
+        AND (slot.accepted_by IS NULL OR slot.accepted_by = $CURRENT_USER_ID)
+        AND NOT EXISTS (
+          SELECT 1 FROM evaluation_requests declined
+          WHERE declined.slot_id = slot.id
+            AND declined.reviewer_id = $CURRENT_USER_ID
+            AND declined.status = 'declined'
+        )
       ORDER BY slot.created_at, slot.id;
     ") || {
       nav_pop
@@ -312,9 +638,18 @@ evaluations_menu() {
 
     mapfile -t slot_list <<<"$slots"
     menu_options=()
-    for index in "${!slot_list[@]}"; do
-      IFS='|' read -r slot username code created_at <<<"${slot_list[$index]}"
-      menu_options+=("$((index + 1))|Slot $slot - $username / $code (desde $created_at)")
+    for selected_slot in "${slot_list[@]}"; do
+      IFS='|' read -r slot username code created_at request_status exercise_name \
+        <<<"$selected_slot"
+      username=$(db_hex_decode "$username") || return 1
+      code=$(db_hex_decode "$code") || return 1
+      created_at=$(db_hex_decode "$created_at") || return 1
+      exercise_name=$(db_hex_decode "$exercise_name") || return 1
+      case "$request_status" in
+        pending) menu_options+=("$slot|$code - pedido aguardando aceite") ;;
+        accepted) menu_options+=("$slot|$code - $username aceitou seu pedido") ;;
+        *) menu_options+=("$slot|$username / $code - $exercise_name (desde $created_at)") ;;
+      esac
     done
     menu_options+=("0|Voltar")
     if ! ui_menu_choice choice "AVALIAÇÕES ABERTAS" "${menu_options[@]}"; then
@@ -326,15 +661,59 @@ evaluations_menu() {
       nav_pop
       return 0
     fi
-    if [[ ! "$choice" =~ ^[0-9]+$ ]] ||
-      ((choice < 1 || choice > ${#slot_list[@]})); then
+    if [[ ! "$choice" =~ ^[0-9]+$ ]]; then
       ui_error "Opção inválida."
       ui_pause
       continue
     fi
 
-    IFS='|' read -r slot _ <<<"${slot_list[$((choice - 1))]}"
-    evaluation_review_prompt "$slot"
+    selected_slot=""
+    for selected_slot in "${slot_list[@]}"; do
+      IFS='|' read -r slot username code created_at request_status exercise_name \
+        <<<"$selected_slot"
+      if [[ "$slot" == "$choice" ]]; then
+        break
+      fi
+    done
+    if [[ -z "$selected_slot" ]]; then
+      ui_error "Slot indisponível."
+      ui_pause
+      continue
+    fi
+    case "$request_status" in
+      pending)
+        if ui_menu_choice response "PEDIDO PARA $code" \
+          "1|Cancelar meu pedido" "0|Voltar"; then
+          if [[ "$response" == "1" ]]; then
+            evaluation_cancel_request "$slot" &&
+              ui_message "Pedido cancelado; o slot voltou à lista."
+            ui_pause
+          fi
+        fi
+        ;;
+      accepted)
+        ui_menu_choice response "SLOT $slot" \
+          "1|Avaliar submissão" "2|Cancelar meu pedido" "0|Voltar" || continue
+        case "$response" in
+          1) evaluation_review_prompt "$slot" ;;
+          2)
+            evaluation_cancel_request "$slot" &&
+              ui_message "Pedido cancelado; o slot voltou à lista."
+            ui_pause
+            ;;
+        esac
+        ;;
+      *)
+        if ui_confirm "Solicitar autorização para avaliar esta entrega?"; then
+          if evaluation_start_request "$slot"; then
+            ui_message "Pedido enviado. Você verá a entrega após o aceite do autor."
+            ui_pause
+          else
+            ui_pause
+          fi
+        fi
+        ;;
+    esac
   done
 }
 
@@ -454,6 +833,10 @@ submissions_menu() {
     ui_panel_end
   done <<<"$rows"
 
+  evaluation_handle_pending_requests || {
+    nav_pop
+    return 1
+  }
   nav_pop
   ui_pause
 }

@@ -56,7 +56,7 @@ class ProvisionParticipantTests(unittest.TestCase):
 
     def test_help_is_available_without_privileged_operations(self) -> None:
         result = subprocess.run(
-            ["/usr/bin/python3", str(SCRIPT_PATH), "--help"],
+            [str(ROOT_DIR / "cadastro"), "--help"],
             capture_output=True,
             text=True,
             check=False,
@@ -64,8 +64,19 @@ class ProvisionParticipantTests(unittest.TestCase):
         self.assertEqual(0, result.returncode)
         self.assertIn("nome da conta SIMPLE e Linux", result.stdout)
 
-    def test_provisions_locked_account_before_binding_and_enabling_access(self) -> None:
+    def test_version_is_available_without_privileged_operations(self) -> None:
+        result = subprocess.run(
+            [str(ROOT_DIR / "cadastro"), "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(0, result.returncode)
+        self.assertIn("cadastro ", result.stdout)
+
+    def test_creates_accounts_sets_temporary_password_and_binds_uid(self) -> None:
         events: list[tuple[str, object]] = []
+        captured_stdout = io.StringIO()
 
         def record_command(
             arguments: list[str], failure: str
@@ -75,6 +86,15 @@ class ProvisionParticipantTests(unittest.TestCase):
 
         def record_broker(method: str, **fields: object) -> dict[str, object]:
             events.append((method, fields))
+            if method == "admin.users.list":
+                return {"ok": True, "users": []}
+            if method == "auth.register":
+                return {
+                    "ok": True,
+                    "username": "learner_01",
+                    "is_admin": False,
+                    "user_id": 12,
+                }
             return {"ok": True}
 
         with (
@@ -91,7 +111,9 @@ class ProvisionParticipantTests(unittest.TestCase):
                 provision_participant, "authenticate_admin", return_value="token"
             ),
             patch.object(
-                provision_participant, "find_participant", return_value=12
+                provision_participant.secrets,
+                "token_urlsafe",
+                return_value="temporary-secret-password",
             ),
             patch.object(
                 provision_participant, "write_authorized_key", return_value=1012
@@ -102,7 +124,7 @@ class ProvisionParticipantTests(unittest.TestCase):
             patch.object(
                 provision_participant, "broker_request", side_effect=record_broker
             ),
-            patch("sys.stdout", new_callable=io.StringIO),
+            patch("sys.stdout", captured_stdout),
         ):
             self.assertEqual(0, provision_participant.main())
 
@@ -118,6 +140,14 @@ class ProvisionParticipantTests(unittest.TestCase):
             for index, event in enumerate(events)
             if event[0] == "admin.identity.bind"
         )
+        register_index = next(
+            index for index, event in enumerate(events) if event[0] == "auth.register"
+        )
+        reset_index = next(
+            index
+            for index, event in enumerate(events)
+            if event[0] == "admin.password.reset"
+        )
         usermod_index = next(
             index
             for index, event in enumerate(events)
@@ -126,10 +156,20 @@ class ProvisionParticipantTests(unittest.TestCase):
             and event[1][0] == "/usr/sbin/usermod"
         )
         self.assertLess(useradd_index, bind_index)
+        self.assertLess(register_index, reset_index)
+        self.assertLess(reset_index, bind_index)
         self.assertLess(bind_index, usermod_index)
         self.assertIn("--shell", events[useradd_index][1])
         self.assertIn("/usr/sbin/nologin", events[useradd_index][1])
         self.assertIn("simple-users", events[usermod_index][1])
+        registered = events[register_index][1]
+        reset = events[reset_index][1]
+        self.assertEqual("temporary-secret-password", registered["password"])
+        self.assertEqual("temporary-secret-password", reset["password"])
+        output = captured_stdout.getvalue()
+        self.assertIn("ssh learner_01@163.176.181.196", output)
+        self.assertIn("UID Linux: 1012", output)
+        self.assertIn("Senha provisória: temporary-secret-password", output)
 
 
 if __name__ == "__main__":

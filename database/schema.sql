@@ -68,6 +68,16 @@ CREATE TABLE IF NOT EXISTS evaluation_slots (
     )
 );
 
+CREATE TABLE IF NOT EXISTS evaluation_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slot_id INTEGER NOT NULL REFERENCES evaluation_slots(id),
+    reviewer_id INTEGER NOT NULL REFERENCES users(id),
+    status TEXT NOT NULL
+        CHECK (status IN ('pending', 'accepted', 'declined', 'expired', 'cancelled', 'completed')),
+    requested_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    responded_at DATETIME
+);
+
 CREATE TABLE IF NOT EXISTS reviews (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     slot_id INTEGER NOT NULL UNIQUE REFERENCES evaluation_slots(id),
@@ -142,6 +152,11 @@ CREATE INDEX IF NOT EXISTS idx_submissions_user_exercise
 
 CREATE INDEX IF NOT EXISTS idx_slots_status
     ON evaluation_slots(status, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_evaluation_requests_slot_status
+    ON evaluation_requests(slot_id, status);
+CREATE INDEX IF NOT EXISTS idx_evaluation_requests_reviewer_status
+    ON evaluation_requests(reviewer_id, status);
 
 CREATE INDEX IF NOT EXISTS idx_admin_adjustments_user
     ON admin_point_adjustments(user_id, created_at);

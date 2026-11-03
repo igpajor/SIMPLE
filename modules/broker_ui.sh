@@ -195,6 +195,7 @@ broker_progress_menu() {
   local amount
   local entry_type
   local details
+  local pending_request_count
 
   response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
     broker_request progress.get token) || return 1
@@ -207,6 +208,13 @@ broker_progress_menu() {
   printf '  Exercícios aprovados: %s\n' "$count"
   count=$(broker_response_field "$response" points) || return 1
   printf '  Saldo de pontos: %s\n\n' "$count"
+  pending_request_count=$(broker_response_field \
+    "$response" pending_evaluation_requests) || return 1
+  if ((pending_request_count > 0)); then
+    ui_message \
+      "Você tem $pending_request_count pedido(s) de avaliação aguardando sua decisão. Acesse Minhas entregas." \
+      warning
+  fi
   ui_section "ENTREGAS POR STATUS"
   for relation in pending approved rejected; do
     count=$(broker_response_nested_field "$response" submissions "$relation") || return 1
@@ -564,6 +572,7 @@ broker_submissions_menu() {
       ui_panel_end
     done
   fi
+  evaluation_handle_pending_requests || return 1
   ui_pause
 }
 
@@ -572,6 +581,9 @@ broker_evaluation_review_prompt() {
   local response
   local submitter
   local code
+  local name
+  local description
+  local statement
   local kind
   local content
   local commit_url
@@ -589,10 +601,22 @@ broker_evaluation_review_prompt() {
   fi
   submitter=$(broker_response_nested_field "$response" slot username) || return 1
   code=$(broker_response_nested_field "$response" slot exercise_code) || return 1
+  name=$(broker_response_nested_field "$response" slot exercise_name) || return 1
+  description=$(broker_response_nested_field "$response" slot description) || return 1
+  statement=$(broker_response_nested_field "$response" slot statement) || return 1
   kind=$(broker_response_nested_field "$response" slot content_kind) || return 1
   ui_screen_begin "AVALIAR SUBMISSÃO $slot_id"
-  ui_panel "SUBMISSÃO $slot_id"
-  ui_wrap_text "Usuário: $submitter | Exercício: $code" "$(ui_width)" 2
+  ui_panel "$code — $name"
+  ui_wrap_text "Avaliado: $submitter" "$(ui_width)" 2
+  ui_wrap_text "Avaliador: $CURRENT_USERNAME" "$(ui_width)" 2
+  if [[ -n "$description" ]]; then
+    ui_section "DESCRIÇÃO"
+    ui_wrap_text "$description" "$(ui_width)" 2
+  fi
+  if [[ -n "$statement" ]]; then
+    ui_section "EXERCÍCIO"
+    ui_wrap_text "$statement" "$(ui_width)" 2
+  fi
   if [[ "$kind" == "github_commit" ]]; then
     commit_url=$(broker_response_nested_field "$response" slot commit_url) || return 1
     directory=$(broker_response_nested_field "$response" slot delivery_directory) || return 1
@@ -702,9 +726,10 @@ broker_evaluations_menu() {
   local code
   local name
   local created_at
+  local request_id
+  local request_status
   local accepted
   local choice
-  local action_response
   local -a slot_rows
   local -a menu_options
 
@@ -729,18 +754,27 @@ broker_evaluations_menu() {
     fi
     menu_options=()
     for encoded in "${slot_rows[@]}"; do
-      IFS=$'\t' read -r slot_id username code name created_at accepted <<<"$encoded"
+      IFS=$'\t' read -r slot_id username code name created_at request_id \
+        request_status accepted <<<"$encoded"
       slot_id=$(db_hex_decode "$slot_id") || return 1
       username=$(db_hex_decode "$username") || return 1
       code=$(db_hex_decode "$code") || return 1
       name=$(db_hex_decode "$name") || return 1
       created_at=$(db_hex_decode "$created_at") || return 1
+      request_id=$(db_hex_decode "$request_id") || return 1
+      request_status=$(db_hex_decode "$request_status") || return 1
       accepted=$(db_hex_decode "$accepted") || return 1
-      if [[ "$accepted" == "1" ]]; then
-        menu_options+=("$slot_id|$username / $code - reservado por você")
-      else
-        menu_options+=("$slot_id|$username / $code - $name (desde $created_at)")
-      fi
+      case "$request_status" in
+        pending) menu_options+=("$slot_id|$code - pedido aguardando aceite") ;;
+        accepted) menu_options+=("$slot_id|$code - $username aceitou seu pedido") ;;
+        *)
+          if [[ "$accepted" == "1" ]]; then
+            menu_options+=("$slot_id|$username / $code - reservado por você")
+          else
+            menu_options+=("$slot_id|$username / $code - $name (desde $created_at)")
+          fi
+          ;;
+      esac
     done
     menu_options+=("0|Voltar")
     ui_menu_choice choice "AVALIAÇÕES ABERTAS" "${menu_options[@]}" || return 0
@@ -752,9 +786,13 @@ broker_evaluations_menu() {
     fi
     encoded=""
     for encoded in "${slot_rows[@]}"; do
-      IFS=$'\t' read -r slot_id username code name created_at accepted <<<"$encoded"
+      IFS=$'\t' read -r slot_id username code name created_at request_id \
+        request_status accepted <<<"$encoded"
       slot_id=$(db_hex_decode "$slot_id") || return 1
       if [[ "$slot_id" == "$choice" ]]; then
+        code=$(db_hex_decode "$code") || return 1
+        request_id=$(db_hex_decode "$request_id") || return 1
+        request_status=$(db_hex_decode "$request_status") || return 1
         accepted=$(db_hex_decode "$accepted") || return 1
         break
       fi
@@ -764,7 +802,17 @@ broker_evaluations_menu() {
       ui_pause
       continue
     fi
-    if [[ "$accepted" == "1" ]]; then
+    if [[ "$request_status" == "pending" ]]; then
+      ui_menu_choice choice "PEDIDO PARA $code" \
+        "1|Cancelar meu pedido" "0|Voltar" || continue
+      if [[ "$choice" == "1" ]]; then
+        evaluation_cancel_request "$slot_id" &&
+          ui_message "Pedido cancelado; o slot voltou à lista."
+        ui_pause
+      fi
+      continue
+    fi
+    if [[ "$request_status" == "accepted" || "$accepted" == "1" ]]; then
       ui_menu_choice choice "SLOT $slot_id" \
         "1|Avaliar submissão" \
         "2|Liberar minha reserva" \
@@ -774,9 +822,7 @@ broker_evaluations_menu() {
         broker_evaluation_review_prompt "$slot_id"
         ;;
       2)
-        action_response=$(printf '%s\0%s\0' "$CURRENT_SESSION_TOKEN" "$slot_id" |
-          broker_request evaluations.cancel token slot_id) || return 1
-        if broker_check_response "$action_response"; then
+        if evaluation_cancel_request "$slot_id"; then
           ui_message "Reserva liberada."
         fi
         ui_pause
@@ -786,13 +832,14 @@ broker_evaluations_menu() {
       esac
       continue
     fi
-    if ! ui_confirm "Reservar este slot para avaliar agora?"; then
+    if ! ui_confirm "Solicitar autorização para avaliar esta entrega?"; then
       continue
     fi
-    action_response=$(printf '%s\0%s\0' "$CURRENT_SESSION_TOKEN" "$choice" |
-      broker_request evaluations.accept token slot_id) || return 1
-    if broker_check_response "$action_response"; then
-      broker_evaluation_review_prompt "$choice"
+    if evaluation_start_request "$choice"; then
+      ui_message "Pedido enviado. Você verá a entrega após o aceite do autor."
+      ui_pause
+    else
+      ui_pause
     fi
   done
 }

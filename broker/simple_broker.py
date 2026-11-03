@@ -69,6 +69,8 @@ METHOD_FIELDS = {
     "submissions.list": ("token",),
     "submissions.get": ("token", "submission_id"),
     "evaluations.slots.list": ("token",),
+    "evaluations.requests.list": ("token",),
+    "evaluations.request.respond": ("token", "request_id", "decision"),
     "evaluations.slot.get": ("token", "slot_id"),
     "evaluations.review.get": ("token", "review_id"),
     "evaluations.accept": ("token", "slot_id"),
@@ -261,6 +263,9 @@ def _validate_database_connection(
             "id", "submission_id", "status", "reviewer_id", "accepted_by",
             "accepted_at", "created_at", "completed_at",
         },
+        "evaluation_requests": {
+            "id", "slot_id", "reviewer_id", "status", "requested_at", "responded_at",
+        },
         "reviews": {
             "id", "slot_id", "reviewer_id", "score", "feedback", "recipient_score",
             "recipient_feedback", "recipient_responded_at", "created_at",
@@ -283,6 +288,7 @@ def _validate_database_connection(
         for table, column, _definition in MIGRATIONS:
             required_columns.get(table, set()).discard(column)
         required_columns.pop("notifications", None)
+        required_columns.pop("evaluation_requests", None)
 
     for table, expected_columns in required_columns.items():
         columns = {
@@ -407,6 +413,23 @@ def initialize_database(
             }
             if column not in columns:
                 connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        connection.execute(
+            """
+            INSERT INTO evaluation_requests (
+                slot_id, reviewer_id, status, requested_at, responded_at
+            )
+            SELECT slot.id, slot.accepted_by,
+                   CASE WHEN slot.status = 'completed' THEN 'completed' ELSE 'accepted' END,
+                   COALESCE(slot.accepted_at, CURRENT_TIMESTAMP),
+                   COALESCE(slot.completed_at, slot.accepted_at, CURRENT_TIMESTAMP)
+            FROM evaluation_slots slot
+            WHERE slot.accepted_by IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM evaluation_requests request
+                  WHERE request.slot_id = slot.id
+              )
+            """
+        )
         for statement in catalog_statements:
             connection.execute(statement)
         _validate_database_connection(connection)
@@ -897,6 +920,40 @@ class Broker:
         if connection.total_changes == 0:
             raise ValueError(operation)
 
+    @staticmethod
+    def _expire_evaluation_requests(connection: sqlite3.Connection) -> None:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            """
+            UPDATE evaluation_requests
+            SET status = 'expired', responded_at = CURRENT_TIMESTAMP
+            WHERE status = 'pending'
+              AND requested_at <= datetime('now', '-24 hours')
+            """
+        )
+        connection.execute(
+            """
+            UPDATE evaluation_slots
+            SET accepted_by = NULL, accepted_at = NULL
+            WHERE status = 'open'
+              AND EXISTS (
+                  SELECT 1 FROM evaluation_requests request
+                  WHERE request.slot_id = evaluation_slots.id
+                    AND request.reviewer_id = evaluation_slots.accepted_by
+                    AND request.status = 'expired'
+                    AND request.responded_at IS NOT NULL
+                    AND request.requested_at <= datetime('now', '-24 hours')
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM evaluation_requests active
+                  WHERE active.slot_id = evaluation_slots.id
+                    AND active.reviewer_id = evaluation_slots.accepted_by
+                    AND active.status IN ('pending', 'accepted')
+              )
+            """
+        )
+        connection.commit()
+
     def dispatch(self, request: Any) -> dict[str, Any]:
         if not isinstance(request, dict):
             raise ValueError("Requisição inválida.")
@@ -954,6 +1011,18 @@ class Broker:
                     raise ValueError("Usuário não encontrado.")
                 if password_status["must_change_password"]:
                     raise ValueError("Troque a senha temporária antes de continuar.")
+            if method in {
+                "evaluations.slots.list",
+                "evaluations.requests.list",
+                "evaluations.slot.get",
+                "evaluations.request.respond",
+                "evaluations.accept",
+                "evaluations.cancel",
+                "evaluations.review.submit",
+                "notifications.count",
+                "progress.get",
+            }:
+                self._expire_evaluation_requests(connection)
             if method == "auth.change_password":
                 password = request["password"]
                 if not isinstance(password, str) or len(password) < 8:
@@ -1161,39 +1230,124 @@ class Broker:
                     """
                     SELECT slot.id, u.username, e.code AS exercise_code,
                            e.name AS exercise_name, slot.created_at,
+                           COALESCE(request.id, '') AS request_id,
+                           COALESCE(request.status, '') AS request_status,
                            CASE WHEN slot.accepted_by = ? THEN 1 ELSE 0 END AS accepted_by_me
                     FROM evaluation_slots slot
                     JOIN submissions s ON s.id = slot.submission_id
                     JOIN users u ON u.id = s.user_id
                     JOIN exercises e ON e.id = s.exercise_id
+                    LEFT JOIN evaluation_requests request
+                      ON request.slot_id = slot.id
+                     AND request.reviewer_id = ?
+                     AND request.status IN ('pending', 'accepted')
                     WHERE slot.status = 'open' AND s.user_id != ?
                       AND (slot.accepted_by IS NULL OR slot.accepted_by = ?)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM evaluation_requests declined
+                          WHERE declined.slot_id = slot.id
+                            AND declined.reviewer_id = ?
+                            AND declined.status = 'declined'
+                      )
                     ORDER BY slot.created_at, slot.id
                     """,
-                    (user_id, user_id, user_id),
+                    (user_id, user_id, user_id, user_id, user_id),
                 ).fetchall()
                 return {"ok": True, "slots": [dict(row) for row in rows]}
+
+            if method == "evaluations.requests.list":
+                rows = connection.execute(
+                    """
+                    SELECT request.id AS request_id, slot.id AS slot_id,
+                           evaluator.username AS reviewer,
+                           e.code AS exercise_code, e.name AS exercise_name,
+                           request.requested_at
+                    FROM evaluation_requests request
+                    JOIN evaluation_slots slot ON slot.id = request.slot_id
+                    JOIN submissions s ON s.id = slot.submission_id
+                    JOIN users evaluator ON evaluator.id = request.reviewer_id
+                    JOIN exercises e ON e.id = s.exercise_id
+                    WHERE s.user_id = ? AND slot.status = 'open'
+                      AND slot.accepted_by = request.reviewer_id
+                      AND request.status = 'pending'
+                    ORDER BY request.requested_at, request.id
+                    """,
+                    (user_id,),
+                ).fetchall()
+                return {"ok": True, "requests": [dict(row) for row in rows]}
+
+            if method == "evaluations.request.respond":
+                request_id = self._integer(request["request_id"], "Pedido")
+                decision = request["decision"]
+                if not isinstance(decision, str) or decision not in {"accept", "decline"}:
+                    raise ValueError("Decisão de pedido inválida.")
+                connection.execute("BEGIN IMMEDIATE")
+                pending = connection.execute(
+                    """
+                    SELECT request.slot_id, request.reviewer_id
+                    FROM evaluation_requests request
+                    JOIN evaluation_slots slot ON slot.id = request.slot_id
+                    JOIN submissions s ON s.id = slot.submission_id
+                    WHERE request.id = ? AND request.status = 'pending'
+                      AND slot.status = 'open' AND s.user_id = ?
+                      AND slot.accepted_by = request.reviewer_id
+                    """,
+                    (request_id, user_id),
+                ).fetchone()
+                if pending is None:
+                    raise ValueError("Pedido expirado ou indisponível.")
+                next_status = "accepted" if decision == "accept" else "declined"
+                updated = connection.execute(
+                    """
+                    UPDATE evaluation_requests
+                    SET status = ?, responded_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND status = 'pending'
+                    """,
+                    (next_status, request_id),
+                )
+                if updated.rowcount != 1:
+                    raise ValueError("Pedido expirado ou indisponível.")
+                if decision == "decline":
+                    connection.execute(
+                        """
+                        UPDATE evaluation_slots
+                        SET accepted_by = NULL, accepted_at = NULL
+                        WHERE id = ? AND status = 'open' AND accepted_by = ?
+                        """,
+                        (pending["slot_id"], pending["reviewer_id"]),
+                    )
+                connection.commit()
+                return {"ok": True, "status": next_status}
 
             if method == "evaluations.slot.get":
                 slot_id = self._integer(request["slot_id"], "Slot")
                 row = connection.execute(
                     """
                     SELECT slot.id, u.username, e.code AS exercise_code,
-                           e.name AS exercise_name, s.content_kind, s.content,
+                           e.name AS exercise_name, e.description, e.statement,
+                           s.content_kind, s.content,
                            s.commit_url, s.delivery_directory, slot.accepted_by
                     FROM evaluation_slots slot
                     JOIN submissions s ON s.id = slot.submission_id
                     JOIN users u ON u.id = s.user_id
                     JOIN exercises e ON e.id = s.exercise_id
+                    JOIN evaluation_requests request
+                      ON request.slot_id = slot.id
+                     AND request.reviewer_id = slot.accepted_by
+                     AND request.status = 'accepted'
                     WHERE slot.id = ? AND slot.status = 'open'
                       AND s.user_id != ?
-                      AND (slot.accepted_by IS NULL OR slot.accepted_by = ?)
+                      AND slot.accepted_by = ?
                     """,
                     (slot_id, user_id, user_id),
                 ).fetchone()
                 if row is None:
-                    raise ValueError("Slot indisponível, reservado por outro usuário ou próprio.")
-                return {"ok": True, "slot": dict(row)}
+                    raise ValueError("O autor ainda não aceitou este pedido ou o slot está indisponível.")
+                slot = dict(row)
+                exercise = self._exercise(connection, slot["exercise_code"])
+                slot["description"] = exercise["description"]
+                slot["statement"] = exercise["statement"]
+                return {"ok": True, "slot": slot}
 
             if method == "evaluations.review.get":
                 review_id = self._integer(request["review_id"], "Avaliação")
@@ -1218,36 +1372,88 @@ class Broker:
             if method == "evaluations.accept":
                 slot_id = self._integer(request["slot_id"], "Slot")
                 connection.execute("BEGIN IMMEDIATE")
-                updated = connection.execute(
+                declined = connection.execute(
                     """
-                    UPDATE evaluation_slots
-                    SET accepted_by = ?, accepted_at = CURRENT_TIMESTAMP
-                    WHERE id = ? AND status = 'open'
-                      AND accepted_by IS NULL
-                      AND submission_id IN (
-                          SELECT id FROM submissions WHERE user_id != ?
-                      )
+                    SELECT 1 FROM evaluation_requests
+                    WHERE slot_id = ? AND reviewer_id = ? AND status = 'declined'
+                    LIMIT 1
                     """,
-                    (user_id, slot_id, user_id),
-                )
-                if updated.rowcount != 1:
-                    existing = connection.execute(
+                    (slot_id, user_id),
+                ).fetchone()
+                if declined is not None:
+                    raise ValueError("O autor recusou um pedido anterior para esta entrega.")
+                existing = connection.execute(
+                    """
+                    SELECT slot.accepted_by, request.id AS request_id,
+                           request.status AS request_status
+                    FROM evaluation_slots slot
+                    LEFT JOIN evaluation_requests request
+                      ON request.slot_id = slot.id
+                     AND request.reviewer_id = ?
+                     AND request.status IN ('pending', 'accepted')
+                    JOIN submissions s ON s.id = slot.submission_id
+                    WHERE slot.id = ? AND slot.status = 'open'
+                      AND s.user_id != ?
+                      AND (slot.accepted_by IS NULL OR slot.accepted_by = ?)
+                    """,
+                    (user_id, slot_id, user_id, user_id),
+                ).fetchone()
+                if existing is None:
+                    raise ValueError("Slot indisponível ou já reservado por outro avaliador.")
+                if existing["request_id"] is None:
+                    inserted = connection.execute(
                         """
-                        SELECT accepted_by FROM evaluation_slots
-                        WHERE id = ? AND status = 'open'
-                          AND submission_id IN (
-                              SELECT id FROM submissions WHERE user_id != ?
-                          )
+                        INSERT INTO evaluation_requests (slot_id, reviewer_id, status)
+                        VALUES (?, ?, 'pending')
                         """,
                         (slot_id, user_id),
-                    ).fetchone()
-                    if existing is None or existing["accepted_by"] != user_id:
+                    )
+                    updated = connection.execute(
+                        """
+                        UPDATE evaluation_slots
+                        SET accepted_by = ?, accepted_at = CURRENT_TIMESTAMP
+                        WHERE id = ? AND status = 'open'
+                          AND (accepted_by IS NULL OR accepted_by = ?)
+                        """,
+                        (user_id, slot_id, user_id),
+                    )
+                    if updated.rowcount != 1:
                         raise ValueError("Slot indisponível ou já reservado por outro avaliador.")
+                    request_id = inserted.lastrowid
+                    request_status = "pending"
+                else:
+                    request_id = existing["request_id"]
+                    request_status = existing["request_status"]
                 connection.commit()
-                return {"ok": True, "slot_id": slot_id}
+                return {
+                    "ok": True,
+                    "slot_id": slot_id,
+                    "request_id": request_id,
+                    "status": request_status,
+                }
 
             if method == "evaluations.cancel":
                 slot_id = self._integer(request["slot_id"], "Slot")
+                connection.execute("BEGIN IMMEDIATE")
+                active_request = connection.execute(
+                    """
+                    SELECT id FROM evaluation_requests
+                    WHERE slot_id = ? AND reviewer_id = ?
+                      AND status IN ('pending', 'accepted')
+                    ORDER BY id DESC LIMIT 1
+                    """,
+                    (slot_id, user_id),
+                ).fetchone()
+                if active_request is None:
+                    raise ValueError("Não há pedido seu que possa ser cancelado.")
+                connection.execute(
+                    """
+                    UPDATE evaluation_requests
+                    SET status = 'cancelled', responded_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (active_request["id"],),
+                )
                 updated = connection.execute(
                     """
                     UPDATE evaluation_slots
@@ -1257,7 +1463,8 @@ class Broker:
                     (slot_id, user_id),
                 )
                 if updated.rowcount != 1:
-                    raise ValueError("Não há uma reserva sua que possa ser cancelada.")
+                    raise ValueError("O pedido não pode mais ser cancelado.")
+                connection.commit()
                 return {"ok": True}
 
             if method == "evaluations.review.submit":
@@ -1273,6 +1480,10 @@ class Broker:
                     """
                     SELECT slot.id FROM evaluation_slots slot
                     JOIN submissions s ON s.id = slot.submission_id
+                    JOIN evaluation_requests request
+                      ON request.slot_id = slot.id
+                     AND request.reviewer_id = slot.accepted_by
+                     AND request.status = 'accepted'
                     WHERE slot.id = ? AND slot.status = 'open'
                       AND slot.accepted_by = ? AND s.user_id != ?
                     """,
@@ -1305,6 +1516,14 @@ class Broker:
                     VALUES (?, 'review_received', ?)
                     """,
                     (owner["user_id"], review.lastrowid),
+                )
+                connection.execute(
+                    """
+                    UPDATE evaluation_requests
+                    SET status = 'completed', responded_at = CURRENT_TIMESTAMP
+                    WHERE slot_id = ? AND reviewer_id = ? AND status = 'accepted'
+                    """,
+                    (slot_id, user_id),
                 )
                 connection.commit()
                 return {
@@ -1412,6 +1631,17 @@ class Broker:
                     "pending_review_responses": self._pending_review_responses(
                         connection, user_id
                     ),
+                    "pending_evaluation_requests": connection.execute(
+                        """
+                        SELECT COUNT(*) FROM evaluation_requests request
+                        JOIN evaluation_slots slot ON slot.id = request.slot_id
+                        JOIN submissions s ON s.id = slot.submission_id
+                        WHERE s.user_id = ? AND slot.status = 'open'
+                          AND slot.accepted_by = request.reviewer_id
+                          AND request.status = 'pending'
+                        """,
+                        (user_id,),
+                    ).fetchone()[0],
                     "notifications": self._notification_history(connection, user_id),
                     "points_history": self._point_history(connection, user_id),
                 }
@@ -1419,10 +1649,17 @@ class Broker:
             if method == "notifications.count":
                 count = connection.execute(
                     """
-                    SELECT COUNT(*) FROM notifications
-                    WHERE user_id = ? AND read_at IS NULL
+                    SELECT
+                      (SELECT COUNT(*) FROM notifications
+                       WHERE user_id = ? AND read_at IS NULL) +
+                      (SELECT COUNT(*) FROM evaluation_requests request
+                       JOIN evaluation_slots slot ON slot.id = request.slot_id
+                       JOIN submissions s ON s.id = slot.submission_id
+                       WHERE s.user_id = ? AND slot.status = 'open'
+                         AND slot.accepted_by = request.reviewer_id
+                         AND request.status = 'pending')
                     """,
-                    (user_id,),
+                    (user_id, user_id),
                 ).fetchone()[0]
                 return {"ok": True, "count": count}
 

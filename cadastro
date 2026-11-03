@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PROVISIONER="$SCRIPT_DIR/deploy/provision-participant.py"
+
+for argument in "$@"; do
+  case "$argument" in
+    -h|--help|--version)
+      exec /usr/bin/python3 "$PROVISIONER" "$@"
+      ;;
+  esac
+done
+
+if [[ "$EUID" -eq 0 ]]; then
+  exec /usr/bin/python3 "$PROVISIONER" "$@"
+fi
+
+exec sudo /usr/bin/python3 "$PROVISIONER" "$@"

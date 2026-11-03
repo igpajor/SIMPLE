@@ -10,9 +10,19 @@ progress_unread_notification_count() {
     return $?
   fi
 
+  evaluation_expire_pending_requests || return 1
   db_query "
-    SELECT COUNT(*) FROM notifications
-    WHERE user_id = $CURRENT_USER_ID AND read_at IS NULL;
+    SELECT
+      (SELECT COUNT(*) FROM notifications
+       WHERE user_id = $CURRENT_USER_ID AND read_at IS NULL) +
+      (SELECT COUNT(*)
+       FROM evaluation_requests request
+       JOIN evaluation_slots slot ON slot.id = request.slot_id
+       JOIN submissions submission ON submission.id = slot.submission_id
+       WHERE submission.user_id = $CURRENT_USER_ID
+         AND slot.status = 'open'
+         AND slot.accepted_by = request.reviewer_id
+         AND request.status = 'pending');
   "
 }
 
@@ -54,6 +64,7 @@ progress_menu() {
   local response_at
   local submitter
   local relation
+  local pending_request_count
   local notification_type
   local notification_user
   local notification_score
@@ -82,6 +93,17 @@ progress_menu() {
     ORDER BY e.code;
   ") || return 1
   balance=$(points_balance "$CURRENT_USER_ID") || return 1
+  evaluation_expire_pending_requests || return 1
+  pending_request_count=$(db_query "
+    SELECT COUNT(*)
+    FROM evaluation_requests request
+    JOIN evaluation_slots slot ON slot.id = request.slot_id
+    JOIN submissions submission ON submission.id = slot.submission_id
+    WHERE submission.user_id = $CURRENT_USER_ID
+      AND slot.status = 'open'
+      AND slot.accepted_by = request.reviewer_id
+      AND request.status = 'pending';
+  ") || return 1
   history=$(db_query "
     SELECT hex(e.code) || '|' || r.score || '|' || hex(r.feedback) || '|' ||
            hex(r.created_at) || '|' || hex(reviewer.username) || '|' ||
@@ -138,6 +160,11 @@ progress_menu() {
   ui_screen_begin "MEU PROGRESSO"
   printf '  Exercícios aprovados: %s\n' "$completed_count"
   printf '  Saldo de pontos: %s\n\n' "$balance"
+  if ((pending_request_count > 0)); then
+    ui_message \
+      "Você tem $pending_request_count pedido(s) de avaliação aguardando sua decisão. Acesse Minhas entregas." \
+      warning
+  fi
   ui_section "NOTIFICAÇÕES"
   if [[ -z "$notifications" ]]; then
     ui_empty_state "Nenhuma notificação nova."

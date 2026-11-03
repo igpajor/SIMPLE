@@ -11,6 +11,7 @@ import json
 import os
 import pwd
 import re
+import secrets
 import socket
 import stat
 import subprocess
@@ -21,6 +22,8 @@ from typing import Any
 
 
 BROKER_SOCKET = Path("/run/simple-private/broker.sock")
+SSH_HOST = "163.176.181.196"
+VERSION = "0.1.0"
 USERNAME_PATTERN = re.compile(r"^[a-z_][a-z0-9_-]{2,31}$")
 SSH_KEY_TYPES = {
     "ssh-ed25519",
@@ -208,40 +211,44 @@ def authenticate_admin() -> str:
     return token
 
 
-def find_participant(token: str, username: str) -> int:
+def ensure_participant_does_not_exist(token: str, username: str) -> None:
     response = require_ok(broker_request("admin.users.list", token=token))
     users = response.get("users")
     if not isinstance(users, list):
         raise ProvisionError("Lista de contas inesperada retornada pelo Broker.")
-    matches = [
+    if any(
         user
         for user in users
-        if isinstance(user, dict) and user.get("username") == username
-    ]
-    if len(matches) != 1:
-        raise ProvisionError(
-            f"A conta SIMPLE '{username}' não foi encontrada de forma única."
-        )
-    user = matches[0]
-    if user.get("is_admin") or not user.get("is_active"):
-        raise ProvisionError("A conta precisa ser participante ativa, não administradora.")
-    user_id = user.get("id")
-    if isinstance(user_id, bool) or not isinstance(user_id, int) or user_id < 1:
-        raise ProvisionError("ID inválido retornado para a conta SIMPLE.")
-
-    identities_response = require_ok(
-        broker_request("admin.identity.list", token=token)
-    )
-    identities = identities_response.get("identities")
-    if not isinstance(identities, list):
-        raise ProvisionError("Lista de vínculos inesperada retornada pelo Broker.")
-    if any(
-        isinstance(identity, dict)
-        and identity.get("is_active")
-        and identity.get("user_id") == user_id
-        for identity in identities
+        if isinstance(user, dict)
+        and isinstance(user.get("username"), str)
+        and user["username"].casefold() == username.casefold()
     ):
-        raise ProvisionError(f"A conta SIMPLE '{username}' já possui vínculo UID ativo.")
+        raise ProvisionError(f"A conta SIMPLE '{username}' já existe.")
+
+
+def create_participant(token: str, username: str, password: str) -> int:
+    response = require_ok(
+        broker_request("auth.register", username=username, password=password)
+    )
+    user_id = response.get("user_id")
+    if isinstance(user_id, bool) or not isinstance(user_id, int) or user_id < 1:
+        raise ProvisionError("ID inválido retornado para a nova conta SIMPLE.")
+    if response.get("username") != username or response.get("is_admin") is not False:
+        raise ProvisionError("A resposta do Broker não corresponde à conta participante.")
+    try:
+        require_ok(
+            broker_request(
+                "admin.password.reset",
+                token=token,
+                user_id=user_id,
+                password=password,
+            )
+        )
+    except ProvisionError as error:
+        raise ProvisionError(
+            f"A conta SIMPLE foi criada, mas não foi possível configurar a troca "
+            f"obrigatória da senha: {error}"
+        ) from error
     return user_id
 
 
@@ -285,16 +292,31 @@ def write_authorized_key(username: str, public_key: str) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
+        prog="cadastro",
         description=(
-            "Cria uma conta SSH restrita e vincula ao usuário SIMPLE existente."
+            "Cria as contas SIMPLE e SSH restrita de um participante."
         )
     )
-    parser.add_argument("username", help="nome da conta SIMPLE e Linux (minúsculas)")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"cadastro {VERSION}",
+    )
+    parser.add_argument(
+        "username",
+        nargs="?",
+        help="nome da conta SIMPLE e Linux (minúsculas)",
+    )
     args = parser.parse_args()
 
+    if not args.username:
+        parser.error("informe o nome do participante")
     if os.geteuid() != 0:
         raise ProvisionError("Execute com sudo/root.")
     validate_username(args.username)
+    print("SIMPLE :: CADASTRO DE PARTICIPANTE\n")
+    print(f"Participante: {args.username}\n")
+    print("[OK] Validação do nome")
     validate_ssh_configuration("simple-broker")
     validate_services_and_groups()
     try:
@@ -307,7 +329,8 @@ def main() -> int:
     public_key = validate_public_key(input("Cole a chave pública SSH: "))
     verify_public_key(public_key)
     token = authenticate_admin()
-    user_id = find_participant(token, args.username)
+    ensure_participant_does_not_exist(token, args.username)
+    temporary_password = secrets.token_urlsafe(24)
 
     run_command(
         [
@@ -320,11 +343,17 @@ def main() -> int:
         ],
         f"Não foi possível criar a conta Linux '{args.username}'",
     )
+    print("[OK] Conta Linux criada")
     run_command(
         ["/usr/bin/passwd", "--lock", args.username],
         f"Não foi possível bloquear senha Linux de '{args.username}'",
     )
     linux_uid = write_authorized_key(args.username, public_key)
+
+    user_id = create_participant(token, args.username, temporary_password)
+    print("[OK] Conta SIMPLE criada")
+    print("[OK] Senha provisória configurada")
+    print("[OK] Troca obrigatória de senha habilitada")
 
     try:
         require_ok(
@@ -382,11 +411,23 @@ def main() -> int:
             f"{error} O vínculo foi revogado e a conta voltou ao estado bloqueado."
         ) from error
 
-    require_ok(broker_request("auth.logout", token=token))
-    print(
-        f"Participante '{args.username}' provisionado. UID Linux: {linux_uid}; "
-        f"ID SIMPLE: {user_id}. A chave está instalada e o acesso SSH restrito ativo."
-    )
+    print("[OK] Acesso SSH configurado")
+    print("[OK] Vínculo UID → SIMPLE confirmado")
+    print("\nCadastro concluído.\n")
+    print(f"Usuário SSH: ssh {args.username}@{SSH_HOST}")
+    print(f"Usuário SIMPLE: {args.username}")
+    print(f"UID Linux: {linux_uid}")
+    print(f"\nSenha provisória: {temporary_password}")
+    print("\nAtenção: entregue a senha ao participante por um canal seguro.")
+    print("A senha deverá ser redefinida no primeiro acesso.")
+    try:
+        require_ok(broker_request("auth.logout", token=token))
+    except ProvisionError as error:
+        raise ProvisionError(
+            f"Cadastro concluído, mas não foi possível encerrar a sessão "
+            f"administrativa: {error}"
+        ) from error
+    del temporary_password
     return 0
 
 

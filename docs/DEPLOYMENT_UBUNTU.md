@@ -191,8 +191,8 @@ sudo -u simple-broker /usr/bin/python3 \
 sudo systemctl start simple-broker.service simple-proxy.service
 ```
 
-Para administrar pelo socket privado, abra o cliente Broker numa sessão
-administrativa no servidor:
+Para tarefas administrativas que não sejam cadastro de participantes, abra o
+cliente Broker numa sessão administrativa no servidor:
 
 ```bash
 sudo env SIMPLE_MODE=broker \
@@ -200,37 +200,47 @@ sudo env SIMPLE_MODE=broker \
   /usr/bin/bash /opt/simple/simple.sh
 ```
 
-No cliente, use **Criar Conta** para provisionar a conta SIMPLE do participante.
-O nome deve ter de 3 a 32 caracteres minúsculos, começar com letra ou
-sublinhado e conter somente letras, números, hífen ou sublinhado. Ele será
-também o nome da conta Linux. O socket privado não deve ser disponibilizado aos
-participantes.
+O socket privado não deve ser disponibilizado aos participantes. Para criar
+uma conta de participante, use o comando `cadastro` abaixo; não é necessário
+criar previamente a conta SIMPLE pela interface.
 
-### Provisionar um participante
+### Cadastrar um participante
 
-Depois que a conta SIMPLE existir e as restrições SSH estiverem instaladas,
-validadas e recarregadas, um único comando cria a conta Linux, instala uma chave
-pública, vincula o UID à conta SIMPLE pelo Broker e só então habilita o grupo
-restrito. Execute como `ubuntu`; o comando pede a senha do administrador SIMPLE
-em prompt oculto (além da senha Unix de `sudo`, se necessária):
+Com os serviços ativos e as restrições SSH instaladas, validadas e recarregadas,
+execute como `ubuntu`:
 
 ```bash
-sudo /usr/bin/python3 /opt/simple/deploy/provision-participant.py NOME
+cd /opt/simple
+./cadastro NOME
 ```
 
-Cole a chave pública OpenSSH do participante quando solicitado e autentique-se
-com uma conta SIMPLE administradora. O comando recusa nomes/contas inválidos,
-contas Linux já existentes, contas SIMPLE inativas ou administrativas e SSH
-sem as restrições esperadas. A senha Linux fica bloqueada; a conta não recebe
-`sudo`. O participante usa sua chave para SSH e a senha SIMPLE para entrar na
-CLI. Cada pessoa precisa de sua própria conta e chave pública; nunca copie ou
-compartilhe chaves privadas.
+O comando solicita a chave pública OpenSSH do participante e as credenciais de
+uma conta SIMPLE administradora (a senha é lida em prompt oculto). Ele cria a
+conta Linux, cria a conta SIMPLE, gera uma senha SIMPLE provisória e configura
+a troca obrigatória no primeiro login. Em seguida, instala a chave, vincula o
+UID Linux à conta SIMPLE e só então habilita o grupo restrito. O comando SSH
+mostrado ao final usa o endereço padrão `163.176.181.196`. As opções de ajuda e
+versão não exigem privilégios:
+
+```bash
+./cadastro --help
+./cadastro --version
+```
+
+A senha Linux permanece bloqueada: o participante entra no SSH usando sua chave
+privada e usa a senha SIMPLE provisória para autenticar na aplicação. Compartilhe
+essa senha somente por um canal seguro; ela será exibida uma única vez no
+terminal do administrador e deverá ser redefinida no primeiro acesso. Cada
+pessoa precisa de sua própria chave pública; nunca copie ou compartilhe chaves
+privadas. O script recusa nomes já existentes no Linux ou no SIMPLE, além de
+SSH sem as restrições esperadas. Nenhuma conta participante recebe `sudo`.
 
 Se uma etapa falhar depois da criação do usuário, o script mantém a conta Linux
 com `/usr/sbin/nologin` e sem o grupo `simple-users`, ou revoga o vínculo caso
-a habilitação final falhe. Revise a mensagem e o estado antes de tentar
-novamente; não apague um usuário ou vínculo manualmente sem verificar se a
-provisão já chegou ao Broker.
+a habilitação final falhe. A conta SIMPLE criada durante uma falha parcial pode
+permanecer sem vínculo ativo. Revise a mensagem e o estado das duas contas antes
+de tentar novamente; não apague um usuário ou vínculo manualmente sem verificar
+se a provisão já chegou ao Broker.
 
 ### Instalar e validar as restrições SSH
 

@@ -244,6 +244,10 @@ assert_equals "1" "$(db_query "SELECT COUNT(*) FROM users WHERE password_hash !=
 auth_register bob 'outra-senha-segura'
 bob_id="$CURRENT_USER_ID"
 assert_equals "1" "$(points_balance "$bob_id")" "cada conta recebe crédito inicial"
+auth_register carol 'senha-segura-carol'
+carol_id="$CURRENT_USER_ID"
+auth_register dave 'senha-segura-dave'
+dave_id="$CURRENT_USER_ID"
 if admin_create_exercise "$bob_id" >/dev/null 2>&1; then
   fail "conta sem papel administrativo não pode cadastrar exercícios"
 fi
@@ -426,6 +430,27 @@ if [[ "$submission_output" != *"aguardando avaliação"* ]] ||
   [[ "$submission_output" != *"$commit_url"* ]]; then
   fail "participante consegue acompanhar a própria entrega"
 fi
+submission_help_output=$(
+  (
+    ui_read_line() {
+      local variable_name="$1"
+      if [[ "$variable_name" == "commit_url" ]]; then
+        printf -v "$variable_name" '%s' \
+          "https://github.com/acme/simple/commit/abcdef0123456789"
+      else
+        printf -v "$variable_name" '%s' "ex00"
+      fi
+    }
+    ui_confirm() { return 1; }
+    exercise_submit_prompt TEST-01
+  )
+)
+if [[ "$submission_help_output" != *"Commits/History"* ||
+  "$submission_help_output" != *"/commit/SHA"* ||
+  "$submission_help_output" != *"/blob/"* ||
+  "$submission_help_output" != *"ex00"* ]]; then
+  fail "envio da solução explica como localizar o commit e indicar a pasta"
+fi
 if exercise_submit TEST-01 "https://example.com/acme/simple/commit/abcdef0123456789" "ex00" \
   >/dev/null 2>&1; then
   fail "submissão rejeita host que não seja GitHub"
@@ -434,10 +459,64 @@ if exercise_submit TEST-01 "$commit_url" "../fora-do-repo" >/dev/null 2>&1; then
   fail "submissão rejeita diretório fora da raiz do repositório"
 fi
 
+CURRENT_USER_ID="$carol_id"
+exercise_submit TEST-01 "$commit_url" "ex00"
+carol_slot=$(db_query "
+  SELECT slot.id FROM evaluation_slots slot
+  JOIN submissions submission ON submission.id = slot.submission_id
+  WHERE submission.user_id = $carol_id;
+")
+CURRENT_USER_ID="$bob_id"
+evaluation_start_request "$carol_slot"
+carol_request_id=$(db_query "
+  SELECT id FROM evaluation_requests
+  WHERE slot_id = $carol_slot AND reviewer_id = $bob_id AND status = 'pending';
+")
+CURRENT_USER_ID="$carol_id"
+evaluation_respond_to_request "$carol_request_id" decline
+assert_equals "declined" "$(db_query "
+  SELECT status FROM evaluation_requests WHERE id = $carol_request_id;
+")" "autora consegue recusar um pedido de avaliação"
+assert_equals "" "$(db_query "
+  SELECT accepted_by FROM evaluation_slots WHERE id = $carol_slot;
+")" "recusa devolve o slot à lista de espera"
+CURRENT_USER_ID="$bob_id"
+if evaluation_start_request "$carol_slot" >/dev/null 2>&1; then
+  fail "avaliador não repete um pedido recusado para a mesma entrega"
+fi
+
+CURRENT_USER_ID="$dave_id"
+exercise_submit TEST-01 "$commit_url" "ex00"
+dave_slot=$(db_query "
+  SELECT slot.id FROM evaluation_slots slot
+  JOIN submissions submission ON submission.id = slot.submission_id
+  WHERE submission.user_id = $dave_id;
+")
+CURRENT_USER_ID="$bob_id"
+evaluation_start_request "$dave_slot"
+evaluation_cancel_request "$dave_slot"
+assert_equals "cancelled" "$(db_query "
+  SELECT status FROM evaluation_requests
+  WHERE slot_id = $dave_slot AND reviewer_id = $bob_id;
+")" "avaliador consegue cancelar o pedido antes da avaliação"
+assert_equals "" "$(db_query "
+  SELECT accepted_by FROM evaluation_slots WHERE id = $dave_slot;
+")" "cancelamento devolve o slot à lista de espera"
+CURRENT_USER_ID="$alice_id"
+
 if evaluation_record_review "$alice_first_slot" 5 "autoavaliação" >/dev/null 2>&1; then
   fail "sistema impede autoavaliação"
 fi
 
+CURRENT_USER_ID="$bob_id"
+evaluation_start_request "$alice_first_slot"
+alice_request_id=$(db_query "
+  SELECT id FROM evaluation_requests
+  WHERE slot_id = $alice_first_slot AND reviewer_id = $bob_id
+    AND status = 'pending';
+")
+CURRENT_USER_ID="$alice_id"
+evaluation_respond_to_request "$alice_request_id" accept
 CURRENT_USER_ID="$bob_id"
 review_output=$(printf "2\nAjustar: use ' aspas\ns\n" |
   evaluation_review_prompt "$alice_first_slot")
@@ -495,13 +574,39 @@ fi
 
 CURRENT_USER_ID="$bob_id"
 exercise_submit TEST-01 "$commit_url" "ex00"
-bob_slot="$(db_query "SELECT id FROM evaluation_slots WHERE status = 'open';")"
+bob_slot="$(db_query "
+  SELECT slot.id FROM evaluation_slots slot
+  JOIN submissions submission ON submission.id = slot.submission_id
+  WHERE submission.user_id = $bob_id AND slot.status = 'open';
+")"
+CURRENT_USER_ID="$alice_id"
+evaluation_start_request "$bob_slot"
+bob_request_id=$(db_query "
+  SELECT id FROM evaluation_requests
+  WHERE slot_id = $bob_slot AND reviewer_id = $alice_id
+    AND status = 'pending';
+")
+CURRENT_USER_ID="$bob_id"
+evaluation_respond_to_request "$bob_request_id" accept
 CURRENT_USER_ID="$alice_id"
 evaluation_record_review "$bob_slot" 4 "Aprovado"
 assert_equals "1" "$(points_balance "$alice_id")" "avaliar outro usuário concede ponto"
 
 exercise_submit TEST-01 "$commit_url" "ex00"
-alice_retry_slot="$(db_query "SELECT id FROM evaluation_slots WHERE status = 'open';")"
+alice_retry_slot="$(db_query "
+  SELECT slot.id FROM evaluation_slots slot
+  JOIN submissions submission ON submission.id = slot.submission_id
+  WHERE submission.user_id = $alice_id AND slot.status = 'open';
+")"
+CURRENT_USER_ID="$bob_id"
+evaluation_start_request "$alice_retry_slot"
+retry_request_id=$(db_query "
+  SELECT id FROM evaluation_requests
+  WHERE slot_id = $alice_retry_slot AND reviewer_id = $bob_id
+    AND status = 'pending';
+")
+CURRENT_USER_ID="$alice_id"
+evaluation_respond_to_request "$retry_request_id" accept
 CURRENT_USER_ID="$bob_id"
 evaluation_record_review "$alice_retry_slot" 3 "Correção aprovada"
 assert_equals "approved" "$(db_query "SELECT status FROM submissions WHERE user_id = $alice_id AND status = 'approved';")" \
@@ -518,7 +623,7 @@ if evaluation_record_review "$alice_retry_slot" 5 "avaliação duplicada" >/dev/
   fail "sistema impede avaliar slot concluído mais de uma vez"
 fi
 
-assert_equals "3" "$(db_query "SELECT COUNT(*) FROM points_ledger WHERE entry_type = 'slot_opened';")" \
+assert_equals "5" "$(db_query "SELECT COUNT(*) FROM points_ledger WHERE entry_type = 'slot_opened';")" \
   "cada submissão cria apenas o débito do próprio slot"
 assert_equals "3" "$(db_query "SELECT COUNT(*) FROM reviews;")" \
   "histórico registra as três avaliações"

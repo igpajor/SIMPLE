@@ -74,6 +74,25 @@ db_init() {
     return 1
   fi
 
+  if ! db_query "
+    INSERT INTO evaluation_requests (
+      slot_id, reviewer_id, status, requested_at, responded_at
+    )
+    SELECT slot.id, slot.accepted_by,
+           CASE WHEN slot.status = 'completed' THEN 'completed' ELSE 'accepted' END,
+           COALESCE(slot.accepted_at, CURRENT_TIMESTAMP),
+           COALESCE(slot.completed_at, slot.accepted_at, CURRENT_TIMESTAMP)
+    FROM evaluation_slots slot
+    WHERE slot.accepted_by IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM evaluation_requests request
+        WHERE request.slot_id = slot.id
+      );
+  " >/dev/null; then
+    printf '  Não foi possível migrar reservas de avaliação existentes.\n' >&2
+    return 1
+  fi
+
   if ! db_import_exercises; then
     printf '  Aviso: não foi possível importar exercícios do catálogo.\n' >&2
   fi

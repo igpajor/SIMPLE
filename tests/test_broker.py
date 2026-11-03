@@ -361,6 +361,45 @@ class BrokerTests(unittest.TestCase):
             )
         validate_database(legacy_database)
 
+    def test_completed_legacy_reservation_migrates_as_completed(self) -> None:
+        owner = self.create_user("legacy-owner")
+        reviewer = self.create_user("legacy-reviewer")
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            connection.execute(
+                "INSERT INTO exercises (code, name, description) VALUES (?, ?, ?)",
+                ("LEGACY-01", "Legado", "Exercício de migração"),
+            )
+        submission = self.call(
+            {
+                "method": "submissions.create",
+                "token": owner["token"],
+                "exercise_code": "LEGACY-01",
+                "commit_url": "https://github.com/student/project/commit/abcdef0123456",
+                "delivery_directory": ".",
+            }
+        )
+        self.assertTrue(submission["ok"], submission)
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            connection.execute(
+                """
+                UPDATE evaluation_slots
+                SET status = 'completed', reviewer_id = ?, accepted_by = ?,
+                    accepted_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (reviewer["user_id"], reviewer["user_id"], submission["slot_id"]),
+            )
+            connection.execute("DELETE FROM evaluation_requests")
+
+        initialize_database(self.database_path, ROOT_DIR / "database" / "schema.sql")
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            request = connection.execute(
+                "SELECT status FROM evaluation_requests WHERE slot_id = ?",
+                (submission["slot_id"],),
+            ).fetchone()
+        self.assertEqual(("completed",), request)
+
     def test_failed_migration_rolls_back_and_preserves_valid_backup(self) -> None:
         legacy_database = self.root / "legacy-failed-migration.db"
         schema_text = (ROOT_DIR / "database" / "schema.sql").read_text(
@@ -927,6 +966,58 @@ class BrokerTests(unittest.TestCase):
             }
         )
         self.assertTrue(accepted["ok"], accepted)
+        self.assertEqual("pending", accepted["status"])
+        self.assertFalse(
+            self.call(
+                {
+                    "method": "evaluations.slot.get",
+                    "token": reviewer["token"],
+                    "slot_id": str(submission["slot_id"]),
+                }
+            )["ok"]
+        )
+        incoming_requests = self.call(
+            {"method": "evaluations.requests.list", "token": owner["token"]}
+        )
+        self.assertEqual(accepted["request_id"], incoming_requests["requests"][0]["request_id"])
+        self.assertEqual("exercise-reviewer", incoming_requests["requests"][0]["reviewer"])
+        self.assertEqual(
+            1,
+            self.call({"method": "notifications.count", "token": owner["token"]})[
+                "count"
+            ],
+        )
+        self.assertEqual(
+            1,
+            self.call({"method": "progress.get", "token": owner["token"]})[
+                "pending_evaluation_requests"
+            ],
+        )
+        owner_accept = self.call(
+            {
+                "method": "evaluations.request.respond",
+                "token": owner["token"],
+                "request_id": str(accepted["request_id"]),
+                "decision": "accept",
+            }
+        )
+        self.assertTrue(owner_accept["ok"], owner_accept)
+        self.assertEqual("accepted", owner_accept["status"])
+        self.assertEqual(
+            0,
+            self.call({"method": "notifications.count", "token": owner["token"]})[
+                "count"
+            ],
+        )
+        slot_detail = self.call(
+            {
+                "method": "evaluations.slot.get",
+                "token": reviewer["token"],
+                "slot_id": str(submission["slot_id"]),
+            }
+        )
+        self.assertTrue(slot_detail["ok"], slot_detail)
+        self.assertEqual("Descrição", slot_detail["slot"]["description"])
         duplicate_accept = self.call(
             {
                 "method": "evaluations.accept",
@@ -935,6 +1026,7 @@ class BrokerTests(unittest.TestCase):
             }
         )
         self.assertTrue(duplicate_accept["ok"], duplicate_accept)
+        self.assertEqual("accepted", duplicate_accept["status"])
         cancelled = self.call(
             {
                 "method": "evaluations.cancel",
@@ -951,6 +1043,15 @@ class BrokerTests(unittest.TestCase):
             }
         )
         self.assertTrue(accepted_again["ok"], accepted_again)
+        owner_accept_again = self.call(
+            {
+                "method": "evaluations.request.respond",
+                "token": owner["token"],
+                "request_id": str(accepted_again["request_id"]),
+                "decision": "accept",
+            }
+        )
+        self.assertTrue(owner_accept_again["ok"], owner_accept_again)
 
         missing_feedback = self.call(
             {
@@ -1090,6 +1191,89 @@ class BrokerTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=2) as executor:
             responses = list(executor.map(self.call, requests))
         self.assertEqual(1, sum(bool(response["ok"]) for response in responses), responses)
+
+    def test_declined_request_blocks_same_reviewer_and_pending_request_expires(self) -> None:
+        owner = self.create_user("consent-owner")
+        declined_reviewer = self.create_user("declined-reviewer")
+        pending_reviewer = self.create_user("pending-reviewer")
+        available_reviewer = self.create_user("available-reviewer")
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            connection.execute(
+                "INSERT INTO exercises (code, name, description) VALUES (?, ?, ?)",
+                ("CONSENT-01", "Consentimento", "Teste de pedido"),
+            )
+        submission = self.call(
+            {
+                "method": "submissions.create",
+                "token": owner["token"],
+                "exercise_code": "CONSENT-01",
+                "commit_url": "https://github.com/student/project/commit/abcdef0123456",
+                "delivery_directory": ".",
+            }
+        )
+        first_request = self.call(
+            {
+                "method": "evaluations.accept",
+                "token": declined_reviewer["token"],
+                "slot_id": str(submission["slot_id"]),
+            }
+        )
+        self.assertTrue(first_request["ok"], first_request)
+        declined = self.call(
+            {
+                "method": "evaluations.request.respond",
+                "token": owner["token"],
+                "request_id": str(first_request["request_id"]),
+                "decision": "decline",
+            }
+        )
+        self.assertEqual("declined", declined["status"])
+        repeated = self.call(
+            {
+                "method": "evaluations.accept",
+                "token": declined_reviewer["token"],
+                "slot_id": str(submission["slot_id"]),
+            }
+        )
+        self.assertFalse(repeated["ok"])
+
+        pending = self.call(
+            {
+                "method": "evaluations.accept",
+                "token": pending_reviewer["token"],
+                "slot_id": str(submission["slot_id"]),
+            }
+        )
+        self.assertTrue(pending["ok"], pending)
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            connection.execute(
+                """
+                UPDATE evaluation_requests
+                SET requested_at = datetime('now', '-25 hours')
+                WHERE id = ?
+                """,
+                (pending["request_id"],),
+            )
+        expired_list = self.call(
+            {"method": "evaluations.requests.list", "token": owner["token"]}
+        )
+        self.assertEqual([], expired_list["requests"])
+        expired_response = self.call(
+            {
+                "method": "evaluations.request.respond",
+                "token": owner["token"],
+                "request_id": str(pending["request_id"]),
+                "decision": "accept",
+            }
+        )
+        self.assertFalse(expired_response["ok"])
+        available = self.call(
+            {
+                "method": "evaluations.slots.list",
+                "token": available_reviewer["token"],
+            }
+        )
+        self.assertEqual(submission["slot_id"], available["slots"][0]["id"])
 
     def test_admin_api_authorization_and_management(self) -> None:
         student = self.create_user("managed-student")
@@ -1466,11 +1650,43 @@ class BrokerTests(unittest.TestCase):
             slot_id = connection.execute(
                 "SELECT id FROM evaluation_slots ORDER BY id DESC LIMIT 1"
             ).fetchone()[0]
+        requested = subprocess.run(
+            ["bash", str(ROOT_DIR / "simple.sh")],
+            input=(
+                "2\ntui-reviewer\nsecure-pass-123\n"
+                f"2\n{slot_id}\ns\n0\n0\n"
+            ),
+            text=True,
+            capture_output=True,
+            cwd=ROOT_DIR,
+            env=environment,
+            check=False,
+            timeout=15,
+        )
+        self.assertEqual(0, requested.returncode, requested.stderr)
+        self.assertIn("Pedido enviado", requested.stdout)
+
+        accepted = subprocess.run(
+            ["bash", str(ROOT_DIR / "simple.sh")],
+            input=(
+                "2\ntui-owner\nsecure-pass-123\n"
+                "5\n1\n0\n"
+            ),
+            text=True,
+            capture_output=True,
+            cwd=ROOT_DIR,
+            env=environment,
+            check=False,
+            timeout=15,
+        )
+        self.assertEqual(0, accepted.returncode, accepted.stderr)
+        self.assertIn("Pedido aceito", accepted.stdout)
+
         reviewed = subprocess.run(
             ["bash", str(ROOT_DIR / "simple.sh")],
             input=(
                 "2\ntui-reviewer\nsecure-pass-123\n"
-                f"2\n{slot_id}\ns\n5\nBoa solução.\n.fim\ns\n0\n0\n"
+                f"2\n{slot_id}\n1\n5\nBoa solução.\n.fim\ns\n0\n0\n"
             ),
             text=True,
             capture_output=True,
