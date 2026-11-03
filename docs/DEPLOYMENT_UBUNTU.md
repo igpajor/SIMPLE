@@ -200,10 +200,37 @@ sudo env SIMPLE_MODE=broker \
   /usr/bin/bash /opt/simple/simple.sh
 ```
 
-No cliente, use **Criar Conta** para provisionar a conta SIMPLE do participante;
-depois autentique-se como administrador e abra **Administração > Vínculos UID
-Linux** para associá-la ao UID Unix que será criado. O socket privado não deve
-ser disponibilizado aos participantes.
+No cliente, use **Criar Conta** para provisionar a conta SIMPLE do participante.
+O nome deve ter de 3 a 32 caracteres minúsculos, começar com letra ou
+sublinhado e conter somente letras, números, hífen ou sublinhado. Ele será
+também o nome da conta Linux. O socket privado não deve ser disponibilizado aos
+participantes.
+
+### Provisionar um participante
+
+Depois que a conta SIMPLE existir e as restrições SSH estiverem instaladas,
+validadas e recarregadas, um único comando cria a conta Linux, instala uma chave
+pública, vincula o UID à conta SIMPLE pelo Broker e só então habilita o grupo
+restrito. Execute como `ubuntu`; o comando pede a senha do administrador SIMPLE
+em prompt oculto (além da senha Unix de `sudo`, se necessária):
+
+```bash
+sudo /usr/bin/python3 /opt/simple/deploy/provision-participant.py NOME
+```
+
+Cole a chave pública OpenSSH do participante quando solicitado e autentique-se
+com uma conta SIMPLE administradora. O comando recusa nomes/contas inválidos,
+contas Linux já existentes, contas SIMPLE inativas ou administrativas e SSH
+sem as restrições esperadas. A senha Linux fica bloqueada; a conta não recebe
+`sudo`. O participante usa sua chave para SSH e a senha SIMPLE para entrar na
+CLI. Cada pessoa precisa de sua própria conta e chave pública; nunca copie ou
+compartilhe chaves privadas.
+
+Se uma etapa falhar depois da criação do usuário, o script mantém a conta Linux
+com `/usr/sbin/nologin` e sem o grupo `simple-users`, ou revoga o vínculo caso
+a habilitação final falhe. Revise a mensagem e o estado antes de tentar
+novamente; não apague um usuário ou vínculo manualmente sem verificar se a
+provisão já chegou ao Broker.
 
 ### Instalar e validar as restrições SSH
 
