@@ -122,6 +122,8 @@ class DeploymentTests(unittest.TestCase):
         self.assertIn("ForceCommand /opt/simple/deploy/simple-ssh-entrypoint.sh", script)
         self.assertIn("DisableForwarding yes", script)
         self.assertIn("AllowStreamLocalForwarding no", script)
+        self.assertNotIn("PermitUserEnvironment no", script)
+        self.assertIn('"permituserenvironment no"', script)
         self.assertIn('"$SSHD" -t -f "$temporary"', script)
         self.assertIn('"$SSHD" -T -f "$SSHD_CONFIG"', script)
         self.assertNotRegex(script, r"(?m)^\s*systemctl reload ssh\s*$")

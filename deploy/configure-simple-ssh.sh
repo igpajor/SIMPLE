@@ -52,7 +52,6 @@ Match Group simple-users
     X11Forwarding no
     PermitTunnel no
     PermitUserRC no
-    PermitUserEnvironment no
 EOF
 chown --reference="$SSHD_CONFIG" "$temporary"
 chmod --reference="$SSHD_CONFIG" "$temporary"

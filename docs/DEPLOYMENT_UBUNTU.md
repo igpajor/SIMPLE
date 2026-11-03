@@ -215,14 +215,18 @@ arquivo original. Ele **não recarrega** o SSH:
 ```bash
 sudo bash /opt/simple/deploy/configure-simple-ssh.sh
 sudo sshd -T -C user=simple-broker,host=localhost,addr=127.0.0.1 | \
-  grep -E '^(forcecommand|authenticationmethods|passwordauthentication|disableforwarding|allowtcpforwarding|allowagentforwarding|allowstreamlocalforwarding|x11forwarding|permituserrc|permittty) '
+  grep -E '^(forcecommand|authenticationmethods|passwordauthentication|disableforwarding|allowtcpforwarding|allowagentforwarding|allowstreamlocalforwarding|x11forwarding|permituserrc|permituserenvironment|permittty) '
 ```
 
 Confirme `forcecommand /opt/simple/deploy/simple-ssh-entrypoint.sh`,
 `authenticationmethods publickey`, `passwordauthentication no`,
 `disableforwarding yes`, os encaminhamentos e X11 desativados, `permituserrc
-no` e `permittty yes`. Mantenha a sessão `ubuntu` atual aberta; abra outra
-sessão administrativa e valide a conexão antes de recarregar:
+no`, `permituserenvironment no` e `permittty yes`. `PermitUserEnvironment`
+não é aceito dentro de `Match` no OpenSSH do Ubuntu 22.04; por isso, o
+instalador verifica o valor efetivo (o padrão é `no`) e restaura a configuração
+anterior se outra configuração global o habilitar. Mantenha a sessão `ubuntu`
+atual aberta; abra outra sessão administrativa e valide a conexão antes de
+recarregar:
 
 ```bash
 sudo sshd -t
