@@ -3,8 +3,9 @@
 Este documento e os arquivos em `deploy/` preparam o SIMPLE para execução local
 por `systemd` em uma VM Ubuntu 22.04. Eles não acessam a Oracle Cloud, não
 alteram SSH/firewall/regras de rede, não criam contas SIMPLE e não habilitam
-participantes. **O SIMPLE ainda não está pronto para receber participantes por
-SSH.**
+participantes. **Não libere participantes por SSH até concluir e testar a seção
+"Acesso temporário pelo SSH" abaixo.** A preparação do Broker/Proxy sozinha não
+confina sessões SSH.
 
 ## Arquitetura e fronteiras
 
@@ -167,6 +168,97 @@ que criaram (comparando tipo, UID, dispositivo e inode). A parada não remove o
 banco. `ProtectSystem=strict`, `ProtectHome`, `NoNewPrivileges`, namespaces de
 `/tmp` e restrição de família de sockets limitam os serviços; as exceções de
 escrita ficam restritas aos diretórios de estado/runtime necessários.
+
+## Acesso temporário pelo SSH
+
+O SIMPLE é uma CLI, não um site. O Broker e o Proxy usam somente sockets Unix;
+não abra uma porta TCP para a aplicação. As etapas abaixo permitem uma sessão
+SSH dedicada ao SIMPLE, sem shell, comandos remotos, SFTP ou encaminhamentos.
+Use uma conta Unix separada por participante. **Não compartilhe a conta
+`ubuntu`, não adicione participantes a `sudo` e não os adicione ao grupo antes
+de instalar e validar as restrições.**
+
+### Criar o primeiro administrador
+
+O banco de produção começa sem usuários. O procedimento abaixo só funciona com
+os dois serviços parados e com a tabela de usuários vazia. A senha é digitada
+em prompt oculto; não a coloque na linha de comando:
+
+```bash
+sudo systemctl stop simple-proxy.service simple-broker.service
+sudo -u simple-broker /usr/bin/python3 \
+  /opt/simple/deploy/bootstrap-production-admin.py
+sudo systemctl start simple-broker.service simple-proxy.service
+```
+
+Para administrar pelo socket privado, abra o cliente Broker numa sessão
+administrativa no servidor:
+
+```bash
+sudo env SIMPLE_MODE=broker \
+  BROKER_SOCKET=/run/simple-private/broker.sock \
+  /usr/bin/bash /opt/simple/simple.sh
+```
+
+No cliente, use **Criar Conta** para provisionar a conta SIMPLE do participante;
+depois autentique-se como administrador e abra **Administração > Vínculos UID
+Linux** para associá-la ao UID Unix que será criado. O socket privado não deve
+ser disponibilizado aos participantes.
+
+### Instalar e validar as restrições SSH
+
+O instalador preserva um backup do `sshd_config`, acrescenta um bloco
+`Match Group simple-users`, executa `sshd -t` e confirma as opções efetivas
+antes de manter a alteração. Em caso de validação malsucedida, restaura o
+arquivo original. Ele **não recarrega** o SSH:
+
+```bash
+sudo bash /opt/simple/deploy/configure-simple-ssh.sh
+sudo sshd -T -C user=simple-broker,host=localhost,addr=127.0.0.1 | \
+  grep -E '^(forcecommand|authenticationmethods|passwordauthentication|disableforwarding|allowtcpforwarding|allowagentforwarding|allowstreamlocalforwarding|x11forwarding|permituserrc|permittty) '
+```
+
+Confirme `forcecommand /opt/simple/deploy/simple-ssh-entrypoint.sh`,
+`authenticationmethods publickey`, `passwordauthentication no`,
+`disableforwarding yes`, os encaminhamentos e X11 desativados, `permituserrc
+no` e `permittty yes`. Mantenha a sessão `ubuntu` atual aberta; abra outra
+sessão administrativa e valide a conexão antes de recarregar:
+
+```bash
+sudo sshd -t
+sudo systemctl reload ssh
+```
+
+O launcher rejeita comandos SSH e sessões sem TTY, limpa o ambiente recebido e
+inicia somente a CLI em modo Proxy. A conta do participante precisa usar
+`/bin/bash` para que o OpenSSH execute o comando forçado; isso **não** concede
+um shell, pois a configuração `Match` força o launcher em toda sessão do grupo.
+Use apenas chave pública autorizada e mantenha autenticação por senha desativada
+para o grupo.
+
+### Testar antes do convite
+
+Antes de criar a conta do participante:
+
+1. Crie uma conta Unix descartável, com home privado, sem `sudo`, shell
+   `/bin/bash` e associação somente ao grupo `simple-users` além do grupo
+   primário próprio.
+2. Autorize uma chave pública de teste e confirme as opções efetivas de SSH
+   para esse usuário com `sshd -T -C`.
+3. Teste a sessão normal com TTY: deve abrir a CLI e exigir login SIMPLE.
+4. Teste `ssh usuario@servidor id`, SFTP e tentativas de encaminhamento:
+   comandos e SFTP devem ser recusados e encaminhamentos devem falhar. Confirme
+   que o shell `ubuntu` administrativo continua funcionando numa segunda
+   conexão.
+5. Só então cadastre o UID real do participante no painel e crie a conta Unix
+   e a chave SSH individuais.
+
+Não convide participantes se qualquer teste falhar. O confinamento pelo
+`ForceCommand` limita o que a sessão SSH executa, mas não é um container: todos
+os participantes compartilham o kernel e outros recursos do host. Use somente
+pessoas de confiança e um host sem dados não relacionados ao teste. No fim do
+teste, revogue o vínculo UID, pare ou remova a conta Unix e retire-a de
+`simple-users`.
 
 ## Operação e diagnóstico
 

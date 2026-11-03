@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -73,6 +75,66 @@ class DeploymentTests(unittest.TestCase):
         self.assertIn("--validate-database-only", script)
         self.assertNotIn("sqlite3 ", script)
         self.assertNotIn("cp ", script)
+
+    def test_restricted_ssh_launcher_rejects_commands_and_non_tty_sessions(self) -> None:
+        launcher = ROOT_DIR / "deploy" / "simple-ssh-entrypoint.sh"
+        environment = os.environ.copy()
+        environment["SSH_ORIGINAL_COMMAND"] = "id"
+        command = subprocess.run(
+            ["bash", str(launcher)],
+            capture_output=True,
+            text=True,
+            env=environment,
+            check=False,
+        )
+        self.assertEqual(126, command.returncode)
+        self.assertIn("Comandos SSH remotos não são permitidos.", command.stderr)
+
+        environment["SSH_ORIGINAL_COMMAND"] = ""
+        empty_command = subprocess.run(
+            ["bash", str(launcher)],
+            capture_output=True,
+            text=True,
+            env=environment,
+            check=False,
+        )
+        self.assertEqual(126, empty_command.returncode)
+        self.assertIn("Comandos SSH remotos não são permitidos.", empty_command.stderr)
+
+        environment.pop("SSH_ORIGINAL_COMMAND")
+        environment.pop("SSH_TTY", None)
+        non_interactive = subprocess.run(
+            ["bash", str(launcher)],
+            capture_output=True,
+            text=True,
+            env=environment,
+            check=False,
+        )
+        self.assertEqual(126, non_interactive.returncode)
+        self.assertIn("requer uma sessão SSH interativa", non_interactive.stderr)
+
+    def test_ssh_installer_scopes_restrictions_to_participant_group(self) -> None:
+        script = (ROOT_DIR / "deploy" / "configure-simple-ssh.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Match Group simple-users", script)
+        self.assertIn("AuthenticationMethods publickey", script)
+        self.assertIn("ForceCommand /opt/simple/deploy/simple-ssh-entrypoint.sh", script)
+        self.assertIn("DisableForwarding yes", script)
+        self.assertIn("AllowStreamLocalForwarding no", script)
+        self.assertIn('"$SSHD" -t -f "$temporary"', script)
+        self.assertIn('"$SSHD" -T -f "$SSHD_CONFIG"', script)
+        self.assertNotRegex(script, r"(?m)^\s*systemctl reload ssh\s*$")
+
+    def test_production_admin_bootstrap_is_one_shot_and_hides_password(self) -> None:
+        script = (
+            ROOT_DIR / "deploy" / "bootstrap-production-admin.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("getpass.getpass", script)
+        self.assertIn('if user_count:', script)
+        self.assertIn("BEGIN IMMEDIATE", script)
+        self.assertIn("simple_broker._password_hash(password)", script)
+        self.assertIn("simple-broker", script)
 
 
 if __name__ == "__main__":
