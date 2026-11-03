@@ -301,6 +301,20 @@ def initialize_database(
     database_path = _validate_private_directory(database_path.parent) / database_path.name
     schema_sql = schema_path.read_text(encoding="utf-8")
     schema_statements = _transactional_schema_statements(schema_sql)
+    catalog_path = schema_path.with_name("exercises.sql")
+    default_schema_path = (
+        Path(__file__).resolve().parents[1] / "database" / "schema.sql"
+    )
+    if (
+        schema_path.resolve() == default_schema_path.resolve()
+        and not catalog_path.is_file()
+    ):
+        raise RuntimeError(f"Catálogo de exercícios não encontrado: {catalog_path}")
+    catalog_statements = (
+        _transactional_schema_statements(catalog_path.read_text(encoding="utf-8"))
+        if catalog_path.is_file()
+        else []
+    )
     try:
         database_path.lstat()
     except FileNotFoundError:
@@ -381,6 +395,8 @@ def initialize_database(
             }
             if column not in columns:
                 connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        for statement in catalog_statements:
+            connection.execute(statement)
         _validate_database_connection(connection)
         _check_database_integrity_connection(connection)
         _validate_database_files(database_path)

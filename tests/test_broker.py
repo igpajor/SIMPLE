@@ -123,7 +123,21 @@ class BrokerTests(unittest.TestCase):
                 ("C-01", "Exercício de catálogo", "Somente teste"),
             )
         catalog = self.call({"method": "catalog.list", "token": token})
-        self.assertEqual([{"code": "C-01", "name": "Exercício de catálogo"}], catalog["exercises"])
+        catalog_by_code = {item["code"]: item["name"] for item in catalog["exercises"]}
+        self.assertEqual("Exercício de catálogo", catalog_by_code["C-01"])
+        self.assertEqual(
+            {f"SHELL00-EX{index:02d}" for index in range(10)},
+            {code for code in catalog_by_code if code.startswith("SHELL00-")},
+        )
+        exercise = self.call(
+            {
+                "method": "catalog.get",
+                "token": token,
+                "exercise_code": "SHELL00-EX02",
+            }
+        )
+        self.assertIn("Crie todos esses arquivos e diretórios", exercise["exercise"]["statement"])
+        self.assertEqual("ex02/", exercise["exercise"]["delivery_directory"])
 
     def test_temporary_password_is_enforced_by_broker(self) -> None:
         registered = self.create_user()
@@ -1079,7 +1093,7 @@ class BrokerTests(unittest.TestCase):
         )
         self.assertTrue(edited["ok"], edited)
         catalog = self.call({"method": "catalog.list", "token": student["token"]})
-        self.assertEqual("ADMIN-01", catalog["exercises"][0]["code"])
+        self.assertIn("ADMIN-01", {item["code"] for item in catalog["exercises"]})
         admin_submissions = self.call(
             {"method": "admin.submissions.list", "token": token}
         )
@@ -1323,7 +1337,7 @@ class BrokerTests(unittest.TestCase):
             input=(
                 "2\ntui-identity-admin\nsecure-pass-123\n"
                 "5\n6\n1\n230100\n"
-                f"{participant['user_id']}\n\n0\n0\n0\n"
+                f"{participant['user_id']}\ns\n0\n0\n0\n"
             ),
             text=True,
             capture_output=True,
@@ -1366,9 +1380,9 @@ class BrokerTests(unittest.TestCase):
             ["bash", str(ROOT_DIR / "simple.sh")],
             input=(
                 "2\ntui-owner\nsecure-pass-123\n"
-                "1\n1\n1\n"
+                "1\n11\n1\n"
                 "https://github.com/student/project/commit/abcdef0123456\n"
-                "src\n0\n6\n\n0\n0\n"
+                "src\ns\n0\n6\n0\n0\n"
             ),
             text=True,
             capture_output=True,
@@ -1390,7 +1404,7 @@ class BrokerTests(unittest.TestCase):
             ["bash", str(ROOT_DIR / "simple.sh")],
             input=(
                 "2\ntui-reviewer\nsecure-pass-123\n"
-                f"2\n{slot_id}\ns\n5\nBoa solução.\n.fim\n\n0\n0\n0\n"
+                f"2\n{slot_id}\ns\n5\nBoa solução.\n.fim\ns\n0\n0\n"
             ),
             text=True,
             capture_output=True,

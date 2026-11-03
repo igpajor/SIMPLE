@@ -8,6 +8,7 @@ broker_profile_menu() {
   local created_at
   local choice
   local value
+  local width
 
   while true; do
     response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
@@ -22,43 +23,125 @@ broker_profile_menu() {
     github_username=$(broker_response_field "$response" github_username) || return 1
     bio=$(broker_response_field "$response" bio) || return 1
     created_at=$(broker_response_field "$response" created_at) || return 1
-    ui_clear
-    printf '\n  MEU PERFIL\n\n'
-    printf '  Usuário: %s\n' "$CURRENT_USERNAME"
-    printf '  Criado em: %s\n' "$created_at"
-    [[ -n "$display_name" ]] && ui_wrap_text "Nome de exibição: $display_name" "$(ui_width)" 2
-    [[ -n "$github_username" ]] && ui_wrap_text "GitHub: https://github.com/$github_username" "$(ui_width)" 2
+    width=$(ui_width)
+
+    ui_screen_begin "MEU PERFIL"
+
+    ui_section "DADOS PESSOAIS"
+    ui_labeled_value "Usuário" "$(ui_sanitize "$CURRENT_USERNAME")" "$width"
+    [[ -n "$display_name" ]] && ui_labeled_value "Nome de exibição" "$(ui_sanitize "$display_name")" "$width"
+    [[ -n "$github_username" ]] && ui_labeled_value "GitHub" "https://github.com/$(ui_sanitize "$github_username")" "$width"
+    ui_labeled_value "Criado em" "$(ui_sanitize "$created_at")" "$width"
+
     if [[ -n "$bio" ]]; then
-      printf '  Biografia:\n'
-      ui_wrap_text "$bio" "$(ui_width)" 4
+      printf '\n'
+      ui_section "BIOGRAFIA"
+      ui_wrap_text "$bio" "$width" 4
     fi
-    printf '  Exercícios aprovados: %s\n' \
-      "$(broker_response_array_length "$response" completed_exercises)" || return 1
-    printf '  Saldo de pontos: %s\n' \
-      "$(broker_response_field "$response" points)" || return 1
-    printf '\n  [1] Editar perfil\n'
-    printf '  [0] Voltar\n\n'
-    ui_read_line choice "  PERFIL > " || return 0
+
+    printf '\n'
+    ui_section "PROGRESSO"
+    ui_labeled_value "Exercícios aprovados" "$(broker_response_array_length "$response" completed_exercises)" "$width"
+    ui_labeled_value "Saldo de pontos" "$(broker_response_field "$response" points)" "$width"
+
+    printf '\n'
+    ui_section "EXERCÍCIOS CONCLUÍDOS"
+    local completed_rows
+    completed_rows=$(broker_response_rows "$response" completed_exercises) || return 1
+    if [[ -z "$completed_rows" ]]; then
+      ui_empty_state "Nenhum exercício aprovado ainda." "Complete exercícios para vê-los aqui."
+    else
+      local code name
+      while IFS=$'\t' read -r code name; do
+        code=$(db_hex_decode "$code") || return 1
+        name=$(db_hex_decode "$name") || return 1
+        ui_wrap_text "$(ui_sanitize "$code") - $(ui_sanitize "$name")" "$width" 2
+      done <<<"$completed_rows"
+    fi
+
+    printf '\n'
+    if ! ui_menu_choice choice "MEU PERFIL" \
+      "1|Editar perfil" \
+      "2|Encerrar sessão" \
+      "0|Voltar"; then
+      return 0
+    fi
+
     case "$choice" in
     1)
-      printf '\n  Nome de exibição atual: %s\n' "$display_name"
-      ui_read_line value "  Novo nome de exibição (ENTER mantém) > " || return 0
-      [[ -n "$value" ]] && display_name="$value"
-      printf '  Usuário GitHub atual: %s\n' "$github_username"
-      ui_read_line value "  Novo usuário GitHub (ENTER mantém) > " || return 0
-      [[ -n "$value" ]] && github_username="$value"
-      printf '  Biografia atual:\n%s\n' "$bio"
-      printf '  Nova biografia (vazia remove; use .fim para concluir):\n'
-      ui_read_multiline value || return 1
-      local response_update
-      response_update=$(printf '%s\0%s\0%s\0%s\0' \
-        "$CURRENT_SESSION_TOKEN" "$display_name" "$github_username" "$value" |
-        broker_request profile.update token display_name github_username bio) || return 1
-      if [[ "$(broker_response_field "$response_update" ok)" == "True" ]]; then
-        ui_message "Perfil atualizado."
-      else
-        broker_response_error "$response_update"
+      broker_edit_profile_menu || return 1
+      ;;
+    2)
+      if ui_confirm "Encerrar sua sessão?"; then
+        broker_logout || return 1
+        ui_success "Sessão encerrada."
+        CURRENT_USER_ID=""
+        CURRENT_USERNAME=""
+        CURRENT_SESSION_TOKEN=""
+        CURRENT_USER_IS_ADMIN="0"
+        return 0
       fi
+      ;;
+    0)
+      return 0
+      ;;
+    *)
+      ui_message "Opção inválida."
+      ui_pause
+      ;;
+    esac
+  done
+}
+
+# Edição campo a campo do perfil (modo broker).
+# Espera que display_name, github_username, bio e CURRENT_SESSION_TOKEN
+# estejam em escopo de chamada (escopo dinâmico do bash).
+broker_edit_profile_menu() {
+  local choice
+  local value
+
+  while true; do
+    ui_screen_begin "EDITAR MEU PERFIL"
+    if ! ui_menu_choice choice "EDITAR MEU PERFIL" \
+      "1|Nome de exibição" \
+      "2|Usuário do GitHub" \
+      "3|Biografia curta" \
+      "0|Voltar"; then
+      return 0
+    fi
+
+    case "$choice" in
+    1)
+      ui_labeled_value "Nome de exibição atual" "${display_name:-(não definido)}" "$(ui_width)" 2
+      ui_read_line value "  Novo nome de exibição (ENTER mantém) > " || continue
+      [[ -z "$value" ]] && continue
+      display_name="$value"
+      broker_profile_update || return 1
+      ui_success "Nome de exibição atualizado."
+      ui_pause
+      ;;
+    2)
+      ui_labeled_value "Usuário GitHub atual" "${github_username:-(não definido)}" "$(ui_width)" 2
+      ui_read_line value "  Novo usuário GitHub (ENTER mantém) > " || continue
+      [[ -z "$value" ]] && continue
+      if [[ -n "$value" && ! "$value" =~ ^[A-Za-z0-9-]{1,39}$ ]]; then
+        ui_error "Informe apenas um usuário GitHub válido (letras, números e hífens)."
+        ui_pause
+        continue
+      fi
+      github_username="$value"
+      broker_profile_update || return 1
+      ui_success "Usuário do GitHub atualizado."
+      ui_pause
+      ;;
+    3)
+      printf '  Biografia atual:\n'
+      ui_wrap_text "$bio" "$(ui_width)" 2
+      printf '  Nova biografia (vazia remove):\n'
+      ui_read_multiline value || continue
+      bio="$value"
+      broker_profile_update || return 1
+      ui_success "Biografia atualizada."
       ui_pause
       ;;
     0)
@@ -70,6 +153,20 @@ broker_profile_menu() {
       ;;
     esac
   done
+}
+
+# Envia profile.update com todos os três campos (protocolo do broker exige todos).
+broker_profile_update() {
+  local response_update
+  response_update=$(printf '%s\0%s\0%s\0%s\0' \
+    "$CURRENT_SESSION_TOKEN" "$display_name" "$github_username" "$bio" |
+    broker_request profile.update token display_name github_username bio) || return 1
+  if [[ "$(broker_response_field "$response_update" ok)" == "True" ]]; then
+    return 0
+  else
+    broker_response_error "$response_update"
+    return 1
+  fi
 }
 
 broker_progress_menu() {
@@ -95,22 +192,20 @@ broker_progress_menu() {
     ui_pause
     return 1
   fi
-  ui_clear
-  printf '\n  MEU PROGRESSO\n\n'
+  ui_screen_begin "MEU PROGRESSO"
   count=$(broker_response_nested_field "$response" submissions approved) || return 1
   printf '  Exercícios aprovados: %s\n' "$count"
   count=$(broker_response_field "$response" points) || return 1
   printf '  Saldo de pontos: %s\n\n' "$count"
-  printf '  ENTREGAS POR STATUS\n'
+  ui_section "ENTREGAS POR STATUS"
   for relation in pending approved rejected; do
     count=$(broker_response_nested_field "$response" submissions "$relation") || return 1
     ui_wrap_text "$relation: $count" "$(ui_width)" 2
   done
-  printf '\n  EXERCÍCIOS CONCLUÍDOS\n'
-  ui_separator
+  ui_section "EXERCÍCIOS CONCLUÍDOS"
   rows=$(broker_response_rows "$response" completed_exercises) || return 1
   if [[ -z "$rows" ]]; then
-    printf '  Nenhum exercício aprovado ainda.\n'
+    ui_empty_state "Nenhum exercício aprovado ainda."
   else
     while IFS=$'\t' read -r code name; do
       code=$(db_hex_decode "$code") || return 1
@@ -118,11 +213,10 @@ broker_progress_menu() {
       ui_wrap_text "$code - $name" "$(ui_width)" 2
     done <<<"$rows"
   fi
-  printf '\n  HISTÓRICO DE AVALIAÇÕES\n'
-  ui_separator
+  ui_section "HISTÓRICO DE AVALIAÇÕES"
   rows=$(broker_response_rows "$response" review_history) || return 1
   if [[ -z "$rows" ]]; then
-    printf '  Nenhuma avaliação registrada.\n'
+    ui_empty_state "Nenhuma avaliação registrada."
   else
     while IFS= read -r encoded; do
       IFS=$'\t' read -r code score feedback created_at submitter reviewer relation <<<"$encoded"
@@ -141,11 +235,10 @@ broker_progress_menu() {
       [[ -n "$feedback" ]] && ui_wrap_text "Feedback: $feedback" "$(ui_width)" 4
     done <<<"$rows"
   fi
-  printf '\n  MOVIMENTAÇÕES DE PONTOS\n'
-  ui_separator
+  ui_section "MOVIMENTAÇÕES DE PONTOS"
   rows=$(broker_response_rows "$response" points_history) || return 1
   if [[ -z "$rows" ]]; then
-    printf '  Nenhuma movimentação registrada.\n'
+    ui_empty_state "Nenhuma movimentação registrada."
   else
     while IFS= read -r encoded; do
       IFS=$'\t' read -r amount entry_type details created_at <<<"$encoded"
@@ -185,6 +278,7 @@ broker_catalog_menu() {
   local name
   local choice
   local -a exercise_rows
+  local -a menu_options
   local index
 
   while true; do
@@ -204,19 +298,19 @@ broker_catalog_menu() {
       done <<<"$rows"
     fi
 
-    ui_clear
-    printf '\n  CATÁLOGO DE EXERCÍCIOS\n\n'
+    ui_screen_begin "EXERCÍCIOS"
     if ((${#exercise_rows[@]} == 0)); then
-      ui_message "Nenhum exercício disponível."
+      ui_empty_state "Nenhum exercício disponível."
       ui_pause
       return 0
     fi
+    menu_options=()
     for index in "${!exercise_rows[@]}"; do
       IFS=$'\t' read -r code name <<<"${exercise_rows[$index]}"
-      ui_wrap_text "[$((index + 1))] $code - $name" "$(ui_width)" 2
+      menu_options+=("$((index + 1))|$code - $name")
     done
-    printf '\n  [0] Voltar\n\n'
-    ui_read_line choice "  EXERCÍCIOS > " || return 0
+    menu_options+=("0|Voltar")
+    ui_menu_choice choice "CATÁLOGO DE EXERCÍCIOS" "${menu_options[@]}" || return 0
     [[ "$choice" == "0" ]] && return 0
     if [[ ! "$choice" =~ ^[0-9]+$ ]] ||
       ((choice < 1 || choice > ${#exercise_rows[@]})); then
@@ -235,6 +329,12 @@ broker_catalog_render_exercise() {
   local requirements
   local field
   local value
+  local name
+  local description
+  local mission
+  local delivery_directory
+  local delivery_files
+  local allowed_functions
   local choice
   local width
   local points
@@ -246,32 +346,46 @@ broker_catalog_render_exercise() {
     return 1
   fi
   width=$(ui_width)
-  ui_clear
-  printf '\n  EXERCÍCIO %s\n\n' "$code"
-  for field in name description statement delivery_directory delivery_files allowed_functions; do
-    value=$(broker_response_nested_field "$response" exercise "$field") || return 1
-    [[ -z "$value" ]] && continue
-    case "$field" in
-    name) ui_wrap_text "$value" "$width" 2 ;;
-    description) printf '\n  DESCRIÇÃO\n'; ui_wrap_text "$value" "$width" 2 ;;
-    statement) printf '\n  MISSÃO\n'; ui_wrap_text "$value" "$width" 2 ;;
-    delivery_directory) printf '\n  Diretório de entrega:\n'; ui_wrap_text "$value" "$width" 4 ;;
-    delivery_files) printf '\n  Arquivos esperados:\n'; ui_wrap_text "$value" "$width" 4 ;;
-    allowed_functions) printf '\n  Funções permitidas:\n'; ui_wrap_text "$value" "$width" 4 ;;
-    esac
-  done
+  ui_screen_begin "EXERCÍCIO $code"
+  name=$(broker_response_nested_field "$response" exercise name) || return 1
+  [[ -n "$name" ]] && ui_wrap_text "$name" "$width" 2
+  description=$(broker_response_nested_field "$response" exercise description) || return 1
+  if [[ -n "$description" ]]; then
+    ui_section "DESCRIÇÃO"
+    ui_wrap_text "$description" "$width" 2
+  fi
+
+  delivery_directory=$(broker_response_nested_field "$response" exercise delivery_directory) || return 1
+  delivery_files=$(broker_response_nested_field "$response" exercise delivery_files) || return 1
+  allowed_functions=$(broker_response_nested_field "$response" exercise allowed_functions) || return 1
+  if [[ -n "$delivery_directory" || -n "$delivery_files" || -n "$allowed_functions" ]]; then
+    ui_section "ESPECIFICAÇÕES"
+    [[ -n "$delivery_directory" ]] &&
+      ui_labeled_value "Diretório de entrega" "$delivery_directory" "$width"
+    [[ -n "$delivery_files" ]] &&
+      ui_labeled_value "Arquivos a entregar" "$delivery_files" "$width"
+    [[ -n "$allowed_functions" ]] &&
+      ui_labeled_value "Funções permitidas" "$allowed_functions" "$width"
+  fi
+  mission=$(broker_response_nested_field "$response" exercise statement) || return 1
+  if [[ -n "$mission" ]]; then
+    ui_section "MISSÃO"
+    ui_wrap_text "$mission" "$width" 2
+  fi
+
   value=$(broker_response_nested_field "$response" exercise example) || return 1
   if [[ -n "$value" ]]; then
+    ui_section "EXEMPLO DE EXECUÇÃO"
     ui_code_block "$value"
   fi
   value=$(broker_response_nested_field "$response" exercise terminal_model) || return 1
   if [[ -n "$value" ]]; then
-    printf '\n  MODELO DO TERMINAL\n'
+    ui_section "MODELO DO TERMINAL"
     ui_code_block "$value"
   fi
   value=$(broker_response_nested_field "$response" exercise hints) || return 1
   if [[ -n "$value" ]]; then
-    printf '\n  DICAS\n'
+    ui_section "DICAS"
     while IFS= read -r field || [[ -n "$field" ]]; do
       ui_wrap_text "- $field" "$width" 2
     done <<<"$value"
@@ -282,16 +396,17 @@ broker_catalog_render_exercise() {
     ui_pause
     return 1
   fi
+  local -a menu_options
   if [[ "$(broker_response_field "$requirements" eligible)" == "True" ]]; then
     points=$(broker_response_field "$requirements" points) || return 1
     printf '\n  Saldo: %s ponto(s). Enviar a solução abre um slot de avaliação.\n' "$points"
-    printf '  [1] Registrar entrega para avaliação\n'
+    menu_options=("1|Registrar entrega para avaliação" "0|Voltar")
   else
     value=$(broker_response_field "$requirements" reason) || return 1
     ui_wrap_text "Entrega indisponível: $value" "$width" 2
+    menu_options=("0|Voltar")
   fi
-  printf '  [0] Voltar\n\n'
-  ui_read_line choice "  EXERCÍCIO > " || return 0
+  ui_menu_choice choice "EXERCÍCIO $code" "${menu_options[@]}" || return 0
   if [[ "$choice" == "1" && "$(broker_response_field "$requirements" eligible)" == "True" ]]; then
     exercise_submit_prompt "$code"
   fi
@@ -326,10 +441,9 @@ broker_submissions_menu() {
   else
     submission_rows=()
   fi
-  ui_clear
-  printf '\n  MINHAS ENTREGAS\n\n'
+  ui_screen_begin "MINHAS ENTREGAS"
   if ((${#submission_rows[@]} == 0)); then
-    ui_message "Você ainda não registrou entregas."
+    ui_empty_state "Você ainda não registrou entregas."
   else
     for encoded in "${submission_rows[@]}"; do
       IFS=$'\t' read -r submission_id code name status kind commit_url directory \
@@ -342,21 +456,32 @@ broker_submissions_menu() {
       submitted_at=$(db_hex_decode "$submitted_at") || return 1
       slot_id=$(db_hex_decode "$slot_id") || return 1
       score=$(db_hex_decode "$score") || return 1
-      ui_wrap_text "#$submission_id | $code - $name | $status | $submitted_at" \
-        "$(ui_width)" 2
+      feedback=$(db_hex_decode "$feedback") || return 1
+
+      ui_panel "#$submission_id · $code — $name"
+      case "$status" in
+      pending) status_label="aguardando avaliação" ;;
+      approved) status_label="aprovada" ;;
+      rejected) status_label="reprovada" ;;
+      esac
+      ui_color_dim
+      ui_wrap_text "Estado: $(ui_badge "$status_label" "$status") · Enviada em: $submitted_at" "$(ui_width)" 2
+      ui_color_reset
       if [[ "$kind" == "github_commit" ]]; then
         commit_url=$(db_hex_decode "$commit_url") || return 1
         directory=$(db_hex_decode "$directory") || return 1
-        ui_wrap_text "Commit: $commit_url (diretório: $directory)" "$(ui_width)" 4
+        ui_wrap_text "Commit: $commit_url" "$(ui_width)" 2
+        ui_wrap_text "Diretório: $directory" "$(ui_width)" 2
+      else
+        ui_wrap_text "Slot de avaliação: $slot_id" "$(ui_width)" 2
       fi
       if [[ -n "$score" ]]; then
-        feedback=$(db_hex_decode "$feedback") || return 1
-        printf '  Avaliação: %s/5\n' "$score"
-        [[ -n "$feedback" ]] && ui_wrap_text "Feedback: $feedback" "$(ui_width)" 4
+        ui_wrap_text "Nota: $(ui_badge "$score/5" "info")" "$(ui_width)" 2
+        [[ -n "$feedback" ]] && ui_wrap_text "Feedback: $feedback" "$(ui_width)" 2
       else
-        printf '  Slot de avaliação: %s\n' "$slot_id"
+        ui_wrap_text "Slot de avaliação: $slot_id" "$(ui_width)" 2
       fi
-      printf '\n'
+      ui_panel_end
     done
   fi
   ui_pause
@@ -385,8 +510,8 @@ broker_evaluation_review_prompt() {
   submitter=$(broker_response_nested_field "$response" slot username) || return 1
   code=$(broker_response_nested_field "$response" slot exercise_code) || return 1
   kind=$(broker_response_nested_field "$response" slot content_kind) || return 1
-  ui_clear
-  printf '\n  AVALIAR SUBMISSÃO %s\n' "$slot_id"
+  ui_screen_begin "AVALIAR SUBMISSÃO $slot_id"
+  ui_panel "SUBMISSÃO $slot_id"
   ui_wrap_text "Usuário: $submitter | Exercício: $code" "$(ui_width)" 2
   if [[ "$kind" == "github_commit" ]]; then
     commit_url=$(broker_response_nested_field "$response" slot commit_url) || return 1
@@ -396,26 +521,31 @@ broker_evaluation_review_prompt() {
     ui_wrap_text "Diretório: $directory" "$(ui_width)" 2
   else
     content=$(broker_response_nested_field "$response" slot content) || return 1
-    content=$(printf '%s' "$content" | LC_ALL=C tr -d '\001-\010\013-\037\177') || return 1
+    content=$(ui_sanitize "$content") || return 1
     printf '\n  Conteúdo legado enviado (não executado):\n'
     ui_wrap_text "$content" "$(ui_width)" 2
   fi
+  ui_panel_end
   while true; do
     ui_read_line score "  Nota (0 a 5) > " || return 1
     [[ "$score" =~ ^[0-5]$ ]] && break
     ui_message "A nota deve ser um número inteiro de 0 a 5."
   done
-  printf '  Comentário (vazio para nenhum; use .fim para várias linhas):\n'
+  printf '  Comentário (vazio para nenhum):\n'
   ui_read_multiline feedback || return 1
+  if ! ui_confirm "Registrar esta nota e o feedback?"; then
+    ui_warn "Avaliação cancelada; nenhuma alteração foi registrada."
+    return 0
+  fi
   status=$(printf '%s\0%s\0%s\0%s\0' \
     "$CURRENT_SESSION_TOKEN" "$slot_id" "$score" "$feedback" |
     broker_request evaluations.review.submit token slot_id score feedback) || return 1
   if broker_check_response "$status"; then
     points=$(broker_response_field "$status" points) || return 1
     if ((score >= 3)); then
-      ui_message "Avaliação registrada: aprovado. Seu saldo é $points ponto(s)."
+      ui_success "Avaliação registrada: aprovado. $(ui_badge APROVADO success) Seu saldo é $points ponto(s)."
     else
-      ui_message "Avaliação registrada: reprovado. Seu saldo é $points ponto(s)."
+      ui_warn "Avaliação registrada: reprovado. $(ui_badge REPROVADO error) Seu saldo é $points ponto(s)."
     fi
   else
     ui_message "Não foi possível registrar a avaliação."
@@ -434,9 +564,9 @@ broker_evaluations_menu() {
   local created_at
   local accepted
   local choice
-  local confirmation
   local action_response
   local -a slot_rows
+  local -a menu_options
 
   while true; do
     response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
@@ -451,13 +581,13 @@ broker_evaluations_menu() {
     else
       slot_rows=()
     fi
-    ui_clear
-    printf '\n  AVALIAÇÕES ABERTAS\n\n'
+    ui_screen_begin "AVALIAÇÕES ABERTAS"
     if ((${#slot_rows[@]} == 0)); then
-      ui_message "Não há submissões disponíveis para avaliação."
+      ui_empty_state "Não há submissões disponíveis para avaliação."
       ui_pause
       return 0
     fi
+    menu_options=()
     for encoded in "${slot_rows[@]}"; do
       IFS=$'\t' read -r slot_id username code name created_at accepted <<<"$encoded"
       slot_id=$(db_hex_decode "$slot_id") || return 1
@@ -467,13 +597,13 @@ broker_evaluations_menu() {
       created_at=$(db_hex_decode "$created_at") || return 1
       accepted=$(db_hex_decode "$accepted") || return 1
       if [[ "$accepted" == "1" ]]; then
-        ui_wrap_text "Slot $slot_id - $username / $code - reservado por você" "$(ui_width)" 2
+        menu_options+=("$slot_id|$username / $code - reservado por você")
       else
-        ui_wrap_text "[$slot_id] $username / $code - $name (desde $created_at)" "$(ui_width)" 2
+        menu_options+=("$slot_id|$username / $code - $name (desde $created_at)")
       fi
     done
-    printf '\n  Digite o ID do slot ou 0 para voltar.\n\n'
-    ui_read_line choice "  AVALIAÇÕES > " || return 0
+    menu_options+=("0|Voltar")
+    ui_menu_choice choice "AVALIAÇÕES ABERTAS" "${menu_options[@]}" || return 0
     [[ "$choice" == "0" ]] && return 0
     if [[ ! "$choice" =~ ^[0-9]+$ ]]; then
       ui_message "ID de slot inválido."
@@ -495,10 +625,10 @@ broker_evaluations_menu() {
       continue
     fi
     if [[ "$accepted" == "1" ]]; then
-      printf '\n  [1] Avaliar submissão\n'
-      printf '  [2] Liberar minha reserva\n'
-      printf '  [0] Voltar\n\n'
-      ui_read_line choice "  SLOT > " || return 0
+      ui_menu_choice choice "SLOT $slot_id" \
+        "1|Avaliar submissão" \
+        "2|Liberar minha reserva" \
+        "0|Voltar" || return 0
       case "$choice" in
       1)
         broker_evaluation_review_prompt "$slot_id"
@@ -516,8 +646,7 @@ broker_evaluations_menu() {
       esac
       continue
     fi
-    ui_read_line confirmation "  Reservar este slot para avaliar agora? [s/N] > " || return 0
-    if [[ "${confirmation,,}" != "s" ]]; then
+    if ! ui_confirm "Reservar este slot para avaliar agora?"; then
       continue
     fi
     action_response=$(printf '%s\0%s\0' "$CURRENT_SESSION_TOKEN" "$choice" |
@@ -541,22 +670,23 @@ broker_admin_exercise_create() {
   local hints
   local response
 
+  ui_screen_begin "CADASTRAR EXERCÍCIO"
   ui_read_line code "  Código > " || return 1
   ui_read_line name "  Nome > " || return 1
-  printf '  Descrição (use .fim para concluir):\n'
+  printf '  Descrição:\n'
   ui_read_multiline description || return 1
-  printf '  Missão/enunciado (use .fim para concluir):\n'
+  printf '  Missão/enunciado:\n'
   ui_read_multiline statement || return 1
   ui_read_line delivery_directory "  Diretório de entrega > " || return 1
-  printf '  Arquivos esperados (use .fim para concluir):\n'
+  printf '  Arquivos esperados:\n'
   ui_read_multiline delivery_files || return 1
-  printf '  Funções permitidas (use .fim para concluir):\n'
+  printf '  Funções permitidas:\n'
   ui_read_multiline allowed_functions || return 1
-  printf '  Exemplo de execução (use .fim para concluir):\n'
+  printf '  Exemplo de execução:\n'
   ui_read_multiline example || return 1
-  printf '  Modelo do terminal (use .fim para concluir):\n'
+  printf '  Modelo do terminal:\n'
   ui_read_multiline terminal_model || return 1
-  printf '  Dicas (use .fim para concluir):\n'
+  printf '  Dicas:\n'
   ui_read_multiline hints || return 1
   response=$(printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0' \
     "$CURRENT_SESSION_TOKEN" "$code" "$name" "$description" "$statement" \
@@ -578,29 +708,31 @@ broker_admin_exercise_manage() {
   local label
   local value
   local response
-  local confirmation
+  local -a menu_options
 
   while true; do
-    ui_clear
-    printf '\n'
+    ui_screen_begin "GERENCIAR EXERCÍCIO $code"
     ui_wrap_text "GERENCIAR EXERCÍCIO $code [$status]" "$(ui_width)" 2
     printf '\n'
-    ui_wrap_text "[1] Editar nome" "$(ui_width)" 2
-    ui_wrap_text "[2] Editar descrição" "$(ui_width)" 2
-    ui_wrap_text "[3] Editar missão/enunciado" "$(ui_width)" 2
-    ui_wrap_text "[4] Editar diretório de entrega" "$(ui_width)" 2
-    ui_wrap_text "[5] Editar arquivos esperados" "$(ui_width)" 2
-    ui_wrap_text "[6] Editar funções permitidas" "$(ui_width)" 2
-    ui_wrap_text "[7] Editar exemplo" "$(ui_width)" 2
-    ui_wrap_text "[8] Editar modelo do terminal" "$(ui_width)" 2
-    ui_wrap_text "[9] Editar dicas" "$(ui_width)" 2
     if [[ "$status" == "archived" ]]; then
-      printf '  [a] Reativar exercício\n'
+      menu_options=(
+        "1|Editar nome" "2|Editar descrição"
+        "3|Editar missão/enunciado" "4|Editar diretório de entrega"
+        "5|Editar arquivos esperados" "6|Editar funções permitidas"
+        "7|Editar exemplo" "8|Editar modelo do terminal"
+        "9|Editar dicas" "a|Reativar exercício" "0|Voltar"
+      )
     else
-      printf '  [a] Arquivar exercício\n'
+      menu_options=(
+        "1|Editar nome" "2|Editar descrição"
+        "3|Editar missão/enunciado" "4|Editar diretório de entrega"
+        "5|Editar arquivos esperados" "6|Editar funções permitidas"
+        "7|Editar exemplo" "8|Editar modelo do terminal"
+        "9|Editar dicas" "a|Arquivar exercício" "0|Voltar"
+      )
     fi
-    printf '  [0] Voltar\n\n'
-    ui_read_line choice "  EXERCÍCIO ADMIN > " || return 0
+    ui_menu_choice choice "GERENCIAR EXERCÍCIO $code" \
+      "${menu_options[@]}" || return 0
     case "$choice" in
     1) field=name; label="novo nome" ;;
     2) field=description; label="nova descrição" ;;
@@ -613,8 +745,9 @@ broker_admin_exercise_manage() {
     9) field=hints; label="novas dicas" ;;
     0) return 0 ;;
     a)
-      ui_read_line confirmation "  Confirmar operação? [s/N] > " || return 0
-      [[ "${confirmation,,}" == "s" ]] || continue
+      if ! ui_confirm "Confirmar operação?"; then
+        continue
+      fi
       if [[ "$status" == "archived" ]]; then
         response=$(printf '%s\0%s\0' "$CURRENT_SESSION_TOKEN" "$code" |
           broker_request admin.exercise.reactivate token exercise_code) || return 1
@@ -637,7 +770,7 @@ broker_admin_exercise_manage() {
         ui_read_line value "  $label (vazio mantém o atual) > " || return 1
         [[ -z "$value" ]] && continue
       else
-        printf '  %s (use .fim para concluir):\n' "$label"
+        printf '  %s:\n' "$label"
         ui_read_multiline value || return 1
       fi
       response=$(printf '%s\0%s\0%s\0%s\0' \
@@ -664,6 +797,7 @@ broker_admin_exercises_menu() {
   local selected_status
   local index
   local -a exercise_rows
+  local -a menu_options
 
   while true; do
     response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
@@ -677,18 +811,19 @@ broker_admin_exercises_menu() {
         exercise_rows+=("$id"$'\t'"$code"$'\t'"$name"$'\t'"$status")
       done <<<"$rows"
     fi
-    ui_clear
-    printf '\n  EXERCÍCIOS CADASTRADOS\n\n'
+    ui_screen_begin "EXERCÍCIOS CADASTRADOS"
+    menu_options=()
     for index in "${!exercise_rows[@]}"; do
       IFS=$'\t' read -r id code name status <<<"${exercise_rows[$index]}"
       id=$(db_hex_decode "$id") || return 1
       code=$(db_hex_decode "$code") || return 1
       name=$(db_hex_decode "$name") || return 1
       status=$(db_hex_decode "$status") || return 1
-      ui_wrap_text "[$((index + 1))] $code - $name [$status]" "$(ui_width)" 2
+      menu_options+=("$((index + 1))|$code - $name [$status]")
     done
-    printf '\n  [c] Cadastrar exercício\n  [0] Voltar\n\n'
-    ui_read_line choice "  EXERCÍCIOS ADMIN > " || return 0
+    menu_options+=("c|Cadastrar exercício" "0|Voltar")
+    ui_menu_choice choice "EXERCÍCIOS CADASTRADOS" \
+      "${menu_options[@]}" || return 0
     case "$choice" in
     0) return 0 ;;
     c)
@@ -743,8 +878,7 @@ broker_admin_user_show() {
   github_username=$(broker_response_nested_field "$response" user github_username) || return 1
   bio=$(broker_response_nested_field "$response" user bio) || return 1
   points=$(broker_response_nested_field "$response" user points) || return 1
-  ui_clear
-  printf '\n  PERFIL DO USUÁRIO\n\n'
+  ui_screen_begin "PERFIL DO USUÁRIO"
   ui_wrap_text "Usuário: $username (#$user_id)" "$(ui_width)" 2
   ui_wrap_text "Papel: $([[ "$is_admin" == "True" || "$is_admin" == "1" ]] && printf 'admin' || printf 'participante') | Conta: $([[ "$is_active" == "True" || "$is_active" == "1" ]] && printf 'ativa' || printf 'inativa')" \
     "$(ui_width)" 2
@@ -798,23 +932,26 @@ broker_admin_user_manage() {
   local reviewer
   local relation
   local code
+  local -a menu_options
 
   while true; do
     broker_admin_user_show "$user_id" || return 1
-    printf '\n  [1] Redefinir senha\n'
-    printf '  [2] Adicionar pontos\n'
-    printf '  [3] Remover pontos\n'
-    printf '  [4] Ativar/desativar conta\n'
-    printf '  [5] Histórico de pontos\n'
-    printf '  [6] Histórico de avaliações\n'
-    printf '  [0] Voltar\n\n'
-    ui_read_line choice "  USUÁRIO ADMIN > " || return 0
+    ui_menu_choice choice "ADMINISTRAR USUÁRIO $user_id" \
+      "1|Redefinir senha" \
+      "2|Adicionar pontos" \
+      "3|Remover pontos" \
+      "4|Ativar/desativar conta" \
+      "5|Histórico de pontos" \
+      "6|Histórico de avaliações" \
+      "0|Voltar" || return 0
     case "$choice" in
     1)
       ui_read_line password "  Senha temporária (mínimo 8 caracteres) > " 1 || return 1
       ui_read_line confirmation "  Confirme a senha temporária > " 1 || return 1
       if [[ "$password" != "$confirmation" || ${#password} -lt 8 ]]; then
         ui_message "Senhas não coincidem ou têm menos de 8 caracteres."
+      elif ! ui_confirm "Definir senha temporária para a conta #$user_id?"; then
+        ui_warn "Redefinição cancelada."
       else
         response=$(printf '%s\0%s\0%s\0' \
           "$CURRENT_SESSION_TOKEN" "$user_id" "$password" |
@@ -841,6 +978,10 @@ broker_admin_user_manage() {
         continue
       fi
       [[ "$direction" == "remove" ]] && amount="-$amount"
+      if ! ui_confirm "Aplicar ajuste de $amount ponto(s) na conta #$user_id?"; then
+        ui_warn "Ajuste cancelado."
+        continue
+      fi
       response=$(printf '%s\0%s\0%s\0%s\0' \
         "$CURRENT_SESSION_TOKEN" "$user_id" "$amount" "$reason" |
         broker_request admin.points.adjust token user_id amount reason) || return 1
@@ -856,19 +997,21 @@ broker_admin_user_manage() {
       active=$(broker_response_nested_field "$response" user is_active) || return 1
       if [[ "$active" == "True" ]]; then
         active=0
-        ui_read_line confirmation "  Desativar a conta? [s/N] > " || return 0
-      else
-        active=1
-        ui_read_line confirmation "  Reativar a conta? [s/N] > " || return 0
-      fi
-      if [[ "${confirmation,,}" == "s" ]]; then
-        response=$(printf '%s\0%s\0%s\0' \
-          "$CURRENT_SESSION_TOKEN" "$user_id" "$active" |
-          broker_request admin.user.state token user_id is_active) || return 1
-        if ! broker_check_response "$response"; then
-          ui_pause
+        if ! ui_confirm "Desativar a conta?"; then
           continue
         fi
+      else
+        active=1
+        if ! ui_confirm "Reativar a conta?"; then
+          continue
+        fi
+      fi
+      response=$(printf '%s\0%s\0%s\0' \
+        "$CURRENT_SESSION_TOKEN" "$user_id" "$active" |
+        broker_request admin.user.state token user_id is_active) || return 1
+      if ! broker_check_response "$response"; then
+        ui_pause
+        continue
       fi
       ui_pause
       ;;
@@ -877,10 +1020,9 @@ broker_admin_user_manage() {
         broker_request admin.points.history token user_id) || return 1
       broker_check_response "$response" || return 1
       rows=$(broker_response_rows "$response" entries) || return 1
-      ui_clear
-      printf '\n  HISTÓRICO DE PONTOS DO USUÁRIO #%s\n\n' "$user_id"
+      ui_screen_begin "HISTÓRICO DE PONTOS DO USUÁRIO #$user_id"
       if [[ -z "$rows" ]]; then
-        printf '  Nenhuma movimentação registrada.\n'
+        ui_empty_state "Nenhuma movimentação registrada."
       else
         while IFS= read -r encoded; do
           IFS=$'\t' read -r amount entry_type details created_at <<<"$encoded"
@@ -899,10 +1041,9 @@ broker_admin_user_manage() {
         broker_request admin.user.get token user_id) || return 1
       broker_check_response "$response" || return 1
       rows=$(broker_response_rows "$response" user review_history) || return 1
-      ui_clear
-      printf '\n  HISTÓRICO DE AVALIAÇÕES DO USUÁRIO #%s\n\n' "$user_id"
+      ui_screen_begin "HISTÓRICO DE AVALIAÇÕES DO USUÁRIO #$user_id"
       if [[ -z "$rows" ]]; then
-        printf '  Nenhuma avaliação registrada.\n'
+        ui_empty_state "Nenhuma avaliação registrada."
       else
         while IFS= read -r encoded; do
           IFS=$'\t' read -r code score details created_at submitter reviewer relation <<<"$encoded"
@@ -939,6 +1080,7 @@ broker_admin_users_menu() {
   local points
   local choice
   local -a user_rows
+  local -a menu_options
 
   while true; do
     response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
@@ -949,8 +1091,8 @@ broker_admin_users_menu() {
     if [[ -n "$rows" ]]; then
       while IFS= read -r encoded; do user_rows+=("$encoded"); done <<<"$rows"
     fi
-    ui_clear
-    printf '\n  PERFIS CADASTRADOS\n\n'
+    ui_screen_begin "PERFIS CADASTRADOS"
+    menu_options=()
     for encoded in "${user_rows[@]}"; do
       IFS=$'\t' read -r user_id username is_admin is_active created_at approved points <<<"$encoded"
       user_id=$(db_hex_decode "$user_id") || return 1
@@ -959,11 +1101,10 @@ broker_admin_users_menu() {
       is_active=$(db_hex_decode "$is_active") || return 1
       approved=$(db_hex_decode "$approved") || return 1
       points=$(db_hex_decode "$points") || return 1
-      ui_wrap_text "[$user_id] $username ($([[ "$is_admin" == "1" ]] && printf 'admin' || printf 'participante')) | $([[ "$is_active" == "1" ]] && printf 'ativa' || printf 'inativa') | aprovados: $approved | pontos: $points" \
-        "$(ui_width)" 2
+      menu_options+=("$user_id|$username ($([[ "$is_admin" == "1" ]] && printf 'admin' || printf 'participante')) | $([[ "$is_active" == "1" ]] && printf 'ativa' || printf 'inativa') | aprovados: $approved | pontos: $points")
     done
-    printf '\n  Digite o ID para gerenciar ou 0 para voltar.\n\n'
-    ui_read_line choice "  USUÁRIOS > " || return 0
+    menu_options+=("0|Voltar")
+    ui_menu_choice choice "PERFIS CADASTRADOS" "${menu_options[@]}" || return 0
     [[ "$choice" == "0" ]] && return 0
     if [[ ! "$choice" =~ ^[0-9]+$ ]]; then
       ui_message "ID inválido."
@@ -989,17 +1130,15 @@ broker_admin_identity_menu() {
   local target_uid
   local new_uid
   local target_user_id
-  local confirmation
 
   while true; do
     response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
       broker_request admin.identity.list token) || return 1
     broker_check_response "$response" || return 1
     rows=$(broker_response_rows "$response" identities) || return 1
-    ui_clear
-    printf '\n  VÍNCULOS DE IDENTIDADE LINUX\n\n'
+    ui_screen_begin "VÍNCULOS DE IDENTIDADE LINUX"
     if [[ -z "$rows" ]]; then
-      printf '  Nenhum vínculo cadastrado.\n'
+      ui_empty_state "Nenhum vínculo cadastrado."
     else
       while IFS=$'\t' read -r linux_uid user_id is_active _ _ username account_active _; do
         linux_uid=$(db_hex_decode "$linux_uid") || return 1
@@ -1011,14 +1150,20 @@ broker_admin_identity_menu() {
           "$(ui_width)" 2
       done <<<"$rows"
     fi
-    printf '\n  [1] Criar vínculo  [2] Alterar UID  [3] Revogar vínculo  [0] Voltar\n'
     ui_wrap_text "O proxy identifica o UID real com SO_PEERCRED e exige vínculo ativo." \
       "$(ui_width)" 2
-    ui_read_line choice "  VÍNCULOS > " || return 0
+    ui_menu_choice choice "VÍNCULOS DE IDENTIDADE LINUX" \
+      "1|Criar vínculo" \
+      "2|Alterar UID" \
+      "3|Revogar vínculo" \
+      "0|Voltar" || return 0
     case "$choice" in
     1)
       ui_read_line target_uid "  UID Linux > " || continue
       ui_read_line target_user_id "  ID da conta SIMPLE > " || continue
+      if ! ui_confirm "Vincular o UID $target_uid à conta #$target_user_id?"; then
+        continue
+      fi
       response=$(printf '%s\0%s\0%s\0' "$CURRENT_SESSION_TOKEN" "$target_uid" "$target_user_id" |
         broker_request admin.identity.bind token linux_uid user_id) || return 1
       if broker_check_response "$response"; then
@@ -1029,6 +1174,9 @@ broker_admin_identity_menu() {
     2)
       ui_read_line target_uid "  UID Linux atual > " || continue
       ui_read_line new_uid "  Novo UID Linux > " || continue
+      if ! ui_confirm "Alterar o vínculo do UID $target_uid para $new_uid?"; then
+        continue
+      fi
       response=$(printf '%s\0%s\0%s\0' "$CURRENT_SESSION_TOKEN" "$target_uid" "$new_uid" |
         broker_request admin.identity.update token linux_uid new_linux_uid) || return 1
       if broker_check_response "$response"; then
@@ -1038,8 +1186,7 @@ broker_admin_identity_menu() {
       ;;
     3)
       ui_read_line target_uid "  UID Linux a revogar > " || continue
-      ui_read_line confirmation "  Confirma a revogação? (s/N) > " || continue
-      if [[ "$confirmation" != "s" && "$confirmation" != "S" ]]; then
+      if ! ui_confirm "Confirma a revogação do vínculo UID $target_uid?"; then
         continue
       fi
       response=$(printf '%s\0%s\0' "$CURRENT_SESSION_TOKEN" "$target_uid" |
@@ -1078,15 +1225,14 @@ broker_admin_history_menu() {
   else
     entries=()
   fi
-  ui_clear
-  printf '\n  %s\n\n' "$title"
+  ui_screen_begin "$title"
   if [[ "$field" == "submissions" ]]; then
     labels=("ID" "Usuário" "Exercício" "Status" "Tipo" "Commit" "Diretório" "Enviada em" "Slot")
   else
     labels=("Slot" "Status" "Participante" "Avaliador" "Reservado por" "Reservado em" "Exercício" "Nota" "Feedback" "Aberta em" "Concluída em")
   fi
   if ((${#entries[@]} == 0)); then
-    printf '  Nenhum registro encontrado.\n'
+    ui_empty_state "Nenhum registro encontrado."
   else
     for encoded in "${entries[@]}"; do
       values=()
@@ -1115,8 +1261,7 @@ broker_admin_report() {
   response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
     broker_request admin.report token) || return 1
   broker_check_response "$response" || return 1
-  ui_clear
-  printf '\n  VISÃO GERAL DO SISTEMA\n\n'
+  ui_screen_begin "VISÃO GERAL DO SISTEMA"
   for key in users active_users available_exercises archived_exercises submissions open_slots reviews; do
     value=$(broker_response_nested_field "$response" report "$key") || return 1
     ui_wrap_text "$key: $value" "$(ui_width)" 2
@@ -1133,17 +1278,15 @@ broker_admin_menu() {
     return 1
   fi
   while true; do
-    ui_clear
-    printf '\n  ADMINISTRAÇÃO\n\n'
-    ui_wrap_text "[1] Gerenciar exercícios" "$(ui_width)" 2
-    ui_wrap_text "[2] Perfis e pontos dos usuários" "$(ui_width)" 2
-    ui_wrap_text "[3] Todas as submissões" "$(ui_width)" 2
-    ui_wrap_text "[4] Histórico de avaliações" "$(ui_width)" 2
-    ui_wrap_text "[5] Visão geral do sistema" "$(ui_width)" 2
-    ui_wrap_text "[6] Vínculos UID Linux" "$(ui_width)" 2
-    ui_wrap_text "[0] Voltar" "$(ui_width)" 2
-    printf '\n'
-    ui_read_line choice "  ADMIN > " || return 0
+    ui_screen_begin "ADMINISTRAÇÃO"
+    ui_menu_choice choice "ADMINISTRAÇÃO" \
+      "1|Gerenciar exercícios" \
+      "2|Perfis e pontos dos usuários" \
+      "3|Todas as submissões" \
+      "4|Histórico de avaliações" \
+      "5|Visão geral do sistema" \
+      "6|Vínculos UID Linux" \
+      "0|Voltar" || return 0
     case "$choice" in
     1) broker_admin_exercises_menu ;;
     2) broker_admin_users_menu ;;
@@ -1159,20 +1302,28 @@ broker_admin_menu() {
 
 broker_mode_menu() {
   local choice
+  local -a menu_options
 
-  ui_clear
-  printf '\n  SIMPLE | %s\n\n' "$CURRENT_USERNAME"
-  ui_wrap_text "[1] Catálogo de exercícios" "$(ui_width)" 2
-  ui_wrap_text "[2] Avaliações" "$(ui_width)" 2
-  ui_wrap_text "[3] Meu progresso" "$(ui_width)" 2
-  ui_wrap_text "[4] Meu perfil" "$(ui_width)" 2
+  ui_screen_begin "INÍCIO"
+  ui_home_intro "$CURRENT_USERNAME" || return 1
+  menu_options=(
+    "1|Catálogo de exercícios"
+    "2|Avaliações abertas"
+    "3|Meu progresso"
+    "4|Meu perfil"
+  )
   if [[ "$CURRENT_USER_IS_ADMIN" == "True" ]]; then
-    ui_wrap_text "[5] Administração" "$(ui_width)" 2
+    menu_options+=("5|Administração")
+    menu_options+=("6|Minhas entregas")
+  else
+    menu_options+=("5|Minhas entregas")
+    menu_options+=("6|Minhas entregas")
   fi
-  ui_wrap_text "[6] Minhas entregas" "$(ui_width)" 2
-  ui_wrap_text "[0] Sair" "$(ui_width)" 2
+  menu_options+=("0|Sair")
   printf '\n'
-  ui_read_line choice "  MENU > " || return 1
+  if ! ui_menu_choice choice "MENU PRINCIPAL" "${menu_options[@]}"; then
+    return 1
+  fi
   case "$choice" in
   1) exercises_menu ;;
   2) evaluations_menu ;;
@@ -1182,11 +1333,12 @@ broker_mode_menu() {
     if [[ "$CURRENT_USER_IS_ADMIN" == "True" ]]; then
       admin_menu
     else
-      ui_message "Acesso administrativo não autorizado."
-      ui_pause
+      broker_submissions_menu
     fi
     ;;
-  6) broker_submissions_menu ;;
+  6)
+    broker_submissions_menu
+    ;;
   0)
     broker_logout || return 1
     # shellcheck disable=SC2034 # These globals reset the session for other sourced modules.

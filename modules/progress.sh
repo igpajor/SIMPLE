@@ -46,43 +46,44 @@ progress_menu() {
     ORDER BY r.created_at DESC, r.id DESC;
   ") || return 1
 
-  ui_clear
-  ui_header
-  printf '\n  MEU PROGRESSO\n\n'
+  nav_push "MEU PROGRESSO"
+
+  ui_screen_begin "MEU PROGRESSO"
   printf '  Exercícios aprovados: %s\n' "$completed_count"
   printf '  Saldo de pontos: %s\n\n' "$balance"
-  printf '  EXERCÍCIOS CONCLUÍDOS\n'
-  ui_separator
+  ui_section "EXERCÍCIOS CONCLUÍDOS"
   if [[ -z "$approved_exercises" ]]; then
-    printf '  Nenhum exercício aprovado ainda.\n'
+    ui_empty_state "Nenhum exercício aprovado ainda."
   else
     while IFS='|' read -r exercise_code exercise_name; do
-      ui_wrap_text "$exercise_code - $exercise_name" "$(ui_width)" 2
+      ui_wrap_text "$(ui_sanitize "$exercise_code") - $(ui_sanitize "$exercise_name")" "$(ui_width)" 2
     done <<<"$approved_exercises"
   fi
   printf '\n'
-  printf '  HISTÓRICO DE AVALIAÇÕES\n'
-  ui_separator
+  ui_section "HISTÓRICO DE AVALIAÇÕES"
 
   if [[ -z "$history" ]]; then
-    printf '  Nenhuma avaliação registrada.\n'
+    ui_empty_state "Nenhuma avaliação registrada."
   else
     while IFS='|' read -r code score relation created_at; do
-      ui_wrap_text "$code - nota $score/5 - $relation ($created_at)" "$(ui_width)" 2
+      ui_wrap_text "$(ui_sanitize "$code") - nota $score/5 - $(ui_sanitize "$relation") ($(ui_sanitize "$created_at"))" "$(ui_width)" 2
     done <<<"$history"
   fi
 
-  printf '\n  MOVIMENTAÇÕES DE PONTOS\n'
-  ui_separator
-  history=$(points_history "$CURRENT_USER_ID") || return 1
+  ui_section "MOVIMENTAÇÕES DE PONTOS"
+  history=$(points_history "$CURRENT_USER_ID") || {
+    nav_pop
+    return 1
+  }
   if [[ -z "$history" ]]; then
-    printf '  Nenhuma movimentação registrada.\n'
+    ui_empty_state "Nenhuma movimentação registrada."
   else
     while IFS='|' read -r amount entry_type details created_at; do
-      ui_wrap_text "$(printf '%+d | %s | %s (%s)' "$amount" "$entry_type" "$details" "$created_at")" \
+      ui_wrap_text "$(printf '%+d | %s | %s (%s)' "$amount" "$(ui_sanitize "$entry_type")" "$(ui_sanitize "$details")" "$(ui_sanitize "$created_at")")" \
         "$(ui_width)" 2
     done <<<"$history"
   fi
 
+  nav_pop
   ui_pause
 }

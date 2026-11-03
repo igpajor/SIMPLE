@@ -124,6 +124,49 @@ assert_equals "legacy" "$(db_query "SELECT content_kind FROM submissions WHERE i
 DB_PATH="$TEST_DIR/simple.db"
 db_init
 db_query "
+  INSERT INTO exercises (code, name, description)
+  VALUES
+    ('SH00-EX00', 'Os verdadeiros sabem exibir um Z', ''),
+    ('SH00-EX02', 'testShell00 Crie o arquivo testShell00 no seu diretório de entrega.', '');
+"
+db_init
+assert_equals "10" "$(db_query "SELECT COUNT(*) FROM exercises WHERE code LIKE 'SHELL00-EX%';")" \
+  "catálogo local carrega os dez exercícios Shell 00"
+assert_equals "0" "$(db_query "
+  SELECT COUNT(*) FROM exercises
+  WHERE code IN ('SH00-EX00', 'SH00-EX02') AND status = 'available';
+")" "aliases antigos deixam de aparecer no catálogo"
+assert_equals "2" "$(db_query "
+  SELECT COUNT(*) FROM exercises
+  WHERE code IN ('SH00-EX00', 'SH00-EX02') AND status = 'archived';
+")" "aliases antigos são arquivados sem excluir seus registros"
+assert_equals "1" "$(db_query "
+  SELECT COUNT(*) FROM exercises
+  WHERE code = 'SHELL00-EX02'
+    AND statement LIKE 'Crie todos esses arquivos e diretórios%'
+    AND example LIKE '%drwx--xr-x%';
+")" "catálogo preserva a estrutura e a formatação do exercício 02"
+assert_equals "1" "$(db_query "
+  SELECT COUNT(*) FROM exercises
+  WHERE code = 'SHELL00-EX07'
+    AND instr(hints, 'direitos autorais') > 0;
+")" "catálogo sinaliza o exemplo omitido por direitos autorais"
+shell_exercise_output=$(printf '0\n' | exercise_show SHELL00-EX02)
+if [[ "$shell_exercise_output" != *"drwx--xr-x"* ]] ||
+  [[ "$shell_exercise_output" != *"test6 -> test0"* ]]; then
+  fail "enunciado do exercício preserva a formatação multilinha do PDF"
+fi
+if [[ "$shell_exercise_output" != *"Diretório de entrega: ex02/"* ]] ||
+  [[ "$shell_exercise_output" != *"Arquivos a entregar: exo2.tar"* ]]; then
+  fail "especificações exibem rótulo e valor na mesma linha"
+fi
+spec_line=$(grep -n -m1 '^  ESPECIFICAÇÕES$' <<<"$shell_exercise_output" | cut -d: -f1)
+mission_line=$(grep -n -m1 '^  MISSÃO$' <<<"$shell_exercise_output" | cut -d: -f1)
+if [[ ! "$spec_line" =~ ^[0-9]+$ || ! "$mission_line" =~ ^[0-9]+$ ]] ||
+  ((spec_line >= mission_line)); then
+  fail "especificações aparecem antes da missão"
+fi
+db_query "
   DROP TRIGGER trg_submission_validate;
   CREATE TRIGGER trg_submission_validate
   BEFORE INSERT ON submissions
@@ -174,6 +217,23 @@ if [[ "$exercise_menu_output" == *"command not found"* ]] ||
   [[ "$exercise_menu_output" != *"TEST-01 - Exercício de teste"* ]]; then
   fail "menu de exercícios usa as funções de interface corretas e lista exercícios"
 fi
+legacy_exercise_output=$(printf '0\n' | exercise_show TEST-01)
+if [[ "$legacy_exercise_output" != *"Diretório de entrega: ex00"* ]] ||
+  [[ "$legacy_exercise_output" != *"Arquivos a entregar: main.c"* ]] ||
+  [[ "$legacy_exercise_output" != *"Funções permitidas: write"* ]]; then
+  fail "enunciados legados exibem especificações com valores na mesma linha"
+fi
+spec_line=$(grep -n -m1 '^  ESPECIFICAÇÕES$' <<<"$legacy_exercise_output" | cut -d: -f1)
+mission_line=$(grep -n -m1 '^  MISSÃO$' <<<"$legacy_exercise_output" | cut -d: -f1)
+if [[ ! "$spec_line" =~ ^[0-9]+$ || ! "$mission_line" =~ ^[0-9]+$ ]] ||
+  ((spec_line >= mission_line)); then
+  fail "enunciado legado mostra especificações antes da missão"
+fi
+exercise_selection_output=$(printf '1\n0\n0\n' | exercises_menu)
+if [[ "$exercise_selection_output" == *"Enunciado não encontrado."* ]] ||
+  [[ "$exercise_selection_output" != *"Crie um arquivo z"* ]]; then
+  fail "selecionar exercício abre seu enunciado usando o código decodificado"
+fi
 
 auth_register alice 'senha-segura-123'
 alice_id="$CURRENT_USER_ID"
@@ -191,7 +251,8 @@ fi
 db_query "UPDATE users SET is_admin = 1 WHERE id = $alice_id;"
 CURRENT_USER_ID="$alice_id"
 admin_menu_output=$(printf '0\n' | menu_principal)
-if [[ "$admin_menu_output" != *"[5] Administração"* ]]; then
+if [[ "$admin_menu_output" != *"[5] Administração"* ]] ||
+  [[ "$admin_menu_output" != *"[6] Minhas entregas"* ]]; then
   fail "menu principal mostra administração para administradores"
 fi
 
@@ -200,6 +261,10 @@ CURRENT_USER_ID="$bob_id"
 regular_menu_output=$(printf '0\n' | menu_principal)
 if [[ "$regular_menu_output" == *"[5] Administração"* ]]; then
   fail "menu principal oculta administração de contas comuns"
+fi
+if [[ "$regular_menu_output" != *"[5] Minhas entregas"* ]] ||
+  [[ "$regular_menu_output" == *"[6] Minhas entregas"* ]]; then
+  fail "menu principal oferece acompanhamento das próprias entregas"
 fi
 
 cat >"$TEST_DIR/admin-input" <<'INPUT'
@@ -356,6 +421,11 @@ assert_equals "ex00" "$(db_query "SELECT delivery_directory FROM submissions WHE
   "nova submissão persiste diretório do repositório"
 assert_equals "Entrega referenciada no GitHub" "$(db_query "SELECT content FROM submissions WHERE id = 1;")" \
   "nova submissão não armazena código-fonte"
+submission_output=$(submissions_menu)
+if [[ "$submission_output" != *"aguardando avaliação"* ]] ||
+  [[ "$submission_output" != *"$commit_url"* ]]; then
+  fail "participante consegue acompanhar a própria entrega"
+fi
 if exercise_submit TEST-01 "https://example.com/acme/simple/commit/abcdef0123456789" "ex00" \
   >/dev/null 2>&1; then
   fail "submissão rejeita host que não seja GitHub"
@@ -369,7 +439,7 @@ if evaluation_record_review "$alice_first_slot" 5 "autoavaliação" >/dev/null 2
 fi
 
 CURRENT_USER_ID="$bob_id"
-review_output=$(printf "2\nAjustar: use ' aspas\n\n" |
+review_output=$(printf "2\nAjustar: use ' aspas\ns\n" |
   evaluation_review_prompt "$alice_first_slot")
 if [[ "$review_output" != *"$commit_url"* ]] ||
   [[ "$review_output" != *"Diretório: ex00"* ]] ||
@@ -381,6 +451,17 @@ assert_equals "rejected" "$(db_query "SELECT status FROM submissions WHERE user_
 assert_equals "2" "$(points_balance "$bob_id")" "avaliador recebe ponto mesmo ao reprovar"
 
 CURRENT_USER_ID="$alice_id"
+db_query "
+  UPDATE reviews
+  SET feedback = char(27) || ']52;c;payload' || char(7) || char(155) ||
+                 'hostil' || char(10) || 'legado'
+  WHERE slot_id = $alice_first_slot;
+"
+submission_output=$(submissions_menu)
+if [[ "$submission_output" == *$'\033'* || "$submission_output" == *$'\233'* ]] ||
+  [[ "$submission_output" != *"payloadhostil"* ]]; then
+  fail "dados legados e alterados diretamente não injetam controles no terminal"
+fi
 if exercise_submit TEST-01 "$commit_url" "ex00" >/dev/null 2>&1; then
   fail "sistema exige pontos para abrir novo slot"
 fi
@@ -458,10 +539,10 @@ fi
 
 admin_adjust_points "$alice_id" "$bob_id" 3 "Correção de pontuação"
 assert_equals "5" "$(points_balance "$bob_id")" "admin pode ajustar pontos de outro usuário"
-printf '3\n2\nAjuste de teste\n\n0\n' | admin_manage_user "$bob_id" >/dev/null
+printf '3\n2\nAjuste de teste\ns\n0\n' | admin_manage_user "$bob_id" >/dev/null
 assert_equals "3" "$(points_balance "$bob_id")" \
   "admin remove pontos pelo painel de usuários"
-printf '1\nsenha-temporaria-123\nsenha-temporaria-123\n\n0\n' |
+printf '1\nsenha-temporaria-123\nsenha-temporaria-123\ns\n0\n' |
   admin_manage_user "$bob_id" >/dev/null
 assert_equals "1" "$(db_query "SELECT must_change_password FROM users WHERE id = $bob_id;")" \
   "senha temporária exige troca no próximo login"

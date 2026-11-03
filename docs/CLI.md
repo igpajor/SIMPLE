@@ -6,8 +6,11 @@
 - SQLite (`sqlite3`)
 - OpenSSL (`openssl`) para hash das senhas
 - Python 3.9+ apenas para o modo broker
+- Gum 2.0+ é opcional para entradas, textos multilinha e confirmações
 
-Inicie o aplicativo com `bash simple.sh`. O banco SQLite local é inicializado pelo próprio programa. Os testes isolados podem ser executados com `bash tests/test_cli.sh`.
+Os menus usam opções numeradas como navegação principal; digite a chave exibida e pressione Enter. A tela inicial apresenta boas-vindas, resumo de pontos/progresso (empilhado em terminais estreitos) e ações disponíveis com numeração contínua, incluindo a opção administrativa somente para administradores. Uma linha de status identifica o SIMPLE, a pessoa conectada, o modo e a área atual. Gum pode aprimorar entradas, textos multilinha e confirmações, mas não altera a navegação dos menus. Sem Gum ou sem TTY, a interface usa leitura de linha. Pausas sem TTY não consomem entrada automatizada, senhas permanecem mascaradas e entradas multilinha aceitam o fluxo de texto não interativo.
+
+Inicie o aplicativo com `bash simple.sh`. O banco SQLite local é inicializado pelo próprio programa. Os testes isolados podem ser executados com `bash tests/test_cli.sh` e `bash tests/test_ui.sh`; a suíte Python usa `python3 -m unittest tests/test_broker.py tests/test_proxy.py tests/test_deployment.py tests/test_phase2.py tests/test_phase3.py`.
 
 ## Contas
 
@@ -24,6 +27,8 @@ Abra um exercício e escolha enviar a solução. O SIMPLE registra a URL de um c
 Outro usuário pode avaliar o conteúdo de 0 a 5; a nota mínima para aprovação é 3. Quem registra a avaliação recebe 1 ponto, tanto em aprovação quanto em reprovação. Não é permitido avaliar a própria submissão. Uma reprovação permite nova submissão e novo slot, desde que o usuário tenha pontos; uma aprovação impede nova avaliação daquele exercício para o mesmo usuário.
 
 O programa não baixa nem executa soluções submetidas. A pessoa avaliadora consulta a referência externa e registra a avaliação manualmente. Registros anteriores ao formato GitHub são preservados como submissões legadas.
+
+O catálogo inicial inclui os dez exercícios Shell 00, de `SHELL00-EX00` a `SHELL00-EX09`. Enunciados, requisitos e exemplos são apresentados em seções; exemplos e modelos de terminal preservam quebras de linha em blocos próprios. O exemplo de entrada do exercício 07 foi omitido por conter material de terceiros protegido por direitos autorais.
 
 ## Cadastro administrativo de exercícios
 
@@ -122,3 +127,36 @@ Veja [BROKER_PROXY.md](./BROKER_PROXY.md) para a topologia, permissões e inicia
 ## Progresso
 
 O menu de progresso mostra exercícios aprovados, saldo de pontos, avaliações recebidas/realizadas e movimentações de pontos.
+
+## Interface de terminal
+
+O SIMPLE roda inteiramente no terminal, sem dependência de interface gráfica. A apresentação se adapta ao ambiente:
+
+- **Navegação principal**: todos os menus exibem suas opções numeradas (`[1]`, `[2]`, `0` para voltar/sair); escolha a chave mostrada e pressione Enter.
+- **Terminais interativos com Gum**: o Gum pode aprimorar entradas, campos multilinha e confirmações; os menus continuam numerados.
+- **Sem Gum ou em Windows/cmd.exe**: menus e entradas usam o fallback Bash com `read`; cores podem ser desativadas conforme o terminal.
+- **Sem TTY (pipes, testes, automação)**: a interface usa entrada padrão diretamente. Testes e scripts podem fornecer respostas via stdin; pausas não leem nem descartam dados.
+
+### Navegação
+
+Em qualquer menu:
+
+| Tecla | Ação |
+|-------|------|
+| Número/letra exibido | Escolher a opção correspondente |
+| `Enter` | Confirmar a opção digitada |
+| `0` | Voltar ou sair, conforme o menu |
+
+### Sanitização de saída
+
+Todo conteúdo persistido ou vindo de usuários (nomes, perfis, exercícios, feedback, histórico e entregas) é sanitizado antes da renderização. Controles C0/C1, DEL, ESC, retornos de carro e controles bidi selecionados são removidos; TAB vira espaços e quebras de linha são preservadas somente para conteúdo multilinha. A sanitização também se aplica a dados legados e alterados diretamente no banco.
+
+### Contexto
+
+O cabeçalho e a trilha de navegação mostram onde você está, por exemplo:
+
+```
+ACESSO > MENU PRINCIPAL > EXERCÍCIOS
+```
+
+Cada tela exibe o contexto atual (sistema, usuário, modo, pontos) para que fique claro "onde estou" e "o que posso fazer agora".

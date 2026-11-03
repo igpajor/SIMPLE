@@ -34,6 +34,7 @@ db_ensure_column() {
 
 db_init() {
   local schema_path="$SCRIPT_DIR/database/schema.sql"
+  local catalog_path="$SCRIPT_DIR/database/exercises.sql"
 
   if [[ "${BROKER_MODE:-0}" == "1" ]]; then
     printf '  Inicialização SQLite indisponível no modo broker.\n' >&2
@@ -70,6 +71,26 @@ db_init() {
     return 1
   fi
 
+  if ! db_import_exercises; then
+    printf '  Aviso: não foi possível importar exercícios do catálogo.\n' >&2
+  fi
+
+  if [[ ! -f "$catalog_path" ]]; then
+    printf '  Catálogo de exercícios não encontrado: %s\n' "$catalog_path" >&2
+    return 1
+  fi
+  if ! (
+    set -o pipefail
+    {
+      printf 'BEGIN IMMEDIATE;\n'
+      cat -- "$catalog_path"
+      printf 'COMMIT;\n'
+    } | sqlite3 -batch -bail -cmd ".timeout 5000" "$DB_PATH"
+  ); then
+    printf '  Não foi possível carregar o catálogo de exercícios.\n' >&2
+    return 1
+  fi
+
   return 0
 }
 
@@ -89,6 +110,103 @@ db_sql_quote() {
 
   value=${value//\'/\'\'}
   printf "'%s'" "$value"
+}
+
+db_import_exercises() {
+  local storage_dir="${EXERCISE_STORAGE_DIR:-$SCRIPT_DIR/storage/exercises}"
+  local count
+
+  # Só importa se a tabela estiver vazia
+  count=$(db_query "SELECT COUNT(*) FROM exercises;") || return 1
+  if [[ "$count" != "0" ]]; then
+    return 0
+  fi
+
+  if [[ ! -d "$storage_dir" ]]; then
+    return 0
+  fi
+
+  local file
+  for file in "$storage_dir"/*.txt; do
+    [[ -f "$file" ]] || continue
+
+    python3 -c '
+import os
+import re
+import sqlite3
+import sys
+import unicodedata
+
+filepath, db_path = sys.argv[1:3]
+with open(filepath, encoding="utf-8") as source:
+    lines = source.read().splitlines()
+filename = os.path.basename(filepath)
+
+def normalize(value):
+    value = unicodedata.normalize("NFD", value.strip().upper())
+    return "".join(character for character in value
+                   if unicodedata.category(character) != "Mn")
+
+first_line = lines[0].strip() if lines else ""
+header = re.match(r"EXERCICIO\s+([A-Z0-9][A-Z0-9_-]*)", normalize(first_line))
+file_code = re.match(r"([A-Z0-9][A-Z0-9_-]*)", filename)
+code = header.group(1) if header else (file_code.group(1) if file_code else filename[:-4])
+name = lines[1].strip() if len(lines) > 1 else code
+sections = {
+    "description": [], "statement": [], "example": [],
+    "delivery_directory": [], "delivery_files": [],
+    "allowed_functions": [], "terminal_model": [], "hints": [],
+}
+section_map = {
+    "DESCRICAO": "description", "MISSAO": "statement",
+    "EXEMPLO DE EXECUCAO": "example",
+    "DIRETORIO DE ENTREGA": "delivery_directory",
+    "ARQUIVOS A ENTREGAR": "delivery_files",
+    "FUNCOES PERMITIDAS": "allowed_functions",
+    "MODELO DO TERMINAL": "terminal_model", "DICAS": "hints",
+}
+current = None
+preamble = []
+for line in lines[2:]:
+    heading = normalize(line)
+    if heading == "ESPECIFICACOES":
+        current = None
+    elif heading in section_map:
+        current = section_map[heading]
+    elif current is None:
+        preamble.append(line)
+    else:
+        sections[current].append(line)
+
+def content(name):
+    values = sections[name]
+    while values and not values[0].strip():
+        values.pop(0)
+    while values and not values[-1].strip():
+        values.pop()
+    return "\n".join(values)
+
+description = content("description") or "\n".join(preamble).strip()
+values = (
+    code, name, description, content("statement"), content("example"),
+    content("delivery_directory"), content("delivery_files"),
+    content("allowed_functions"), content("terminal_model"), content("hints"),
+    f"storage/exercises/{filename}",
+)
+with sqlite3.connect(db_path) as connection:
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("""
+        INSERT OR IGNORE INTO exercises (
+            code, name, description, statement, example, delivery_directory,
+            delivery_files, allowed_functions, terminal_model, hints,
+            status, statement_path
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "available", ?)
+    """, values)
+' "$file" "$DB_PATH" || {
+      printf '  Não foi possível importar o exercício: %s\n' "$file" >&2
+      return 1
+    }
+  done
 }
 
 db_hex_decode() {

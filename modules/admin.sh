@@ -342,33 +342,42 @@ admin_exercises_menu() {
   local status
   local choice
   local -a exercise_list
+  local -a menu_options
 
   if ! users_is_admin "$CURRENT_USER_ID"; then
     printf '  Acesso administrativo não autorizado.\n'
     return 1
   fi
 
+  nav_push "EXERCÍCIOS"
+
   while true; do
-    ui_clear
-    ui_header
-    printf '\n  EXERCÍCIOS CADASTRADOS\n\n'
+    ui_screen_begin "EXERCÍCIOS CADASTRADOS"
     exercises=$(db_query "
       SELECT code || '|' || replace(name, '|', '/') || '|' || status
       FROM exercises ORDER BY code;
-    ") || return 1
+    ") || {
+      nav_pop
+      return 1
+    }
     if [[ -z "$exercises" ]]; then
       printf '  Nenhum exercício cadastrado.\n'
     else
       mapfile -t exercise_list <<<"$exercises"
       for exercise in "${exercise_list[@]}"; do
         IFS='|' read -r code name status <<<"$exercise"
-        printf '  %s - %s [%s]\n' "$code" "$name" "$status"
+        printf '  %s - %s [%s]\n' "$(ui_sanitize "$code")" "$(ui_sanitize "$name")" "$(ui_sanitize "$status")"
       done
     fi
-    printf '\n  [1] Cadastrar exercício\n'
-    printf '  [2] Gerenciar exercício\n'
-    printf '  [0] Voltar\n\n'
-    ui_read_line choice "  EXERCÍCIOS ADMIN > " || return 0
+    menu_options=(
+      "1|Cadastrar exercício"
+      "2|Gerenciar exercício"
+      "0|Voltar"
+    )
+    if ! ui_menu_choice choice "EXERCÍCIOS ADMIN" "${menu_options[@]}"; then
+      nav_pop
+      return 0
+    fi
     case "$choice" in
     1)
       admin_create_exercise "$CURRENT_USER_ID"
@@ -382,10 +391,11 @@ admin_exercises_menu() {
       admin_manage_exercise "$ADMIN_SELECTED_EXERCISE"
       ;;
     0)
+      nav_pop
       return 0
       ;;
     *)
-      ui_message "Opção inválida."
+      ui_error "Opção inválida."
       ui_pause
       ;;
     esac
@@ -396,85 +406,97 @@ admin_select_exercise() {
   local exercises
   local choice
   local -a exercise_list
+  local -a menu_options
   local selected
 
-  exercises=$(db_query "SELECT code FROM exercises ORDER BY code;") || return 1
+  nav_push "SELECIONAR EXERCÍCIO"
+
+  exercises=$(db_query "SELECT code FROM exercises ORDER BY code;") || {
+    nav_pop
+    return 1
+  }
   if [[ -z "$exercises" ]]; then
     ui_message "Não há exercícios para gerenciar."
+    nav_pop
     return 1
   fi
   mapfile -t exercise_list <<<"$exercises"
-  printf '\n'
+  menu_options=()
   local index
   for index in "${!exercise_list[@]}"; do
-    printf '  [%d] %s\n' "$((index + 1))" "${exercise_list[$index]}"
+    menu_options+=("$((index + 1))|${exercise_list[$index]}")
   done
-  printf '  [0] Voltar\n'
-  ui_read_line choice "  EXERCÍCIO > " || return 1
+  menu_options+=("0|Voltar")
+  ui_menu_choice choice "SELECIONE UM EXERCÍCIO" "${menu_options[@]}" || { nav_pop; return 1; }
   if [[ "$choice" == "0" ]]; then
+    nav_pop
     return 1
   fi
   if [[ ! "$choice" =~ ^[0-9]+$ ]] ||
     ((choice < 1 || choice > ${#exercise_list[@]})); then
-    ui_message "Opção inválida."
+    ui_error "Opção inválida."
+    nav_pop
     return 1
   fi
   selected="${exercise_list[$((choice - 1))]}"
   ADMIN_SELECTED_EXERCISE="$selected"
+  nav_pop
 }
 
 admin_manage_exercise() {
   local code="$1"
   local choice
+  local -a menu_options
 
   if ! users_is_admin "$CURRENT_USER_ID"; then
     printf '  Acesso administrativo não autorizado.\n'
     return 1
   fi
 
+  nav_push "GERENCIAR $code"
+
   while true; do
-    ui_clear
-    ui_header
-    printf '\n  GERENCIAR EXERCÍCIO %s\n\n' "$code"
+    ui_screen_begin "GERENCIAR EXERCÍCIO $code"
     local status
-    status=$(db_query "SELECT status FROM exercises WHERE code = $(db_sql_quote "$code");") || return 1
-    printf '  [1] Editar informações\n'
+    status=$(db_query "SELECT status FROM exercises WHERE code = $(db_sql_quote "$code");") || {
+      nav_pop
+      return 1
+    }
     if [[ "$status" == "archived" ]]; then
-      printf '  [2] Reativar exercício\n'
+      menu_options=("1|Editar informações" "2|Reativar exercício")
     else
-      printf '  [2] Arquivar exercício\n'
+      menu_options=("1|Editar informações" "2|Arquivar exercício")
     fi
-    printf '  [0] Voltar\n\n'
-    ui_read_line choice "  EXERCÍCIO > " || return 0
+    menu_options+=("0|Voltar")
+    ui_menu_choice choice "GERENCIAR EXERCÍCIO $code" "${menu_options[@]}" || { nav_pop; return 0; }
     case "$choice" in
     1)
       admin_edit_exercise "$code"
       ;;
     2)
-      local confirmation
       if [[ "$status" == "archived" ]]; then
-        ui_read_line confirmation "  Reativar este exercício? [s/N] > " || return 0
-        if [[ "${confirmation,,}" == "s" ]]; then
+        if ui_confirm "Reativar este exercício?"; then
           admin_reactivate_exercise "$code"
         else
-          ui_message "Reativação cancelada."
+          ui_warn "Reativação cancelada."
         fi
       else
-        ui_read_line confirmation "  Arquivar este exercício? [s/N] > " || return 0
-        if [[ "${confirmation,,}" == "s" ]]; then
+        if ui_confirm "Arquivar este exercício?"; then
           admin_archive_exercise "$code"
         else
-          ui_message "Arquivamento cancelado."
+          ui_warn "Arquivamento cancelado."
         fi
       fi
       ui_pause
+      nav_pop
       return 0
       ;;
     0)
+      nav_pop
       return 0
       ;;
     *)
-      ui_message "Opção inválida."
+      ui_error "Opção inválida."
       ui_pause
       ;;
     esac
@@ -498,19 +520,18 @@ admin_edit_exercise() {
   code_sql=$(db_sql_quote "$code")
   admin_ensure_structured_exercise "$code" || return 1
   while true; do
-    ui_clear
-    printf '\n  EDITAR %s\n\n' "$code"
-    printf '  [1] Nome\n'
-    printf '  [2] Descrição\n'
-    printf '  [3] Diretório de entrega\n'
-    printf '  [4] Arquivos a entregar\n'
-    printf '  [5] Funções permitidas\n'
-    printf '  [6] Missão\n'
-    printf '  [7] Exemplo de execução\n'
-    printf '  [8] Modelo do terminal\n'
-    printf '  [9] Dicas\n'
-    printf '  [0] Voltar\n\n'
-    ui_read_line choice "  CAMPO > " || return 0
+    ui_screen_begin "EDITAR EXERCÍCIO $code"
+    ui_menu_choice choice "EDITAR $code" \
+      "1|Nome" \
+      "2|Descrição" \
+      "3|Diretório de entrega" \
+      "4|Arquivos a entregar" \
+      "5|Funções permitidas" \
+      "6|Missão" \
+      "7|Exemplo de execução" \
+      "8|Modelo do terminal" \
+      "9|Dicas" \
+      "0|Voltar" || return 0
     case "$choice" in
     1) column="name"; label="Nome" ;;
     2) column="description"; label="Descrição" ;;
@@ -530,12 +551,12 @@ admin_edit_exercise() {
     esac
 
     field_value=$(db_query "SELECT $column FROM exercises WHERE code = $code_sql;") || return 1
-    printf '\n  Valor atual:\n%s\n\n' "$field_value"
+    printf '\n  Valor atual:\n%s\n\n' "$(ui_sanitize "$field_value")"
     if [[ "$choice" == "1" || "$choice" == "2" || "$choice" == "3" ]]; then
       ui_read_line field_value "  Novo $label (ENTER mantém o atual) > " || return 1
       [[ -z "$field_value" ]] && continue
     else
-      printf '  Novo %s (use .fim para concluir; conteúdo vazio limpa o campo):\n' "$label"
+      printf '  Novo %s (conteúdo vazio limpa o campo):\n' "$label"
       ui_read_multiline field_value || return 1
       if [[ "$choice" == "6" && -z "$field_value" ]]; then
         ui_message "A missão não pode ficar vazia."
@@ -672,6 +693,10 @@ admin_point_adjustment_prompt() {
   if [[ "$direction" == "remove" ]]; then
     amount="-$amount"
   fi
+  if ! ui_confirm "Aplicar ajuste de $amount ponto(s) na conta #$ADMIN_SELECTED_USER?"; then
+    ui_warn "Ajuste cancelado."
+    return 0
+  fi
   admin_adjust_points "$CURRENT_USER_ID" "$ADMIN_SELECTED_USER" "$amount" "$reason"
 }
 
@@ -693,13 +718,13 @@ admin_manage_user() {
 
   username=$(db_query "SELECT username FROM users WHERE id = $user_id;") || return 1
   while true; do
-    ui_clear
+    ui_screen_begin "PERFIL DO USUÁRIO"
     users_profile_dashboard "$user_id" "$username" 1 || return 1
-    printf '\n  [1] Definir senha temporária\n'
-    printf '  [2] Adicionar pontos\n'
-    printf '  [3] Remover pontos\n'
-    printf '  [0] Voltar\n\n'
-    ui_read_line choice "  USUÁRIO > " || return 0
+    ui_menu_choice choice "GERENCIAR USUÁRIO $(ui_sanitize "$username")" \
+      "1|Definir senha temporária" \
+      "2|Adicionar pontos" \
+      "3|Remover pontos" \
+      "0|Voltar" || return 0
     case "$choice" in
     1)
       ui_read_line temporary_secret "  Senha temporária (mínimo 8 caracteres) > " 1 || return 1
@@ -708,6 +733,8 @@ admin_manage_user() {
         ui_message "As senhas não coincidem."
       elif ((${#temporary_secret} < 8)); then
         ui_message "A senha deve conter pelo menos 8 caracteres."
+      elif ! ui_confirm "Definir senha temporária para $(ui_sanitize "$username")?"; then
+        ui_warn "Redefinição cancelada."
       elif auth_store_password "$user_id" "$temporary_secret" 1 >/dev/null; then
         ui_message "Senha temporária definida. A troca será exigida no próximo login."
       fi
@@ -743,6 +770,7 @@ admin_users_menu() {
   local completed
   local balance
   local -a user_list
+  local -a menu_options
 
   if ! users_is_admin "$CURRENT_USER_ID"; then
     printf '  Acesso administrativo não autorizado.\n'
@@ -750,9 +778,7 @@ admin_users_menu() {
   fi
 
   while true; do
-    ui_clear
-    ui_header
-    printf '\n  PERFIS CADASTRADOS\n\n'
+    ui_screen_begin "PERFIS CADASTRADOS"
     users=$(db_query "
       SELECT u.id || '|' || u.username || '|' ||
         CASE WHEN u.is_admin = 1 THEN 'admin' ELSE 'usuário' END || '|' ||
@@ -763,13 +789,13 @@ admin_users_menu() {
       FROM users u ORDER BY u.username;
     ") || return 1
     mapfile -t user_list <<<"$users"
+    menu_options=()
     for user in "${user_list[@]}"; do
       IFS='|' read -r user_id username role completed balance <<<"$user"
-      ui_wrap_text "[$user_id] $username ($role) | aprovados: $completed | pontos: $balance" \
-        "$(ui_width)" 2
+      menu_options+=("$user_id|$(ui_sanitize "$username") ($role) | aprovados: $completed | pontos: $balance")
     done
-    printf '\n  Digite o ID do usuário para gerenciar ou 0 para voltar.\n'
-    ui_read_line choice "  USUÁRIOS > " || return 0
+    menu_options+=("0|Voltar")
+    ui_menu_choice choice "PERFIS CADASTRADOS" "${menu_options[@]}" || return 0
     [[ "$choice" == "0" ]] && return 0
     if [[ ! "$choice" =~ ^[0-9]+$ ]] ||
       [[ -z "$(db_query "SELECT id FROM users WHERE id = $choice;")" ]]; then
@@ -794,14 +820,14 @@ admin_menu() {
     return 1
   fi
 
+  nav_push "ADMINISTRAÇÃO"
+
   while true; do
-    ui_clear
-    ui_header
-    printf '\n  ADMINISTRAÇÃO\n\n'
-    printf '  [1] Gerenciar exercícios\n'
-    printf '  [2] Perfis e pontos dos usuários\n'
-    printf '  [0] Voltar\n\n'
-    ui_read_line choice "  ADMIN > " || return 0
+    ui_screen_begin "ADMINISTRAÇÃO"
+    ui_menu_choice choice "ADMINISTRAÇÃO" \
+      "1|Gerenciar exercícios" \
+      "2|Perfis e pontos dos usuários" \
+      "0|Voltar" || return 0
 
     case "$choice" in
     1)
@@ -811,10 +837,11 @@ admin_menu() {
       admin_users_menu
       ;;
     0)
+      nav_pop
       return 0
       ;;
     *)
-      ui_message "Opção inválida."
+      ui_error "Opção inválida."
       ui_pause
       ;;
     esac

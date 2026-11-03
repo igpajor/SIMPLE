@@ -69,57 +69,48 @@ exercise_render_structured() {
   hints=$(db_hex_decode "$hints_hex") || return 1
   width=$(ui_width)
 
-  ui_clear
-  printf '\n  EXERCÍCIO %s\n\n' "$code"
-  ui_wrap_text "$name" "$width" 2
+  ui_screen_begin "EXERCÍCIO $code"
+  ui_wrap_text "$(ui_sanitize "$name")" "$width" 2
   if [[ -n "$description" ]]; then
-    printf '\n  DESCRIÇÃO\n'
-    ui_separator
+    ui_exercise_section "DESCRIÇÃO"
     ui_wrap_text "$description" "$width" 2
   fi
-  printf '\n  MISSÃO\n'
-  ui_separator
-  ui_wrap_text "$mission" "$width" 2
 
   if [[ -n "$delivery_directory" || -n "$delivery_files" || -n "$allowed_functions" ]]; then
-    printf '\n  ESPECIFICAÇÕES\n'
-    ui_separator
+    ui_exercise_section "ESPECIFICAÇÕES"
     if [[ -n "$delivery_directory" ]]; then
-      printf '  Diretório de entrega:\n'
-      ui_wrap_text "$delivery_directory" "$width" 4
+      ui_labeled_value "Diretório de entrega" "$delivery_directory" "$width"
     fi
     if [[ -n "$delivery_files" ]]; then
-      printf '  Arquivos esperados:\n'
-      ui_wrap_text "$delivery_files" "$width" 4
+      ui_labeled_value "Arquivos a entregar" "$delivery_files" "$width"
     fi
     if [[ -n "$allowed_functions" ]]; then
-      printf '  Funções permitidas:\n'
-      ui_wrap_text "$allowed_functions" "$width" 4
+      ui_labeled_value "Funções permitidas" "$allowed_functions" "$width"
     fi
   fi
 
+  ui_exercise_section "MISSÃO"
+  ui_wrap_text "$mission" "$width" 2
+
   if [[ -n "$example" ]]; then
-    printf '\n  EXEMPLO DE EXECUÇÃO\n'
-    ui_separator
+    ui_exercise_section "EXEMPLO DE EXECUÇÃO"
     exercise_render_example "$example" "$width"
   fi
   if [[ -n "$terminal_model" ]]; then
-    printf '\n  MODELO DO TERMINAL\n'
-    ui_separator
+    ui_exercise_section "MODELO DO TERMINAL"
     ui_code_block "$terminal_model"
   fi
   if [[ -n "$hints" ]]; then
-    printf '\n  DICAS\n'
-    ui_separator
+    ui_exercise_section "DICAS"
     while IFS= read -r hint || [[ -n "$hint" ]]; do
       ui_wrap_text "- $hint" "$width" 2
     done <<<"$hints"
   fi
   printf '\n'
-  ui_separator
-  printf '  [1] Registrar entrega para avaliação\n'
-  printf '  [0] Voltar ao catálogo\n\n'
-  ui_read_line action "  EXERCÍCIO > " || return 0
+  ui_statusline
+  ui_menu_choice action "EXERCÍCIO $(ui_sanitize "$code")" \
+    "1|Enviar solução para avaliação" \
+    "0|Voltar ao catálogo" || return 0
   if [[ "$action" == "1" ]]; then
     exercise_submit_prompt "$code"
   fi
@@ -129,66 +120,81 @@ exercises_menu() {
   local escolha
   local exercises
   local -a exercise_list
+  local -a menu_options
 
   if [[ "${BROKER_MODE:-0}" == "1" ]]; then
     broker_catalog_menu
     return $?
   fi
 
-  while true; do
-    ui_clear
-    ui_header
+  nav_push "EXERCÍCIOS"
 
-    printf '\n'
-    printf '  EXERCÍCIOS\n'
-    ui_separator
-    printf '\n'
+  while true; do
+    ui_screen_begin "EXERCÍCIOS"
 
     exercises=$(db_query "
-      SELECT code || '|' || name
+      SELECT hex(code) || '|' || hex(name)
       FROM exercises
       WHERE status = 'available'
       ORDER BY code;
-    ")
+    ") || {
+      nav_pop
+      return 1
+    }
 
     if [[ -z "$exercises" ]]; then
-      ui_message "Nenhum exercício disponível."
+      ui_empty_state "Nenhum exercício disponível." \
+        "Quando novos exercícios forem publicados, eles aparecerão aqui."
       ui_pause
-      return
+      nav_pop
+      return 0
     fi
 
     mapfile -t exercise_list <<<"$exercises"
 
+    menu_options=()
     local i=1
-
     for exercise in "${exercise_list[@]}"; do
-      local item_code="${exercise%%|*}"
-      local name="${exercise#*|}"
-
-      printf '  [%d] %s - %s\n' "$i" "$item_code" "$name"
+      local item_code_hex="${exercise%%|*}"
+      local name_hex="${exercise#*|}"
+      local item_code
+      local name
+      item_code=$(db_hex_decode "$item_code_hex") || {
+        nav_pop
+        return 1
+      }
+      name=$(db_hex_decode "$name_hex") || {
+        nav_pop
+        return 1
+      }
+      menu_options+=("$i|$item_code - $name")
       ((i++))
     done
 
-    printf '\n'
-    ui_separator
-    printf '\n'
-    printf '  [0] Voltar\n\n'
-
-    ui_read_line escolha "  EXERCÍCIOS > " || return 0
+    menu_options+=("0|Voltar")
+    if ! ui_menu_choice escolha "EXERCÍCIOS" "${menu_options[@]}"; then
+      nav_pop
+      return 0
+    fi
 
     if [[ "$escolha" == "0" ]]; then
-      return
+      nav_pop
+      return 0
     fi
 
     if [[ ! "$escolha" =~ ^[0-9]+$ ]] ||
       ((escolha < 1 || escolha > ${#exercise_list[@]})); then
-      ui_message "Opção inválida."
+      ui_error "Opção inválida."
       ui_pause
       continue
     fi
 
     local selected="${exercise_list[$((escolha - 1))]}"
-    local selected_code="${selected%%|*}"
+    local selected_code
+    selected_code=$(db_hex_decode "${selected%%|*}") || {
+      nav_pop
+      return 1
+    }
 
     exercise_show "$selected_code"
   done
@@ -210,10 +216,15 @@ exercise_show() {
   local title=""
   local line
   local section=""
+  local description_content=""
+  local mission_content=""
   local example=""
   local inside_example=0
   local first_line=1
-  local pending_spec=""
+  local current_spec=-1
+  local spec_label
+  local -a spec_labels=()
+  local -a spec_values=()
   local action
 
   code_sql=$(db_sql_quote "$code")
@@ -255,18 +266,8 @@ exercise_show() {
   # Lê o título da segunda linha original.
   title=$(sed -n '2p' "$full_path")
 
-  ui_clear
-
-  printf '\n'
-  printf '  EXERCÍCIO  %s\n' "$code"
-  printf '\n'
-
-  ui_wrap_text "$title" "$width" 2
-
-  printf '\n'
-  ui_separator
-
-  # Lê as demais partes do enunciado.
+  # Lê as partes para poder apresentar especificações antes da missão,
+  # mesmo quando o arquivo legado usa a ordem oposta.
   while IFS= read -r line || [[ -n "$line" ]]; do
 
     if ((first_line)); then
@@ -280,12 +281,11 @@ exercise_show() {
       continue
     fi
 
-    # Preserva linhas do exemplo, inclusive vazias.
+    # Preserva as linhas do exemplo, inclusive as vazias.
     if ((inside_example)); then
       if [[ "$line" == "ESPECIFICAÇÕES" ]]; then
-        exercise_render_example "$example" "$width"
-        example=""
         inside_example=0
+        section="ESPECIFICAÇÕES"
       else
         example+="$line"$'\n'
         continue
@@ -295,10 +295,7 @@ exercise_show() {
     [[ -z "$line" ]] && continue
 
     if [[ "$line" == "EXEMPLO DE EXECUÇÃO" ]]; then
-      printf '\n'
-      ui_separator
-      printf '\n'
-      printf '  EXEMPLO DE EXECUÇÃO\n\n'
+      ui_exercise_section "EXEMPLO DE EXECUÇÃO"
 
       inside_example=1
       continue
@@ -306,35 +303,75 @@ exercise_show() {
 
     case "$line" in
 
-    "MISSÃO" | "ESPECIFICAÇÕES")
+    "MISSÃO")
       section="$line"
-
-      printf '\n'
-      ui_separator
-      printf '\n'
-      printf '  %s\n' "$section"
-      printf '\n'
+      current_spec=-1
       ;;
 
-    "DIRETÓRIO DE ENTREGA" | \
-      "ARQUIVOS A ENTREGAR" | \
-      "FUNÇÕES PERMITIDAS")
+    "ESPECIFICAÇÕES")
+      section="$line"
+      current_spec=-1
+      ;;
 
-      pending_spec="$line"
-      printf '  %s\n' "$line"
+    "DIRETÓRIO DE ENTREGA" | "ARQUIVOS A ENTREGAR" | "FUNÇÕES PERMITIDAS")
+      case "$line" in
+        "DIRETÓRIO DE ENTREGA") spec_label="Diretório de entrega" ;;
+        "ARQUIVOS A ENTREGAR") spec_label="Arquivos a entregar" ;;
+        "FUNÇÕES PERMITIDAS") spec_label="Funções permitidas" ;;
+      esac
+      spec_labels+=("$spec_label")
+      spec_values+=("")
+      current_spec=$((${#spec_labels[@]} - 1))
+      section="ESPECIFICAÇÕES"
       ;;
 
     *)
-      if [[ -n "$pending_spec" ]]; then
-        ui_wrap_text "└── $line" "$width" 2
-        pending_spec=""
-      else
-        ui_wrap_text "$line" "$width" 2
-      fi
+      case "$section" in
+        "MISSÃO")
+          mission_content+="$line"$'\n'
+          ;;
+        "ESPECIFICAÇÕES")
+          if ((current_spec >= 0)); then
+            [[ -n "${spec_values[$current_spec]}" ]] &&
+              spec_values[current_spec]+=$'\n'
+            spec_values[current_spec]+="$line"
+          fi
+          ;;
+        *)
+          description_content+="$line"$'\n'
+          ;;
+      esac
       ;;
     esac
 
   done <"$full_path"
+
+  description_content="${description_content%$'\n'}"
+  mission_content="${mission_content%$'\n'}"
+  example="${example%$'\n'}"
+
+  ui_screen_begin "EXERCÍCIO $code"
+  ui_color_bold
+  ui_wrap_text "$title" "$width" 2
+  ui_color_reset
+  ui_separator
+  if [[ -n "$description_content" ]]; then
+    ui_wrap_text "$description_content" "$width" 2
+  fi
+  if ((${#spec_labels[@]})); then
+    ui_exercise_section "ESPECIFICAÇÕES"
+    for index in "${!spec_labels[@]}"; do
+      ui_labeled_value "${spec_labels[$index]}" "${spec_values[$index]}" "$width"
+    done
+  fi
+  if [[ -n "$mission_content" ]]; then
+    ui_exercise_section "MISSÃO"
+    ui_wrap_text "$mission_content" "$width" 2
+  fi
+  if [[ -n "$example" ]]; then
+    ui_exercise_section "EXEMPLO DE EXECUÇÃO"
+    exercise_render_example "$example" "$width"
+  fi
 
   code_sql=$(db_sql_quote "$code")
   terminal_model=$(db_query "
@@ -348,34 +385,23 @@ exercise_show() {
     WHERE code = $code_sql;
   ") || return 1
 
-  if ((inside_example)); then
-    exercise_render_example "$example" "$width"
-  fi
-
   if [[ -n "$terminal_model" ]]; then
-    printf '\n'
-    ui_separator
-    printf '\n  MODELO DO TERMINAL\n\n'
+    ui_exercise_section "MODELO DO TERMINAL"
     ui_code_block "$terminal_model"
   fi
 
   if [[ -n "$hints" ]]; then
-    printf '\n'
-    ui_separator
-    printf '\n  DICAS\n\n'
+    ui_exercise_section "DICAS"
     while IFS= read -r hint || [[ -n "$hint" ]]; do
       ui_wrap_text "- $hint" "$width" 2
     done <<<"$hints"
   fi
 
   printf '\n'
-  ui_separator
-  printf '\n'
-  printf '  [1] Enviar solução para avaliação\n'
-  printf '  [0] Voltar aos exercícios\n'
-  printf '\n'
-
-  ui_read_line action "  EXERCÍCIO > " || return 0
+  ui_statusline
+  ui_menu_choice action "EXERCÍCIO $(ui_sanitize "$code")" \
+    "1|Enviar solução para avaliação" \
+    "0|Voltar aos exercícios" || return 0
 
   if [[ "$action" == "1" ]]; then
     exercise_submit_prompt "$code"
@@ -466,9 +492,14 @@ exercise_submit_prompt() {
   local commit_url
   local delivery_directory
 
-  printf '\n  A submissão registra referências; o SIMPLE não recebe nem executa arquivos de código.\n'
+  printf '\n  A submissão registra apenas a referência; o SIMPLE não recebe nem executa arquivos de código.\n'
+  printf '  Um ponto será usado para abrir uma avaliação por outra pessoa.\n'
   ui_read_line commit_url "  URL direta do commit GitHub > " || return 1
   ui_read_line delivery_directory "  Diretório no repositório (use . para a raiz) > " || return 1
+  if ! ui_confirm "Enviar esta referência para avaliação?"; then
+    ui_warn "Submissão cancelada; nenhum ponto foi usado."
+    return 0
+  fi
   if ! exercise_submit "$code" "$commit_url" "$delivery_directory"; then
     ui_pause
   fi
@@ -480,25 +511,5 @@ exercise_submit_prompt() {
 
 exercise_render_example() {
   local content="$1"
-  local width="$2"
-  local inner_width
-  local line
-  local border
-
-  inner_width=$((width - 6))
-
-  if ((inner_width < 10)); then
-    inner_width=10
-  fi
-
-  printf -v border '%*s' "$inner_width" ''
-  border=${border// /─}
-
-  printf '  ┌%s┐\n' "$border"
-
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    printf '  │ %s\n' "$line"
-  done <<<"$content"
-
-  printf '  └%s┘\n' "$border"
+  ui_code_block "$content"
 }

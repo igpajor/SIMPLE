@@ -6,6 +6,14 @@ CURRENT_SESSION_TOKEN=""
 CURRENT_USER_IS_ADMIN="0"
 BROKER_MUST_CHANGE_PASSWORD="0"
 
+# Fallback para helpers de UI quando core/ui.sh não foi sourceado (ex: testes isolados).
+if ! command -v ui_success >/dev/null 2>&1; then
+  ui_success() { printf '  %s\n' "$*"; }
+  ui_error()   { printf '  %s\n' "$*" >&2; }
+  ui_warn()    { printf '  %s\n' "$*"; }
+  ui_message() { printf '  %s\n' "$*"; }
+fi
+
 auth_register() {
   local username="$1"
   local password="$2"
@@ -45,7 +53,7 @@ auth_register() {
 
   CURRENT_USER_ID=$(db_query "SELECT id FROM users WHERE username = $username_sql LIMIT 1;") || return 1
   CURRENT_USERNAME="$username"
-  printf '  Conta criada. Você recebeu 1 ponto inicial.\n'
+  ui_success "Conta criada. Você recebeu 1 ponto inicial."
 }
 
 auth_login() {
@@ -79,7 +87,7 @@ auth_login() {
 
   CURRENT_USER_ID="$user_id"
   CURRENT_USERNAME="$username"
-  printf '  Acesso autorizado.\n'
+  ui_success "Acesso autorizado."
 }
 
 users_is_admin() {
@@ -102,23 +110,48 @@ users_authenticate() {
   local password
   local confirmation
   local change_required
+  local width
+  local vp
+  local i
+  local term_lines
+  local content_lines=25
 
   if [[ -n "$CURRENT_USER_ID" ]]; then
     return 0
   fi
 
+  nav_clear
+  nav_push "ACESSO"
+
   while [[ -z "$CURRENT_USER_ID" ]]; do
+    width=$(ui_width)
+
+    # Padding vertical para centralizar o conteúdo na tela
+    term_lines=$(tput lines 2>/dev/null || printf '24')
+    [[ "$term_lines" =~ ^[0-9]+$ ]] || term_lines=24
+    vp=$(( (term_lines - content_lines) / 2 ))
+    [[ $vp -lt 0 ]] && vp=0
+
     ui_clear
-    ui_header
-    printf '\n  ACESSO\n\n'
-    if [[ "${SIMPLE_MODE:-local}" == "proxy" ]]; then
-      printf '  [1] Criar conta (disponível somente pela administração)\n'
-    else
-      printf '  [1] Criar conta\n'
+
+    # Espaço superior para centralização vertical
+    for ((i=0; i<vp; i++)); do
+      printf '\n'
+    done
+
+    # Banner de login com arte ASCII centralizada
+    ui_simple_banner "$width"
+
+    ui_login_option "1" "Criar Conta" "$width"
+    ui_login_option "2" "Entrar" "$width"
+    ui_login_option "0" "Sair" "$width"
+    printf '\n\n'
+
+    # Leitura da opção
+    if ! ui_read_line choice "  OPÇÃO > "; then
+      nav_pop
+      return 1
     fi
-    printf '  [2] Entrar\n'
-    printf '  [0] Sair\n\n'
-    ui_read_line choice "  ACESSO > " || return 1
 
     case "$choice" in
     1)
@@ -139,6 +172,7 @@ users_authenticate() {
         ui_pause
         continue
       fi
+      nav_pop
       return 0
       ;;
     2)
@@ -162,15 +196,18 @@ users_authenticate() {
         # shellcheck disable=SC2034 # Reset shared Broker session state before the next login.
         CURRENT_SESSION_TOKEN=""
         CURRENT_USER_IS_ADMIN="0"
+        nav_pop
         return 1
       fi
+      nav_pop
       return 0
       ;;
     0)
+      nav_pop
       return 1
       ;;
     *)
-      ui_message "Opção inválida."
+      ui_error "Opção inválida."
       ui_pause
       ;;
     esac
@@ -206,7 +243,6 @@ users_change_password_prompt() {
 users_profile_dashboard() {
   local user_id="$1"
   local username="$2"
-  local admin_view="${3:-0}"
   local created_at
   local completed_count
   local balance
@@ -256,24 +292,34 @@ users_profile_dashboard() {
     ORDER BY e.code;
   ") || return 1
 
-  printf '\n  %s\n\n' "$([[ "$admin_view" == "1" ]] && printf 'PERFIL DO USUÁRIO' || printf 'MEU PERFIL')"
-  printf '  Usuário: %s\n' "$username"
-  [[ -n "$display_name" ]] && printf '  Nome de exibição: %s\n' "$display_name"
-  [[ -n "$github_username" ]] && printf '  GitHub: https://github.com/%s\n' "$github_username"
-  printf '  Criado em: %s\n' "$created_at"
+  local width
+
+  width=$(ui_width)
+
+  ui_section "DADOS PESSOAIS"
+  ui_labeled_value "Usuário" "$(ui_sanitize "$username")" "$width"
+  [[ -n "$display_name" ]] && ui_labeled_value "Nome de exibição" "$(ui_sanitize "$display_name")" "$width"
+  [[ -n "$github_username" ]] && ui_labeled_value "GitHub" "https://github.com/$(ui_sanitize "$github_username")" "$width"
+  ui_labeled_value "Criado em" "$(ui_sanitize "$created_at")" "$width"
+
   if [[ -n "$bio" ]]; then
-    printf '  Biografia:\n'
-    ui_wrap_text "$bio" "$(ui_width)" 4
+    printf '\n'
+    ui_section "BIOGRAFIA"
+    ui_wrap_text "$bio" "$width" 4
   fi
-  printf '  Exercícios aprovados: %s\n' "$completed_count"
-  printf '  Saldo de pontos: %s\n\n' "$balance"
-  printf '  EXERCÍCIOS CONCLUÍDOS\n'
-  ui_separator
+
+  printf '\n'
+  ui_section "PROGRESSO"
+  ui_labeled_value "Exercícios aprovados" "$completed_count" "$width"
+  ui_labeled_value "Saldo de pontos" "$balance" "$width"
+
+  printf '\n'
+  ui_section "EXERCÍCIOS CONCLUÍDOS"
   if [[ -z "$completed_exercises" ]]; then
-    printf '  Nenhum exercício aprovado ainda.\n'
+    ui_empty_state "Nenhum exercício aprovado ainda." "Complete exercícios para vê-los aqui."
   else
     while IFS='|' read -r code name; do
-      printf '  %s - %s\n' "$code" "$name"
+      ui_wrap_text "$(ui_sanitize "$code") - $(ui_sanitize "$name")" "$width" 2
     done <<<"$completed_exercises"
   fi
 }
@@ -292,14 +338,18 @@ users_edit_profile() {
     return 1
   fi
 
+  nav_push "EDITAR PERFIL"
+
   while true; do
-    ui_clear
-    printf '\n  EDITAR MEU PERFIL\n\n'
-    printf '  [1] Nome de exibição\n'
-    printf '  [2] Usuário do GitHub\n'
-    printf '  [3] Biografia curta\n'
-    printf '  [0] Voltar\n\n'
-    ui_read_line choice "  PERFIL > " || return 0
+    ui_screen_begin "EDITAR MEU PERFIL"
+    if ! ui_menu_choice choice "EDITAR MEU PERFIL" \
+      "1|Nome de exibição" \
+      "2|Usuário do GitHub" \
+      "3|Biografia curta" \
+      "0|Voltar"; then
+      nav_pop
+      return 0
+    fi
     case "$choice" in
     1)
       field="display_name"
@@ -314,10 +364,11 @@ users_edit_profile() {
       label="Biografia"
       ;;
     0)
+      nav_pop
       return 0
       ;;
     *)
-      ui_message "Opção inválida."
+      ui_error "Opção inválida."
       ui_pause
       continue
       ;;
@@ -325,27 +376,36 @@ users_edit_profile() {
 
     current_value=$(db_query "
       SELECT COALESCE($field, '') FROM users WHERE id = $CURRENT_USER_ID;
-    ") || return 1
-    printf '\n  Valor atual:\n%s\n\n' "$current_value"
+    ") || {
+      nav_pop
+      return 1
+    }
+    printf '\n  Valor atual:\n%s\n\n' "$(ui_sanitize "$current_value")"
     if [[ "$field" == "bio" ]]; then
       printf '  Digite .fim sozinho em uma linha; conteúdo vazio remove a biografia.\n'
-      ui_read_multiline value || return 1
+      ui_read_multiline value || {
+        nav_pop
+        return 1
+      }
       bio_without_newlines="${value//$'\n'/}"
       if ((${#value} > 500)) || [[ "$bio_without_newlines" =~ [[:cntrl:]] ]]; then
-        ui_message "A biografia deve ter até 500 caracteres e não pode conter caracteres de controle."
+        ui_error "A biografia deve ter até 500 caracteres e não pode conter caracteres de controle."
         ui_pause
         continue
       fi
     else
-      ui_read_line value "  Novo $label (vazio remove) > " || return 1
+      ui_read_line value "  Novo $label (vazio remove) > " || {
+        nav_pop
+        return 1
+      }
       if [[ "$value" =~ [[:cntrl:]] ]] || ((${#value} > 80)); then
-        ui_message "$label deve ter até 80 caracteres e não pode conter caracteres de controle."
+        ui_error "$label deve ter até 80 caracteres e não pode conter caracteres de controle."
         ui_pause
         continue
       fi
       if [[ "$field" == "github_username" && -n "$value" &&
         ! "$value" =~ ^[A-Za-z0-9-]{1,39}$ ]]; then
-        ui_message "Informe apenas um usuário GitHub válido (letras, números e hífens)."
+        ui_error "Informe apenas um usuário GitHub válido (letras, números e hífens)."
         ui_pause
         continue
       fi
@@ -359,7 +419,7 @@ users_edit_profile() {
       ui_pause
       continue
     fi
-    ui_message "$label atualizado."
+    ui_success "$label atualizado."
     ui_pause
   done
 }
@@ -372,19 +432,39 @@ users_profile_menu() {
     return $?
   fi
 
-  ui_clear
-  ui_header
-  users_profile_dashboard "$CURRENT_USER_ID" "$CURRENT_USERNAME" || return 1
-  printf '\n'
-  printf '  [1] Editar perfil\n'
-  printf '  [2] Encerrar sessão\n'
-  printf '  [0] Voltar\n\n'
-  ui_read_line choice "  PERFIL > " || return 0
+  nav_push "MEU PERFIL"
 
-  if [[ "$choice" == "1" ]]; then
-    users_edit_profile
-  elif [[ "$choice" == "2" ]]; then
-    CURRENT_USER_ID=""
-    CURRENT_USERNAME=""
-  fi
+  while true; do
+    ui_screen_begin "MEU PERFIL"
+    users_profile_dashboard "$CURRENT_USER_ID" "$CURRENT_USERNAME" || {
+      nav_pop
+      return 1
+    }
+    printf '\n'
+    if ! ui_menu_choice choice "MEU PERFIL" \
+      "1|Editar perfil" \
+      "2|Encerrar sessão" \
+      "0|Voltar"; then
+      nav_pop
+      return 0
+    fi
+
+    if [[ "$choice" == "1" ]]; then
+      users_edit_profile || {
+        nav_pop
+        return 1
+      }
+    elif [[ "$choice" == "2" ]]; then
+      if ui_confirm "Encerrar sua sessão?"; then
+        ui_success "Sessão encerrada."
+        CURRENT_USER_ID=""
+        CURRENT_USERNAME=""
+        nav_pop
+        return 0
+      fi
+    elif [[ "$choice" == "0" ]]; then
+      nav_pop
+      return 0
+    fi
+  done
 }

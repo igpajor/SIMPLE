@@ -17,7 +17,6 @@ source "$SCRIPT_DIR/modules/progress.sh"
 source "$SCRIPT_DIR/modules/admin.sh"
 source "$SCRIPT_DIR/modules/broker_ui.sh"
 
-APP_NAME="SIMPLE"
 BROKER_MODE="0"
 
 case "${SIMPLE_MODE:-local}" in
@@ -89,17 +88,25 @@ while true; do
     if users_is_admin "$CURRENT_USER_ID"; then
       admin_menu
     else
-      ui_message "Acesso administrativo não autorizado."
+      submissions_menu
+    fi
+    ;;
+  6)
+    if users_is_admin "$CURRENT_USER_ID"; then
+      submissions_menu
+    else
+      ui_error "Opção inválida. Escolha uma opção do menu."
       ui_pause
     fi
     ;;
   0)
     ui_clear
-    printf '\n  SIMPLE encerrado.\n\n'
+    ui_success "SIMPLE encerrado."
+    printf '\n'
     break
     ;;
   *)
-    ui_message "Opção inválida. Escolha uma opção do menu."
+    ui_error "Opção inválida. Escolha uma opção do menu."
     ui_pause
     ;;
   esac
