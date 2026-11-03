@@ -1,0 +1,3 @@
+sudo env SIMPLE_MODE=broker \
+  BROKER_SOCKET=/run/simple-private/broker.sock \
+  /usr/bin/bash /opt/simple/simple.sh
