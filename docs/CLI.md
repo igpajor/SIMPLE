@@ -24,7 +24,9 @@ Em **Meu perfil**, cada participante pode editar o nome de exibição, o usuári
 
 Abra um exercício e escolha enviar a solução. O SIMPLE registra a URL de um commit do GitHub (`https://github.com/OWNER/REPOSITORY/commit/SHA`) e o diretório do projeto em que a solução está. O commit deve ser identificado por um SHA hexadecimal de 7 a 64 caracteres. O diretório deve ser relativo e não pode conter `..`. A referência não pode ser editada depois do envio; para enviar outra versão, crie uma nova tentativa. O SIMPLE armazena a referência, não baixa nem executa o código. A submissão abre um slot e debita 1 ponto.
 
-Outro usuário pode avaliar o conteúdo de 0 a 5; a nota mínima para aprovação é 3. Quem registra a avaliação recebe 1 ponto, tanto em aprovação quanto em reprovação. Não é permitido avaliar a própria submissão. Uma reprovação permite nova submissão e novo slot, desde que o usuário tenha pontos; uma aprovação impede nova avaliação daquele exercício para o mesmo usuário.
+Outro usuário conclui a avaliação atribuindo uma nota de 0 a 5 e registrando um feedback obrigatório; a nota mínima para aprovação é 3. Quem registra a avaliação recebe 1 ponto, tanto em aprovação quanto em reprovação. Não é permitido avaliar a própria submissão. Uma reprovação permite nova submissão e novo slot, desde que o usuário tenha pontos; uma aprovação impede nova avaliação daquele exercício para o mesmo usuário.
+
+Depois de receber a avaliação, a pessoa pode responder ao feedback e dar uma nota de 0 a 5 ao avaliador. Essa resposta é opcional, mas, quando enviada, exige a nota e um comentário. **Meu progresso** mostra avaliações recebidas e realizadas, os feedbacks, as respostas e as notas dadas ao avaliador. Novas avaliações e respostas geram avisos na tela inicial e ficam disponíveis como notificações em Meu progresso; abrir essa tela marca os avisos como lidos.
 
 O programa não baixa nem executa soluções submetidas. A pessoa avaliadora consulta a referência externa e registra a avaliação manualmente. Registros anteriores ao formato GitHub são preservados como submissões legadas.
 

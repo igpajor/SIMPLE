@@ -182,6 +182,16 @@ broker_progress_menu() {
   local submitter
   local reviewer
   local relation
+  local response_score
+  local response_feedback
+  local response_at
+  local notification_type
+  local notification_user
+  local notification_score
+  local review_id
+  local choice
+  local -a pending_responses
+  local -a response_options
   local amount
   local entry_type
   local details
@@ -213,13 +223,42 @@ broker_progress_menu() {
       ui_wrap_text "$code - $name" "$(ui_width)" 2
     done <<<"$rows"
   fi
+  ui_section "NOTIFICAÇÕES"
+  rows=$(broker_response_rows "$response" notifications) || return 1
+  if [[ -z "$rows" ]]; then
+    ui_empty_state "Nenhuma notificação nova."
+  else
+    while IFS=$'\t' read -r notification_type code created_at \
+      notification_score feedback notification_user; do
+      code=$(db_hex_decode "$code") || return 1
+      created_at=$(db_hex_decode "$created_at") || return 1
+      notification_score=$(db_hex_decode "$notification_score") || return 1
+      feedback=$(db_hex_decode "$feedback") || return 1
+      notification_user=$(db_hex_decode "$notification_user") || return 1
+      if [[ "$notification_type" == "review_received" ]]; then
+        ui_wrap_text "Nova avaliação de $notification_user em $code: nota $notification_score/5" \
+          "$(ui_width)" 2
+      else
+        ui_wrap_text "Nova resposta de $notification_user em $code: nota $notification_score/5 ao avaliador" \
+          "$(ui_width)" 2
+      fi
+      ui_wrap_text "Feedback: $(ui_sanitize "$feedback")" "$(ui_width)" 4
+      ui_wrap_text "Recebida em: $(ui_sanitize "$created_at")" "$(ui_width)" 4
+    done <<<"$rows"
+  fi
+  local mark_response
+  mark_response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
+    broker_request notifications.mark_read token) || return 1
+  broker_check_response "$mark_response" || return 1
+
   ui_section "HISTÓRICO DE AVALIAÇÕES"
   rows=$(broker_response_rows "$response" review_history) || return 1
   if [[ -z "$rows" ]]; then
     ui_empty_state "Nenhuma avaliação registrada."
   else
     while IFS= read -r encoded; do
-      IFS=$'\t' read -r code score feedback created_at submitter reviewer relation <<<"$encoded"
+      IFS=$'\t' read -r review_id code score feedback created_at response_score \
+        response_feedback response_at submitter reviewer relation <<<"$encoded"
       code=$(db_hex_decode "$code") || return 1
       score=$(db_hex_decode "$score") || return 1
       feedback=$(db_hex_decode "$feedback") || return 1
@@ -227,14 +266,55 @@ broker_progress_menu() {
       submitter=$(db_hex_decode "$submitter") || return 1
       reviewer=$(db_hex_decode "$reviewer") || return 1
       relation=$(db_hex_decode "$relation") || return 1
+      response_score=$(db_hex_decode "$response_score") || return 1
+      response_feedback=$(db_hex_decode "$response_feedback") || return 1
+      response_at=$(db_hex_decode "$response_at") || return 1
       if [[ "$relation" == "received" ]]; then
         ui_wrap_text "$code - nota $score/5, avaliado por $reviewer ($created_at)" "$(ui_width)" 2
       else
         ui_wrap_text "$code - nota $score/5, submissão de $submitter ($created_at)" "$(ui_width)" 2
       fi
       [[ -n "$feedback" ]] && ui_wrap_text "Feedback: $feedback" "$(ui_width)" 4
+      if [[ -n "$response_score" ]]; then
+        ui_wrap_text "Sua nota ao avaliador: $response_score/5" "$(ui_width)" 4
+        ui_wrap_text "Sua resposta: $response_feedback ($response_at)" "$(ui_width)" 4
+      fi
     done <<<"$rows"
   fi
+
+  ui_section "RESPONDER A UMA AVALIAÇÃO"
+  rows=$(broker_response_rows "$response" pending_review_responses) || return 1
+  pending_responses=()
+  if [[ -n "$rows" ]]; then
+    while IFS=$'\t' read -r review_id code score feedback reviewer; do
+      review_id=$(db_hex_decode "$review_id") || return 1
+      code=$(db_hex_decode "$code") || return 1
+      score=$(db_hex_decode "$score") || return 1
+      feedback=$(db_hex_decode "$feedback") || return 1
+      reviewer=$(db_hex_decode "$reviewer") || return 1
+      pending_responses+=("$review_id"$'\t'"$code"$'\t'"$score"$'\t'"$feedback"$'\t'"$reviewer")
+    done <<<"$rows"
+  fi
+  if ((${#pending_responses[@]} == 0)); then
+    ui_empty_state "Nenhuma avaliação aguardando sua resposta."
+  else
+    response_options=()
+    for review_id in "${!pending_responses[@]}"; do
+      IFS=$'\t' read -r _ code _ _ reviewer <<<"${pending_responses[$review_id]}"
+      response_options+=("$((review_id + 1))|$code — avaliação de $reviewer")
+      ui_wrap_text "[${response_options[$review_id]%%|*}] ${response_options[$review_id]#*|}" \
+        "$(ui_width)" 2
+    done
+    ui_wrap_text "Escolha uma avaliação para responder ou pressione Enter para continuar." \
+      "$(ui_width)" 2
+    if ui_read_line choice "  AVALIAÇÃO (Enter para continuar) > " &&
+      [[ "$choice" =~ ^[0-9]+$ ]] &&
+      ((choice >= 1 && choice <= ${#pending_responses[@]})); then
+      IFS=$'\t' read -r review_id _ _ _ _ <<<"${pending_responses[$((choice - 1))]}"
+      broker_evaluation_response_prompt "$review_id"
+    fi
+  fi
+
   ui_section "MOVIMENTAÇÕES DE PONTOS"
   rows=$(broker_response_rows "$response" points_history) || return 1
   if [[ -z "$rows" ]]; then
@@ -531,8 +611,13 @@ broker_evaluation_review_prompt() {
     [[ "$score" =~ ^[0-5]$ ]] && break
     ui_message "A nota deve ser um número inteiro de 0 a 5."
   done
-  printf '  Comentário (vazio para nenhum):\n'
+  printf '  Feedback da avaliação (obrigatório):\n'
   ui_read_multiline feedback || return 1
+  while [[ -z "${feedback//[[:space:]]/}" ]]; do
+    ui_message "O feedback da avaliação é obrigatório."
+    printf '  Feedback da avaliação (obrigatório):\n'
+    ui_read_multiline feedback || return 1
+  done
   if ! ui_confirm "Registrar esta nota e o feedback?"; then
     ui_warn "Avaliação cancelada; nenhuma alteração foi registrada."
     return 0
@@ -549,6 +634,61 @@ broker_evaluation_review_prompt() {
     fi
   else
     ui_message "Não foi possível registrar a avaliação."
+  fi
+  ui_pause
+}
+
+broker_evaluation_response_prompt() {
+  local review_id="$1"
+  local response
+  local code
+  local reviewer
+  local score
+  local feedback
+  local recipient_score
+  local recipient_feedback
+  local status
+
+  response=$(printf '%s\0%s\0' "$CURRENT_SESSION_TOKEN" "$review_id" |
+    broker_request evaluations.review.get token review_id) || return 1
+  if ! broker_check_response "$response"; then
+    ui_pause
+    return 1
+  fi
+  code=$(broker_response_nested_field "$response" review exercise_code) || return 1
+  reviewer=$(broker_response_nested_field "$response" review reviewer) || return 1
+  score=$(broker_response_nested_field "$response" review score) || return 1
+  feedback=$(broker_response_nested_field "$response" review feedback) || return 1
+
+  ui_screen_begin "RESPONDER AVALIAÇÃO"
+  ui_panel "$code — avaliação de $reviewer"
+  ui_wrap_text "Nota recebida: $score/5" "$(ui_width)" 2
+  ui_wrap_text "Feedback: $feedback" "$(ui_width)" 2
+  ui_panel_end
+  while true; do
+    ui_read_line recipient_score "  Sua nota ao avaliador (0 a 5) > " || return 1
+    [[ "$recipient_score" =~ ^[0-5]$ ]] && break
+    ui_message "A nota deve ser um número inteiro de 0 a 5."
+  done
+  printf '  Resposta ao feedback (obrigatória):\n'
+  ui_read_multiline recipient_feedback || return 1
+  while [[ -z "${recipient_feedback//[[:space:]]/}" ]]; do
+    ui_message "A resposta da avaliação é obrigatória."
+    printf '  Resposta ao feedback (obrigatória):\n'
+    ui_read_multiline recipient_feedback || return 1
+  done
+  if ! ui_confirm "Enviar sua resposta e nota ao avaliador?"; then
+    ui_warn "Resposta cancelada; nenhuma alteração foi registrada."
+    return 0
+  fi
+  status=$(printf '%s\0%s\0%s\0%s\0' \
+    "$CURRENT_SESSION_TOKEN" "$review_id" "$recipient_score" \
+    "$recipient_feedback" |
+    broker_request evaluations.review.respond token review_id score feedback) || return 1
+  if broker_check_response "$status"; then
+    ui_success "Resposta registrada. O avaliador foi notificado."
+  else
+    ui_message "Não foi possível registrar a resposta."
   fi
   ui_pause
 }
@@ -1302,14 +1442,23 @@ broker_admin_menu() {
 
 broker_mode_menu() {
   local choice
+  local unread_notifications
+  local progress_label="Meu progresso"
   local -a menu_options
 
+  unread_notifications=$(progress_unread_notification_count) || return 1
+  if ((unread_notifications > 0)); then
+    progress_label+=" ($unread_notifications novas)"
+  fi
   ui_screen_begin "INÍCIO"
   ui_home_intro "$CURRENT_USERNAME" || return 1
+  if ((unread_notifications > 0)); then
+    ui_warn "Você tem $unread_notifications notificação(ões) nova(s). Confira Meu progresso."
+  fi
   menu_options=(
     "1|Catálogo de exercícios"
     "2|Avaliações abertas"
-    "3|Meu progresso"
+    "3|$progress_label"
     "4|Meu perfil"
   )
   if [[ "$CURRENT_USER_IS_ADMIN" == "True" ]]; then

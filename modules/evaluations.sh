@@ -24,12 +24,89 @@ evaluation_record_review() {
     printf '  A nota deve ser um número inteiro de 0 a 5.\n'
     return 2
   fi
+  if [[ -z "${feedback//[[:space:]]/}" ]]; then
+    printf '  O feedback da avaliação é obrigatório.\n'
+    return 2
+  fi
 
   feedback_sql=$(db_sql_quote "$feedback")
   db_query "
+    BEGIN IMMEDIATE;
     INSERT INTO reviews (slot_id, reviewer_id, score, feedback)
     VALUES ($slot_id, $CURRENT_USER_ID, $score, $feedback_sql);
+    INSERT INTO notifications (user_id, type, review_id)
+    SELECT s.user_id, 'review_received',
+           (SELECT id FROM reviews WHERE slot_id = $slot_id)
+    FROM evaluation_slots slot
+    JOIN submissions s ON s.id = slot.submission_id
+    WHERE slot.id = $slot_id;
+    COMMIT;
   "
+}
+
+evaluation_respond_to_review() {
+  local review_id="$1"
+  local score="$2"
+  local feedback="$3"
+  local feedback_sql
+  local updated
+
+  if [[ "${BROKER_MODE:-0}" == "1" ]]; then
+    local response
+    response=$(printf '%s\0%s\0%s\0%s\0' \
+      "$CURRENT_SESSION_TOKEN" "$review_id" "$score" "$feedback" |
+      broker_request evaluations.review.respond token review_id score feedback) || return 1
+    broker_check_response "$response"
+    return $?
+  fi
+
+  if [[ ! "$review_id" =~ ^[0-9]+$ ]]; then
+    printf '  Avaliação inválida.\n'
+    return 2
+  fi
+  if [[ ! "$score" =~ ^[0-5]$ ]]; then
+    printf '  A nota deve ser um número inteiro de 0 a 5.\n'
+    return 2
+  fi
+  if [[ -z "${feedback//[[:space:]]/}" ]]; then
+    printf '  A resposta da avaliação é obrigatória.\n'
+    return 2
+  fi
+
+  feedback_sql=$(db_sql_quote "$feedback")
+  updated=$(db_query "
+    BEGIN IMMEDIATE;
+    UPDATE reviews
+    SET recipient_score = $score,
+        recipient_feedback = $feedback_sql,
+        recipient_responded_at = CURRENT_TIMESTAMP
+    WHERE id = $review_id
+      AND recipient_responded_at IS NULL
+      AND slot_id IN (
+        SELECT slot.id
+        FROM evaluation_slots slot
+        JOIN submissions s ON s.id = slot.submission_id
+        WHERE s.user_id = $CURRENT_USER_ID
+      );
+    INSERT INTO notifications (user_id, type, review_id)
+    SELECT reviewer_id, 'response_received', id
+    FROM reviews
+    WHERE id = $review_id
+      AND changes() = 1
+      AND slot_id IN (
+        SELECT slot.id
+        FROM evaluation_slots slot
+        JOIN submissions s ON s.id = slot.submission_id
+        WHERE s.user_id = $CURRENT_USER_ID
+      );
+    SELECT changes();
+    COMMIT;
+  ") || return 1
+  if [[ "$updated" != "1" ]]; then
+    printf '  Avaliação indisponível ou já respondida.\n'
+    return 1
+  fi
+  return 0
 }
 
 evaluation_review_prompt() {
@@ -104,7 +181,11 @@ evaluation_review_prompt() {
     ui_message "A nota deve ser um número inteiro de 0 a 5."
   done
 
-  ui_read_line feedback "  Comentário (opcional) > " || return 1
+  ui_read_line feedback "  Feedback da avaliação (obrigatório) > " || return 1
+  while [[ -z "${feedback//[[:space:]]/}" ]]; do
+    ui_message "O feedback da avaliação é obrigatório."
+    ui_read_line feedback "  Feedback da avaliação (obrigatório) > " || return 1
+  done
   if ! ui_confirm "Registrar esta nota e o feedback?"; then
     ui_warn "Avaliação cancelada; nenhuma alteração foi registrada."
     return 0
@@ -117,6 +198,74 @@ evaluation_review_prompt() {
     fi
   else
     ui_message "Não foi possível registrar a avaliação."
+  fi
+  ui_pause
+}
+
+evaluation_response_prompt() {
+  local review_id="$1"
+  local row
+  local code
+  local reviewer
+  local score
+  local feedback
+  local recipient_score
+  local recipient_feedback
+
+  if [[ "${BROKER_MODE:-0}" == "1" ]]; then
+    broker_evaluation_response_prompt "$review_id"
+    return $?
+  fi
+
+  row=$(db_query "
+    SELECT hex(e.code) || '|' || hex(reviewer.username) || '|' ||
+           r.score || '|' || hex(r.feedback)
+    FROM reviews r
+    JOIN evaluation_slots slot ON slot.id = r.slot_id
+    JOIN submissions s ON s.id = slot.submission_id
+    JOIN exercises e ON e.id = s.exercise_id
+    JOIN users reviewer ON reviewer.id = r.reviewer_id
+    WHERE r.id = $review_id
+      AND s.user_id = $CURRENT_USER_ID
+      AND r.recipient_responded_at IS NULL;
+  ") || return 1
+  if [[ -z "$row" ]]; then
+    ui_message "Essa avaliação já foi respondida ou não pertence a você."
+    ui_pause
+    return 1
+  fi
+  IFS='|' read -r code reviewer score feedback <<<"$row"
+  code=$(db_hex_decode "$code") || return 1
+  reviewer=$(db_hex_decode "$reviewer") || return 1
+  feedback=$(db_hex_decode "$feedback") || return 1
+
+  ui_screen_begin "RESPONDER AVALIAÇÃO"
+  ui_panel "$code — avaliação de $reviewer"
+  ui_wrap_text "Nota recebida: $score/5" "$(ui_width)" 2
+  ui_wrap_text "Feedback: $feedback" "$(ui_width)" 2
+  ui_panel_end
+  while true; do
+    ui_read_line recipient_score "  Sua nota ao avaliador (0 a 5) > " || return 1
+    if [[ "$recipient_score" =~ ^[0-5]$ ]]; then
+      break
+    fi
+    ui_message "A nota deve ser um número inteiro de 0 a 5."
+  done
+  printf '  Resposta ao feedback (obrigatória):\n'
+  ui_read_multiline recipient_feedback || return 1
+  while [[ -z "${recipient_feedback//[[:space:]]/}" ]]; do
+    ui_message "A resposta da avaliação é obrigatória."
+    printf '  Resposta ao feedback (obrigatória):\n'
+    ui_read_multiline recipient_feedback || return 1
+  done
+  if ! ui_confirm "Enviar sua resposta e nota ao avaliador?"; then
+    ui_warn "Resposta cancelada; nenhuma alteração foi registrada."
+    return 0
+  fi
+  if evaluation_respond_to_review "$review_id" "$recipient_score" "$recipient_feedback"; then
+    ui_success "Resposta registrada. O avaliador foi notificado."
+  else
+    ui_message "Não foi possível registrar a resposta."
   fi
   ui_pause
 }

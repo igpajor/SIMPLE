@@ -74,7 +74,20 @@ CREATE TABLE IF NOT EXISTS reviews (
     reviewer_id INTEGER NOT NULL REFERENCES users(id),
     score INTEGER NOT NULL CHECK (score BETWEEN 0 AND 5),
     feedback TEXT NOT NULL DEFAULT '',
+    recipient_score INTEGER CHECK (recipient_score IS NULL OR recipient_score BETWEEN 0 AND 5),
+    recipient_feedback TEXT NOT NULL DEFAULT '',
+    recipient_responded_at DATETIME,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    type TEXT NOT NULL CHECK (type IN ('review_received', 'response_received')),
+    review_id INTEGER NOT NULL REFERENCES reviews(id),
+    read_at DATETIME,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (user_id, type, review_id)
 );
 
 CREATE TABLE IF NOT EXISTS points_ledger (

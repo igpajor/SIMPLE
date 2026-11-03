@@ -64,6 +64,9 @@ db_init() {
     ! db_ensure_column users is_active "INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1))" ||
     ! db_ensure_column evaluation_slots accepted_by "INTEGER REFERENCES users(id)" ||
     ! db_ensure_column evaluation_slots accepted_at "DATETIME" ||
+    ! db_ensure_column reviews recipient_score "INTEGER CHECK (recipient_score IS NULL OR recipient_score BETWEEN 0 AND 5)" ||
+    ! db_ensure_column reviews recipient_feedback "TEXT NOT NULL DEFAULT ''" ||
+    ! db_ensure_column reviews recipient_responded_at "DATETIME" ||
     ! db_ensure_column submissions content_kind "TEXT NOT NULL DEFAULT 'legacy' CHECK (content_kind IN ('legacy', 'github_commit'))" ||
     ! db_ensure_column submissions commit_url "TEXT" ||
     ! db_ensure_column submissions delivery_directory "TEXT"; then

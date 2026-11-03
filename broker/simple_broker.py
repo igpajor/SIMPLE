@@ -48,6 +48,9 @@ MIGRATIONS = (
     ("users", "is_active", "INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1))"),
     ("evaluation_slots", "accepted_by", "INTEGER REFERENCES users(id)"),
     ("evaluation_slots", "accepted_at", "DATETIME"),
+    ("reviews", "recipient_score", "INTEGER CHECK (recipient_score IS NULL OR recipient_score BETWEEN 0 AND 5)"),
+    ("reviews", "recipient_feedback", "TEXT NOT NULL DEFAULT ''"),
+    ("reviews", "recipient_responded_at", "DATETIME"),
     ("submissions", "content_kind", "TEXT NOT NULL DEFAULT 'legacy' CHECK (content_kind IN ('legacy', 'github_commit'))"),
     ("submissions", "commit_url", "TEXT"),
     ("submissions", "delivery_directory", "TEXT"),
@@ -67,10 +70,14 @@ METHOD_FIELDS = {
     "submissions.get": ("token", "submission_id"),
     "evaluations.slots.list": ("token",),
     "evaluations.slot.get": ("token", "slot_id"),
+    "evaluations.review.get": ("token", "review_id"),
     "evaluations.accept": ("token", "slot_id"),
     "evaluations.cancel": ("token", "slot_id"),
     "evaluations.review.submit": ("token", "slot_id", "score", "feedback"),
+    "evaluations.review.respond": ("token", "review_id", "score", "feedback"),
     "evaluations.history": ("token",),
+    "notifications.count": ("token",),
+    "notifications.mark_read": ("token",),
     "points.balance": ("token",),
     "points.history": ("token",),
     "progress.get": ("token",),
@@ -255,7 +262,11 @@ def _validate_database_connection(
             "accepted_at", "created_at", "completed_at",
         },
         "reviews": {
-            "id", "slot_id", "reviewer_id", "score", "feedback", "created_at",
+            "id", "slot_id", "reviewer_id", "score", "feedback", "recipient_score",
+            "recipient_feedback", "recipient_responded_at", "created_at",
+        },
+        "notifications": {
+            "id", "user_id", "type", "review_id", "read_at", "created_at",
         },
         "points_ledger": {
             "id", "user_id", "amount", "entry_type", "submission_id", "review_id",
@@ -271,6 +282,7 @@ def _validate_database_connection(
     if allow_pre_migration_schema:
         for table, column, _definition in MIGRATIONS:
             required_columns.get(table, set()).discard(column)
+        required_columns.pop("notifications", None)
 
     for table, expected_columns in required_columns.items():
         columns = {
@@ -1183,6 +1195,26 @@ class Broker:
                     raise ValueError("Slot indisponível, reservado por outro usuário ou próprio.")
                 return {"ok": True, "slot": dict(row)}
 
+            if method == "evaluations.review.get":
+                review_id = self._integer(request["review_id"], "Avaliação")
+                row = connection.execute(
+                    """
+                    SELECT r.id AS review_id, e.code AS exercise_code,
+                           reviewer.username AS reviewer, r.score, r.feedback
+                    FROM reviews r
+                    JOIN evaluation_slots slot ON slot.id = r.slot_id
+                    JOIN submissions s ON s.id = slot.submission_id
+                    JOIN exercises e ON e.id = s.exercise_id
+                    JOIN users reviewer ON reviewer.id = r.reviewer_id
+                    WHERE r.id = ? AND s.user_id = ?
+                      AND r.recipient_responded_at IS NULL
+                    """,
+                    (review_id, user_id),
+                ).fetchone()
+                if row is None:
+                    raise ValueError("Avaliação indisponível ou já respondida.")
+                return {"ok": True, "review": dict(row)}
+
             if method == "evaluations.accept":
                 slot_id = self._integer(request["slot_id"], "Slot")
                 connection.execute("BEGIN IMMEDIATE")
@@ -1234,6 +1266,8 @@ class Broker:
                 if not isinstance(score_raw, str) or not re.fullmatch(r"[0-5]", score_raw):
                     raise ValueError("A nota deve ser um inteiro entre 0 e 5.")
                 feedback = self._text(request["feedback"], "Feedback", 2000)
+                if not feedback.strip():
+                    raise ValueError("O feedback da avaliação é obrigatório.")
                 connection.execute("BEGIN IMMEDIATE")
                 accepted = connection.execute(
                     """
@@ -1256,6 +1290,22 @@ class Broker:
                     )
                 except sqlite3.IntegrityError as error:
                     raise ValueError("Slot já avaliado ou avaliação inválida.") from error
+                owner = connection.execute(
+                    """
+                    SELECT s.user_id
+                    FROM evaluation_slots slot
+                    JOIN submissions s ON s.id = slot.submission_id
+                    WHERE slot.id = ?
+                    """,
+                    (slot_id,),
+                ).fetchone()
+                connection.execute(
+                    """
+                    INSERT INTO notifications (user_id, type, review_id)
+                    VALUES (?, 'review_received', ?)
+                    """,
+                    (owner["user_id"], review.lastrowid),
+                )
                 connection.commit()
                 return {
                     "ok": True,
@@ -1263,6 +1313,49 @@ class Broker:
                     "status": "approved" if int(score_raw) >= 3 else "rejected",
                     "points": self._point_balance(connection, user_id),
                 }
+
+            if method == "evaluations.review.respond":
+                review_id = self._integer(request["review_id"], "Avaliação")
+                score_raw = request["score"]
+                if not isinstance(score_raw, str) or not re.fullmatch(r"[0-5]", score_raw):
+                    raise ValueError("A nota deve ser um inteiro entre 0 e 5.")
+                feedback = self._text(request["feedback"], "Resposta", 2000)
+                if not feedback.strip():
+                    raise ValueError("A resposta da avaliação é obrigatória.")
+                connection.execute("BEGIN IMMEDIATE")
+                review = connection.execute(
+                    """
+                    SELECT r.reviewer_id
+                    FROM reviews r
+                    JOIN evaluation_slots slot ON slot.id = r.slot_id
+                    JOIN submissions s ON s.id = slot.submission_id
+                    WHERE r.id = ? AND s.user_id = ?
+                      AND r.recipient_responded_at IS NULL
+                    """,
+                    (review_id, user_id),
+                ).fetchone()
+                if review is None:
+                    raise ValueError("Avaliação indisponível ou já respondida.")
+                updated = connection.execute(
+                    """
+                    UPDATE reviews
+                    SET recipient_score = ?, recipient_feedback = ?,
+                        recipient_responded_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND recipient_responded_at IS NULL
+                    """,
+                    (int(score_raw), feedback, review_id),
+                )
+                if updated.rowcount != 1:
+                    raise ValueError("Avaliação indisponível ou já respondida.")
+                connection.execute(
+                    """
+                    INSERT INTO notifications (user_id, type, review_id)
+                    VALUES (?, 'response_received', ?)
+                    """,
+                    (review["reviewer_id"], review_id),
+                )
+                connection.commit()
+                return {"ok": True}
 
             if method == "evaluations.history":
                 rows = connection.execute(
@@ -1316,8 +1409,32 @@ class Broker:
                     "submissions": {row["status"]: row["count"] for row in submissions},
                     "reviews": dict(reviews),
                     "review_history": self._review_history(connection, user_id),
+                    "pending_review_responses": self._pending_review_responses(
+                        connection, user_id
+                    ),
+                    "notifications": self._notification_history(connection, user_id),
                     "points_history": self._point_history(connection, user_id),
                 }
+
+            if method == "notifications.count":
+                count = connection.execute(
+                    """
+                    SELECT COUNT(*) FROM notifications
+                    WHERE user_id = ? AND read_at IS NULL
+                    """,
+                    (user_id,),
+                ).fetchone()[0]
+                return {"ok": True, "count": count}
+
+            if method == "notifications.mark_read":
+                connection.execute(
+                    """
+                    UPDATE notifications SET read_at = CURRENT_TIMESTAMP
+                    WHERE user_id = ? AND read_at IS NULL
+                    """,
+                    (user_id,),
+                )
+                return {"ok": True}
 
             if method.startswith("admin."):
                 admin_id = self._require_admin(connection, request["token"])
@@ -1718,7 +1835,10 @@ class Broker:
     ) -> list[dict[str, Any]]:
         rows = connection.execute(
             """
-            SELECT e.code AS exercise_code, r.score, r.feedback, r.created_at,
+            SELECT r.id AS review_id, e.code AS exercise_code,
+                   r.score, r.feedback, r.created_at,
+                   r.recipient_score, r.recipient_feedback,
+                   r.recipient_responded_at,
                    owner.username AS submitter, reviewer.username AS reviewer,
                    CASE WHEN s.user_id = ? THEN 'received' ELSE 'given' END AS relation
             FROM reviews r
@@ -1731,6 +1851,53 @@ class Broker:
             ORDER BY r.created_at DESC, r.id DESC
             """,
             (user_id, user_id, user_id),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    def _pending_review_responses(
+        connection: sqlite3.Connection, user_id: int
+    ) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            """
+            SELECT r.id AS review_id, e.code AS exercise_code,
+                   r.score, r.feedback, reviewer.username AS reviewer
+            FROM reviews r
+            JOIN evaluation_slots slot ON slot.id = r.slot_id
+            JOIN submissions s ON s.id = slot.submission_id
+            JOIN exercises e ON e.id = s.exercise_id
+            JOIN users reviewer ON reviewer.id = r.reviewer_id
+            WHERE s.user_id = ? AND r.recipient_responded_at IS NULL
+            ORDER BY r.created_at, r.id
+            """,
+            (user_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    def _notification_history(
+        connection: sqlite3.Connection, user_id: int
+    ) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            """
+            SELECT n.type, e.code AS exercise_code, n.created_at,
+                   CASE WHEN n.type = 'review_received' THEN r.score
+                        ELSE r.recipient_score END AS score,
+                   CASE WHEN n.type = 'review_received' THEN r.feedback
+                        ELSE r.recipient_feedback END AS feedback,
+                   CASE WHEN n.type = 'review_received' THEN reviewer.username
+                        ELSE owner.username END AS other_user
+            FROM notifications n
+            JOIN reviews r ON r.id = n.review_id
+            JOIN evaluation_slots slot ON slot.id = r.slot_id
+            JOIN submissions s ON s.id = slot.submission_id
+            JOIN exercises e ON e.id = s.exercise_id
+            JOIN users reviewer ON reviewer.id = r.reviewer_id
+            JOIN users owner ON owner.id = s.user_id
+            WHERE n.user_id = ? AND n.read_at IS NULL
+            ORDER BY n.created_at DESC, n.id DESC
+            """,
+            (user_id,),
         ).fetchall()
         return [dict(row) for row in rows]
 

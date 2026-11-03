@@ -952,6 +952,16 @@ class BrokerTests(unittest.TestCase):
         )
         self.assertTrue(accepted_again["ok"], accepted_again)
 
+        missing_feedback = self.call(
+            {
+                "method": "evaluations.review.submit",
+                "token": reviewer["token"],
+                "slot_id": str(submission["slot_id"]),
+                "score": "4",
+                "feedback": "   ",
+            }
+        )
+        self.assertFalse(missing_feedback["ok"])
         review = self.call(
             {
                 "method": "evaluations.review.submit",
@@ -980,6 +990,62 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual("given", history["reviews"][0]["relation"])
         progress = self.call({"method": "progress.get", "token": owner["token"]})
         self.assertEqual(1, progress["submissions"]["approved"])
+        self.assertEqual("review_received", progress["notifications"][0]["type"])
+        self.assertEqual("Boa solução.", progress["review_history"][0]["feedback"])
+        self.assertEqual(1, self.call(
+            {"method": "notifications.count", "token": owner["token"]}
+        )["count"])
+
+        response = self.call(
+            {
+                "method": "evaluations.review.respond",
+                "token": owner["token"],
+                "review_id": str(review["review_id"]),
+                "score": "5",
+                "feedback": "Feedback claro e respeitoso.",
+            }
+        )
+        self.assertTrue(response["ok"], response)
+        duplicate_response = self.call(
+            {
+                "method": "evaluations.review.respond",
+                "token": owner["token"],
+                "review_id": str(review["review_id"]),
+                "score": "4",
+                "feedback": "Resposta duplicada.",
+            }
+        )
+        self.assertFalse(duplicate_response["ok"])
+        updated_progress = self.call(
+            {"method": "progress.get", "token": owner["token"]}
+        )
+        self.assertEqual([], updated_progress["pending_review_responses"])
+        self.assertEqual(5, updated_progress["review_history"][0]["recipient_score"])
+        self.assertEqual(
+            "Feedback claro e respeitoso.",
+            updated_progress["review_history"][0]["recipient_feedback"],
+        )
+        reviewer_progress = self.call(
+            {"method": "progress.get", "token": reviewer["token"]}
+        )
+        self.assertEqual("response_received", reviewer_progress["notifications"][0]["type"])
+        self.assertEqual(
+            1,
+            self.call(
+                {"method": "notifications.count", "token": reviewer["token"]}
+            )["count"],
+        )
+        self.assertTrue(
+            self.call(
+                {"method": "notifications.mark_read", "token": reviewer["token"]}
+            )["ok"]
+        )
+        self.assertEqual(
+            0,
+            self.call(
+                {"method": "notifications.count", "token": reviewer["token"]}
+            )["count"],
+        )
 
         stale_reservation = self.call(
             {

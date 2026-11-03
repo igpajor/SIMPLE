@@ -449,7 +449,34 @@ fi
 assert_equals "rejected" "$(db_query "SELECT status FROM submissions WHERE user_id = $alice_id;")" \
   "nota abaixo de 3 reprova a submissão"
 assert_equals "2" "$(points_balance "$bob_id")" "avaliador recebe ponto mesmo ao reprovar"
+CURRENT_USER_ID="$alice_id"
+assert_equals "1" "$(progress_unread_notification_count)" \
+  "pessoa avaliada recebe notificação de nova avaliação"
 
+progress_output=$(printf '\n' | progress_menu 2>&1)
+if [[ "$progress_output" != *"Nova avaliação de bob em TEST-01"* ]] ||
+  [[ "$progress_output" != *"Feedback: Ajustar: use ' aspas"* ]]; then
+  fail "progresso mostra notificação e feedback recebido"
+fi
+assert_equals "0" "$(progress_unread_notification_count)" \
+  "abrir meu progresso marca notificações como lidas"
+alice_review_id="$(db_query "SELECT id FROM reviews WHERE slot_id = $alice_first_slot;")"
+response_output=$(printf "5\nConcordo com os pontos levantados.\n.fim\ns\n\n" |
+  evaluation_response_prompt "$alice_review_id")
+if [[ "$response_output" != *"Resposta registrada"* ]]; then
+  fail "pessoa avaliada consegue responder pelo menu de progresso"
+fi
+assert_equals "5" "$(db_query "SELECT recipient_score FROM reviews WHERE id = $alice_review_id;")" \
+  "pessoa avaliada atribui nota ao avaliador"
+assert_equals "Concordo com os pontos levantados." \
+  "$(db_query "SELECT recipient_feedback FROM reviews WHERE id = $alice_review_id;")" \
+  "pessoa avaliada registra resposta ao feedback"
+if evaluation_respond_to_review "$alice_review_id" 4 "Resposta duplicada" >/dev/null 2>&1; then
+  fail "sistema impede responder a mesma avaliação mais de uma vez"
+fi
+CURRENT_USER_ID="$bob_id"
+assert_equals "1" "$(progress_unread_notification_count)" \
+  "avaliador recebe notificação da resposta"
 CURRENT_USER_ID="$alice_id"
 db_query "
   UPDATE reviews
