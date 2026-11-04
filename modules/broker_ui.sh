@@ -1550,15 +1550,25 @@ broker_admin_menu() {
 broker_mode_menu() {
   local choice
   local unread_notifications
+  local online_count="indisponível"
+  local chat_status_response
   local progress_label="Meu progresso"
   local -a menu_options
 
   unread_notifications=$(progress_unread_notification_count) || return 1
+  if chat_status_response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
+    broker_request chat.status token); then
+    if broker_check_response "$chat_status_response"; then
+      online_count=$(broker_response_field "$chat_status_response" online_count) ||
+        online_count="indisponível"
+    fi
+  fi
   if ((unread_notifications > 0)); then
     progress_label+=" ($unread_notifications alertas)"
   fi
   ui_screen_begin "INÍCIO"
   ui_home_intro "$CURRENT_USERNAME" || return 1
+  ui_labeled_value "Online agora" "$online_count" "$(ui_width)"
   if ((unread_notifications > 0)); then
     ui_warn "Você tem $unread_notifications atualização(ões) pendente(s). Confira Meu progresso."
   fi
@@ -1574,6 +1584,7 @@ broker_mode_menu() {
   else
     menu_options+=("5|Minhas entregas")
   fi
+  menu_options+=("7|Chat global")
   menu_options+=("0|Sair")
   printf '\n'
   if ! ui_menu_choice choice "MENU PRINCIPAL" "${menu_options[@]}"; then
@@ -1617,6 +1628,12 @@ broker_mode_menu() {
   6)
     if ! broker_submissions_menu; then
       ui_error "Não foi possível carregar Minhas entregas. Consulte a mensagem acima."
+      ui_pause
+    fi
+    ;;
+  7)
+    if ! chat_menu; then
+      ui_error "Não foi possível acessar o chat global."
       ui_pause
     fi
     ;;

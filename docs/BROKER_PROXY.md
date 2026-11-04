@@ -110,3 +110,42 @@ criou, sem tocar em socket substituto ou no banco.
 Os testes automatizados exercitam o `SO_PEERCRED` real do processo atual, resolução, revogação/reatribuição, autenticação por senha, autorização no Broker, bloqueio de campos de identidade declarados, protocolo, desconexão e concorrência. Também verificam inicialização sem servidor, recusa de banco existente, backup validado e remoção do socket em SIGTERM. Um teste adicional executa dois UIDs reais distintos quando a suíte roda como root; sem root, ele é ignorado e a validação multiusuário real continua pendente.
 
 O proxy deve ser executado como o usuário confiável do serviço. Processos maliciosos que já executem sob esse mesmo UID podem acessar o socket privado e estão fora da fronteira de isolamento. A solução também depende da administração correta dos membros do grupo público e dos vínculos. A preparação systemd não implementa validação de TTY/SSH, confinamento de shell, alta disponibilidade nem auditoria de um host de produção. Portanto, esta implementação não declara o SIMPLE pronto para produção ou SSH público.
+
+## Chat global
+
+Nos modos Broker e Proxy, a opção **Chat global** permite que participantes
+troquem mensagens curtas em uma sala compartilhada. O protocolo continua sendo
+requisição/resposta JSON por socket Unix: não há WebSocket nem entrega push.
+Enquanto a tela do chat está aberta, cada confirmação atualiza as mensagens e
+a presença; uma linha vazia consulta novamente, uma mensagem envia e `/sair`
+retorna ao menu. A tela do menu principal também consulta a contagem de pessoas
+online, sem impedir sua abertura se a consulta falhar.
+
+A presença é mantida somente em memória pelo Broker e considera online quem
+fez uma requisição autenticada nos últimos cinco minutos. Logout, expiração da
+janela e desativação da conta removem a pessoa da contagem. Reiniciar o Broker
+limpa sessões e presença; será necessário entrar novamente.
+
+As mensagens são persistidas em `chat_messages`, limitadas a 500 caracteres,
+uma linha e sem caracteres de controle. Cada conta pode enviar no máximo uma
+mensagem a cada dois segundos. O chat mostra as últimas 50 mensagens na entrada
+e busca páginas subsequentes pelo ID ao atualizar. O histórico é mantido sem
+expurgo automático; não há ferramenta de moderação ou exclusão na interface.
+
+Em uma instalação existente, atualize primeiro o checkout `/opt/simple` com o
+usuário que o possui. Depois pare Broker e Proxy e faça a migração explícita do
+banco com backup automático antes de reiniciar os serviços:
+
+```bash
+sudo systemctl stop simple-proxy.service simple-broker.service
+sudo -u simple-broker python3 /opt/simple/broker/simple_broker.py \
+  --database /var/lib/simple/simple.db \
+  --migrate-database-only
+sudo systemctl start simple-broker.service
+sudo systemctl start simple-proxy.service
+systemctl is-active simple-broker.service simple-proxy.service
+```
+
+Atualize também os arquivos do cliente antes de usar a opção. O Proxy libera
+automaticamente os métodos do chat por meio da allowlist derivada de
+`METHOD_FIELDS`.

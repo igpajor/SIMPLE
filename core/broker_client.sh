@@ -101,6 +101,28 @@ for row in value:
 ' "$@"
 }
 
+broker_response_strings() {
+  local response="$1"
+  shift
+
+  printf '%s' "$response" |
+    python3 -c '
+import json
+import sys
+value = json.load(sys.stdin)
+for key in sys.argv[1:]:
+    if not isinstance(value, dict):
+        raise SystemExit("Objeto de resposta inesperado")
+    value = value.get(key)
+if not isinstance(value, list):
+    raise SystemExit("Lista de resposta inesperada")
+for item in value:
+    if not isinstance(item, str):
+        raise SystemExit("Campo de lista inesperado")
+    print(item.encode("utf-8").hex())
+' "$@"
+}
+
 broker_response_error() {
   local response="$1"
   local error

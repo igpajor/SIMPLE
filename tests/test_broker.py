@@ -139,6 +139,172 @@ class BrokerTests(unittest.TestCase):
         self.assertIn("Crie todos esses arquivos e diretórios", exercise["exercise"]["statement"])
         self.assertEqual("ex02/", exercise["exercise"]["delivery_directory"])
 
+    def test_chat_validation_history_rate_limit_and_presence(self) -> None:
+        first_user = self.create_user("chat-first")
+        second_user = self.create_user("chat-second")
+        missing_token = self.call({"method": "chat.status"})
+        self.assertFalse(missing_token["ok"])
+        self.assertIn("Campos inválidos", missing_token["error"])
+        invalid_cursor = self.call(
+            {
+                "method": "chat.messages",
+                "token": first_user["token"],
+                "after_id": "-1",
+            }
+        )
+        self.assertIn("ID da última mensagem inválido", invalid_cursor["error"])
+
+        status = self.call({"method": "chat.status", "token": first_user["token"]})
+        self.assertEqual(2, status["online_count"])
+        self.assertEqual(["chat-first", "chat-second"], status["online_users"])
+
+        empty_history = self.call(
+            {
+                "method": "chat.messages",
+                "token": first_user["token"],
+                "after_id": "0",
+            }
+        )
+        self.assertEqual([], empty_history["messages"])
+        self.assertEqual(0, empty_history["last_id"])
+
+        for invalid_message in ("", " \t ", "linha\nquebrada", "x" * 501, "a\x85b"):
+            rejected = self.call(
+                {
+                    "method": "chat.send",
+                    "token": first_user["token"],
+                    "message": invalid_message,
+                }
+            )
+            self.assertFalse(rejected["ok"], invalid_message)
+
+        first_sent = self.call(
+            {
+                "method": "chat.send",
+                "token": first_user["token"],
+                "message": "  Olá, grupo!  ",
+            }
+        )
+        self.assertTrue(first_sent["ok"], first_sent)
+        limited = self.call(
+            {
+                "method": "chat.send",
+                "token": first_user["token"],
+                "message": "Outra mensagem",
+            }
+        )
+        self.assertIn("Aguarde", limited["error"])
+
+        with patch.object(simple_broker, "CHAT_SEND_INTERVAL_SECONDS", 0.0):
+            for index in range(51):
+                sent = self.call(
+                    {
+                        "method": "chat.send",
+                        "token": second_user["token"],
+                        "message": f"histórico-{index}",
+                    }
+                )
+                self.assertTrue(sent["ok"], sent)
+
+        latest = self.call(
+            {
+                "method": "chat.messages",
+                "token": first_user["token"],
+                "after_id": "0",
+            }
+        )
+        self.assertEqual(50, len(latest["messages"]))
+        self.assertEqual("histórico-1", latest["messages"][0]["body"])
+        self.assertEqual("histórico-50", latest["messages"][-1]["body"])
+        page = self.call(
+            {
+                "method": "chat.messages",
+                "token": first_user["token"],
+                "after_id": str(first_sent["message_id"]),
+            }
+        )
+        self.assertEqual(50, len(page["messages"]))
+        self.assertEqual("histórico-0", page["messages"][0]["body"])
+        self.assertEqual("histórico-49", page["messages"][-1]["body"])
+        final_page = self.call(
+            {
+                "method": "chat.messages",
+                "token": first_user["token"],
+                "after_id": str(page["last_id"]),
+            }
+        )
+        self.assertEqual(["histórico-50"], [item["body"] for item in final_page["messages"]])
+
+        third_user = self.create_user("chat-third")
+        third_user_id = third_user["user_id"]
+        recent_time = time.monotonic() + 301
+        with patch("simple_broker.time.monotonic", return_value=recent_time):
+            expired_presence = self.call(
+                {"method": "chat.status", "token": first_user["token"]}
+            )
+        self.assertEqual(["chat-first"], expired_presence["online_users"])
+
+        admin = self.create_user("chat-admin")
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            connection.execute(
+                "UPDATE users SET is_admin = 1 WHERE id = ?", (admin["user_id"],)
+            )
+        admin_login = self.call(
+            {
+                "method": "auth.login",
+                "username": "chat-admin",
+                "password": "secure-pass-123",
+            }
+        )
+        disabled = self.call(
+            {
+                "method": "admin.user.state",
+                "token": admin_login["token"],
+                "user_id": str(third_user_id),
+                "is_active": "0",
+            }
+        )
+        self.assertTrue(disabled["ok"], disabled)
+        self.assertNotIn(
+            "chat-third",
+            self.call({"method": "chat.status", "token": first_user["token"]})[
+                "online_users"
+            ],
+        )
+        self.assertTrue(
+            self.call({"method": "auth.logout", "token": second_user["token"]})["ok"]
+        )
+        logged_out_status = self.call(
+            {"method": "chat.status", "token": first_user["token"]}
+        )
+        self.assertNotIn("chat-second", logged_out_status["online_users"])
+
+    def test_broker_tui_chat_can_send_and_refresh_messages(self) -> None:
+        self.create_user("chat-tui")
+        environment = os.environ.copy()
+        environment.update(
+            {"SIMPLE_MODE": "broker", "BROKER_SOCKET": str(self.socket_path)}
+        )
+        process = subprocess.run(
+            ["bash", str(ROOT_DIR / "simple.sh")],
+            input=(
+                "2\nchat-tui\nsecure-pass-123\n"
+                "7\n\nHello everyone\n/sair\n0\n"
+            ),
+            text=True,
+            capture_output=True,
+            cwd=ROOT_DIR,
+            env=environment,
+            check=False,
+            timeout=15,
+        )
+        self.assertEqual(0, process.returncode, process.stderr)
+        self.assertIn("CHAT GLOBAL", process.stdout)
+        self.assertIn("Online agora: 1", process.stdout)
+        self.assertIn("chat-tui: Hello everyone", process.stdout)
+        self.assertIn("Enter atualiza", process.stdout)
+        self.assertNotIn("Operação não suportada", process.stdout)
+
     def test_temporary_password_is_enforced_by_broker(self) -> None:
         registered = self.create_user()
         with closing(sqlite3.connect(self.database_path)) as connection, connection:
@@ -151,6 +317,8 @@ class BrokerTests(unittest.TestCase):
         )
         blocked = self.call({"method": "profile.get", "token": login["token"]})
         self.assertIn("Troque a senha temporária", blocked["error"])
+        blocked_chat = self.call({"method": "chat.status", "token": login["token"]})
+        self.assertIn("Troque a senha temporária", blocked_chat["error"])
         changed = self.call(
             {
                 "method": "auth.change_password",
@@ -746,6 +914,27 @@ class BrokerTests(unittest.TestCase):
         os.chmod(exposed_database, 0o640)
         with self.assertRaisesRegex(RuntimeError, "permissões privadas"):
             validate_database(exposed_database)
+
+    def test_chat_schema_migrates_existing_database_with_validated_backup(self) -> None:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            connection.execute("DROP TABLE chat_messages")
+
+        validate_database(self.database_path, allow_pre_migration_schema=True)
+        with self.assertRaisesRegex(RuntimeError, "chat_messages"):
+            validate_database(self.database_path)
+
+        backup_path = initialize_database(
+            self.database_path, ROOT_DIR / "database" / "schema.sql"
+        )
+        self.assertIsNotNone(backup_path)
+        validate_database(self.database_path)
+        assert backup_path is not None
+        validate_database(backup_path, allow_pre_migration_schema=True)
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(chat_messages)")
+            }
+        self.assertEqual({"id", "user_id", "body", "created_at"}, columns)
 
     def test_database_rejects_relative_paths_and_untrusted_directories(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "absoluto"):

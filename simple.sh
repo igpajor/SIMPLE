@@ -14,6 +14,7 @@ source "$SCRIPT_DIR/modules/points.sh"
 source "$SCRIPT_DIR/modules/users.sh"
 source "$SCRIPT_DIR/modules/evaluations.sh"
 source "$SCRIPT_DIR/modules/progress.sh"
+source "$SCRIPT_DIR/modules/chat.sh"
 source "$SCRIPT_DIR/modules/admin.sh"
 source "$SCRIPT_DIR/modules/broker_ui.sh"
 

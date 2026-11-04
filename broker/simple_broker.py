@@ -19,6 +19,7 @@ import struct
 import subprocess
 import threading
 import time
+import unicodedata
 from contextlib import closing
 from pathlib import Path
 from typing import Any, Protocol
@@ -28,6 +29,10 @@ MAX_REQUEST_BYTES = 65536
 BROKER_MAX_CONNECTIONS = 64
 PROXY_INTERNAL_PROTOCOL = "simple-proxy-v1"
 SESSION_TTL_SECONDS = 8 * 60 * 60
+CHAT_ONLINE_WINDOW_SECONDS = 300
+CHAT_SEND_INTERVAL_SECONDS = 2.0
+CHAT_MESSAGE_MAX_LENGTH = 500
+CHAT_MESSAGES_PAGE_SIZE = 50
 USERNAME_PATTERN = re.compile(r"^[a-zA-Z0-9._-]{3,32}$")
 GITHUB_PATTERN = re.compile(r"^[A-Za-z0-9-]{1,39}$")
 EXERCISE_CODE_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9_-]{1,63}$")
@@ -60,6 +65,9 @@ METHOD_FIELDS = {
     "auth.login": ("username", "password"),
     "auth.change_password": ("token", "password"),
     "auth.logout": ("token",),
+    "chat.status": ("token",),
+    "chat.messages": ("token", "after_id"),
+    "chat.send": ("token", "message"),
     "profile.get": ("token",),
     "profile.update": ("token", "display_name", "github_username", "bio"),
     "catalog.list": ("token",),
@@ -273,6 +281,7 @@ def _validate_database_connection(
         "notifications": {
             "id", "user_id", "type", "review_id", "read_at", "created_at",
         },
+        "chat_messages": {"id", "user_id", "body", "created_at"},
         "points_ledger": {
             "id", "user_id", "amount", "entry_type", "submission_id", "review_id",
             "details", "created_at",
@@ -289,6 +298,7 @@ def _validate_database_connection(
             required_columns.get(table, set()).discard(column)
         required_columns.pop("notifications", None)
         required_columns.pop("evaluation_requests", None)
+        required_columns.pop("chat_messages", None)
 
     for table, expected_columns in required_columns.items():
         columns = {
@@ -650,6 +660,8 @@ class Broker:
         )
         self.sessions: dict[str, tuple[int, float]] = {}
         self.sessions_lock = threading.Lock()
+        self.presence: dict[int, float] = {}
+        self.chat_last_sent: dict[int, float] = {}
 
     def _connect(self) -> sqlite3.Connection:
         _validate_database_files(self.database_path)
@@ -666,17 +678,34 @@ class Broker:
 
     def _create_session_locked(self, user_id: int) -> str:
         token = secrets.token_urlsafe(32)
-        self.sessions[token] = (user_id, time.monotonic() + SESSION_TTL_SECONDS)
+        now = time.monotonic()
+        self.sessions[token] = (user_id, now + SESSION_TTL_SECONDS)
+        self.presence[user_id] = now
         return token
+
+    def _prune_session_state_locked(self, now: float) -> None:
+        self.sessions = {
+            token: session
+            for token, session in self.sessions.items()
+            if session[1] > now
+        }
+        active_users = {session[0] for session in self.sessions.values()}
+        self.presence = {
+            user_id: last_seen
+            for user_id, last_seen in self.presence.items()
+            if user_id in active_users
+            and now - last_seen < CHAT_ONLINE_WINDOW_SECONDS
+        }
+        self.chat_last_sent = {
+            user_id: sent_at
+            for user_id, sent_at in self.chat_last_sent.items()
+            if now - sent_at < CHAT_SEND_INTERVAL_SECONDS
+        }
 
     def _create_session(self, user_id: int) -> str:
         now = time.monotonic()
         with self.sessions_lock:
-            self.sessions = {
-                session_token: session
-                for session_token, session in self.sessions.items()
-                if session[1] > now
-            }
+            self._prune_session_state_locked(now)
             return self._create_session_locked(user_id)
 
     def _session_user_id(self, connection: sqlite3.Connection, token: Any) -> int:
@@ -684,6 +713,7 @@ class Broker:
             raise ValueError("Sessão inválida ou expirada.")
         now = time.monotonic()
         with self.sessions_lock:
+            self._prune_session_state_locked(now)
             session = self.sessions.get(token)
             if session is None or session[1] <= now:
                 self.sessions.pop(token, None)
@@ -694,9 +724,46 @@ class Broker:
         ).fetchone()
         if user is None or not user["is_active"]:
             with self.sessions_lock:
-                self.sessions.pop(token, None)
+                self._revoke_user_sessions_locked(user_id)
             raise ValueError("Conta desativada ou sessão inválida.")
+        with self.sessions_lock:
+            if token in self.sessions:
+                self.presence[user_id] = time.monotonic()
         return user_id
+
+    def _revoke_user_sessions_locked(self, user_id: int) -> None:
+        self.sessions = {
+            token: session
+            for token, session in self.sessions.items()
+            if session[0] != user_id
+        }
+        self.presence.pop(user_id, None)
+        self.chat_last_sent.pop(user_id, None)
+
+    def _online_usernames(self, connection: sqlite3.Connection) -> list[str]:
+        now = time.monotonic()
+        with self.sessions_lock:
+            self._prune_session_state_locked(now)
+            online_ids = [
+                user_id
+                for user_id, last_seen in self.presence.items()
+                if now - last_seen < CHAT_ONLINE_WINDOW_SECONDS
+            ]
+        if not online_ids:
+            return []
+        usernames: list[str] = []
+        for offset in range(0, len(online_ids), 900):
+            user_batch = online_ids[offset : offset + 900]
+            placeholders = ",".join("?" for _ in user_batch)
+            rows = connection.execute(
+                f"""
+                SELECT username FROM users
+                WHERE is_active = 1 AND id IN ({placeholders})
+                """,
+                user_batch,
+            ).fetchall()
+            usernames.extend(row["username"] for row in rows)
+        return sorted(usernames, key=str.casefold)
 
     def _require_admin(self, connection: sqlite3.Connection, token: Any) -> int:
         user_id = self._session_user_id(connection, token)
@@ -1060,7 +1127,91 @@ class Broker:
             if method == "auth.logout":
                 with self.sessions_lock:
                     self.sessions.pop(request["token"], None)
+                    self.presence.pop(user_id, None)
                 return {"ok": True}
+
+            if method == "chat.status":
+                online_users = self._online_usernames(connection)
+                return {
+                    "ok": True,
+                    "online_count": len(online_users),
+                    "online_users": online_users,
+                }
+
+            if method == "chat.messages":
+                after_id = self._integer(
+                    request["after_id"], "ID da última mensagem", minimum=0
+                )
+                if after_id > 2**63 - 1:
+                    raise ValueError("ID da última mensagem inválido.")
+                if after_id == 0:
+                    rows = connection.execute(
+                        """
+                        SELECT recent.id, users.username, recent.body, recent.created_at
+                        FROM (
+                            SELECT id, user_id, body, created_at
+                            FROM chat_messages
+                            ORDER BY id DESC
+                            LIMIT ?
+                        ) recent
+                        JOIN users ON users.id = recent.user_id
+                        ORDER BY recent.id
+                        """,
+                        (CHAT_MESSAGES_PAGE_SIZE,),
+                    ).fetchall()
+                else:
+                    rows = connection.execute(
+                        """
+                        SELECT chat_messages.id, users.username,
+                               chat_messages.body, chat_messages.created_at
+                        FROM chat_messages
+                        JOIN users ON users.id = chat_messages.user_id
+                        WHERE chat_messages.id > ?
+                        ORDER BY chat_messages.id
+                        LIMIT ?
+                        """,
+                        (after_id, CHAT_MESSAGES_PAGE_SIZE),
+                    ).fetchall()
+                messages = [dict(row) for row in rows]
+                return {
+                    "ok": True,
+                    "messages": messages,
+                    "last_id": messages[-1]["id"] if messages else after_id,
+                    "online_count": len(self._online_usernames(connection)),
+                }
+
+            if method == "chat.send":
+                message = self._text(
+                    request["message"], "Mensagem", CHAT_MESSAGE_MAX_LENGTH, False
+                )
+                if any(unicodedata.category(char) == "Cc" for char in message):
+                    raise ValueError("Mensagem contém caracteres de controle.")
+                message = message.strip()
+                if not message:
+                    raise ValueError("A mensagem não pode estar vazia.")
+                now = time.monotonic()
+                with self.sessions_lock:
+                    last_sent = self.chat_last_sent.get(user_id)
+                    if (
+                        last_sent is not None
+                        and now - last_sent < CHAT_SEND_INTERVAL_SECONDS
+                    ):
+                        raise ValueError("Aguarde antes de enviar outra mensagem.")
+                    self.chat_last_sent[user_id] = now
+                cursor = connection.execute(
+                    "INSERT INTO chat_messages (user_id, body) VALUES (?, ?)",
+                    (user_id, message),
+                )
+                connection.commit()
+                row = connection.execute(
+                    "SELECT created_at FROM chat_messages WHERE id = ?",
+                    (cursor.lastrowid,),
+                ).fetchone()
+                return {
+                    "ok": True,
+                    "message_id": cursor.lastrowid,
+                    "created_at": row["created_at"],
+                }
 
             if method == "profile.get":
                 return {"ok": True, **self._profile(connection, user_id)}
@@ -1863,11 +2014,7 @@ class Broker:
                     connection.commit()
                     if not active:
                         with self.sessions_lock:
-                            self.sessions = {
-                                key: value
-                                for key, value in self.sessions.items()
-                                if value[0] != target_id
-                            }
+                            self._revoke_user_sessions_locked(target_id)
                     return {"ok": True, "is_active": bool(active)}
 
                 if method == "admin.password.reset":
@@ -1888,11 +2035,7 @@ class Broker:
                         raise ValueError("Usuário não encontrado.")
                     connection.commit()
                     with self.sessions_lock:
-                        self.sessions = {
-                            key: value
-                            for key, value in self.sessions.items()
-                            if value[0] != target_id
-                        }
+                        self._revoke_user_sessions_locked(target_id)
                     return {"ok": True}
 
                 if method == "admin.points.adjust":

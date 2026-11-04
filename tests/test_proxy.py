@@ -123,6 +123,28 @@ class ProxyTests(unittest.TestCase):
 
         profile = self.proxy_call({"method": "profile.get", "token": login["token"]})
         self.assertEqual("proxy-student", profile["username"])
+        chat_status = self.proxy_call(
+            {"method": "chat.status", "token": login["token"]}
+        )
+        self.assertTrue(chat_status["ok"], chat_status)
+        self.assertIn("proxy-student", chat_status["online_users"])
+        chat_sent = self.proxy_call(
+            {
+                "method": "chat.send",
+                "token": login["token"],
+                "message": "Mensagem via proxy",
+            }
+        )
+        self.assertTrue(chat_sent["ok"], chat_sent)
+        chat_history = self.proxy_call(
+            {
+                "method": "chat.messages",
+                "token": login["token"],
+                "after_id": "0",
+            }
+        )
+        self.assertTrue(chat_history["ok"], chat_history)
+        self.assertEqual("Mensagem via proxy", chat_history["messages"][0]["body"])
         denied_admin = self.proxy_call(
             {"method": "admin.users.list", "token": login["token"]}
         )

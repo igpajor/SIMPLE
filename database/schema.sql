@@ -100,6 +100,13 @@ CREATE TABLE IF NOT EXISTS notifications (
     UNIQUE (user_id, type, review_id)
 );
 
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    body TEXT NOT NULL CHECK (length(trim(body)) BETWEEN 1 AND 500),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS points_ledger (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL REFERENCES users(id),
@@ -157,6 +164,9 @@ CREATE INDEX IF NOT EXISTS idx_evaluation_requests_slot_status
     ON evaluation_requests(slot_id, status);
 CREATE INDEX IF NOT EXISTS idx_evaluation_requests_reviewer_status
     ON evaluation_requests(reviewer_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_chat_messages_id
+    ON chat_messages(id);
 
 CREATE INDEX IF NOT EXISTS idx_admin_adjustments_user
     ON admin_point_adjustments(user_id, created_at);
