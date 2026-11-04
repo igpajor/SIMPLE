@@ -1004,6 +1004,23 @@ class BrokerTests(unittest.TestCase):
         self.assertTrue(owner_accept["ok"], owner_accept)
         self.assertEqual("accepted", owner_accept["status"])
         self.assertEqual(
+            1,
+            self.call({"method": "notifications.count", "token": reviewer["token"]})[
+                "count"
+            ],
+        )
+        reviewer_progress = self.call(
+            {"method": "progress.get", "token": reviewer["token"]}
+        )
+        self.assertEqual(
+            "exercise-owner",
+            reviewer_progress["accepted_evaluation_requests"][0]["submitter"],
+        )
+        self.assertEqual(
+            submission["slot_id"],
+            reviewer_progress["accepted_evaluation_requests"][0]["slot_id"],
+        )
+        self.assertEqual(
             0,
             self.call({"method": "notifications.count", "token": owner["token"]})[
                 "count"
@@ -1091,6 +1108,18 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual("given", history["reviews"][0]["relation"])
         progress = self.call({"method": "progress.get", "token": owner["token"]})
         self.assertEqual(1, progress["submissions"]["approved"])
+        completed_reviewer_progress = self.call(
+            {"method": "progress.get", "token": reviewer["token"]}
+        )
+        self.assertEqual(
+            [], completed_reviewer_progress["accepted_evaluation_requests"]
+        )
+        self.assertEqual(
+            0,
+            self.call({"method": "notifications.count", "token": reviewer["token"]})[
+                "count"
+            ],
+        )
         self.assertEqual("review_received", progress["notifications"][0]["type"])
         self.assertEqual("Boa solução.", progress["review_history"][0]["feedback"])
         self.assertEqual(1, self.call(
@@ -1632,7 +1661,7 @@ class BrokerTests(unittest.TestCase):
                 "2\ntui-owner\nsecure-pass-123\n"
                 "1\n11\n1\n"
                 "https://github.com/student/project/commit/abcdef0123456\n"
-                "src\ns\n0\n6\n0\n0\n"
+                "src\ns\n0\n5\n0\n0\n"
             ),
             text=True,
             capture_output=True,
@@ -1681,6 +1710,25 @@ class BrokerTests(unittest.TestCase):
         )
         self.assertEqual(0, accepted.returncode, accepted.stderr)
         self.assertIn("Pedido aceito", accepted.stdout)
+        self.assertIn("MINHAS ENTREGAS", accepted.stdout)
+
+        reviewer_progress = subprocess.run(
+            ["bash", str(ROOT_DIR / "simple.sh")],
+            input=(
+                "2\ntui-reviewer\nsecure-pass-123\n"
+                "3\n\n0\n"
+            ),
+            text=True,
+            capture_output=True,
+            cwd=ROOT_DIR,
+            env=environment,
+            check=False,
+            timeout=15,
+        )
+        self.assertEqual(0, reviewer_progress.returncode, reviewer_progress.stderr)
+        self.assertIn("PEDIDOS ACEITOS PARA VOCÊ AVALIAR", reviewer_progress.stdout)
+        self.assertIn("Pedido #", reviewer_progress.stdout)
+        self.assertIn("Avaliações abertas", reviewer_progress.stdout)
 
         reviewed = subprocess.run(
             ["bash", str(ROOT_DIR / "simple.sh")],

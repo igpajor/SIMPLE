@@ -1622,6 +1622,22 @@ class Broker:
                     """,
                     (user_id, user_id),
                 ).fetchone()
+                accepted_evaluation_requests = connection.execute(
+                    """
+                    SELECT request.id AS request_id, slot.id AS slot_id,
+                           owner.username AS submitter, e.code AS exercise_code,
+                           e.name AS exercise_name, request.responded_at AS accepted_at
+                    FROM evaluation_requests request
+                    JOIN evaluation_slots slot ON slot.id = request.slot_id
+                    JOIN submissions s ON s.id = slot.submission_id
+                    JOIN users owner ON owner.id = s.user_id
+                    JOIN exercises e ON e.id = s.exercise_id
+                    WHERE request.reviewer_id = ? AND request.status = 'accepted'
+                      AND slot.status = 'open' AND slot.accepted_by = ?
+                    ORDER BY request.responded_at, request.id
+                    """,
+                    (user_id, user_id),
+                ).fetchall()
                 return {
                     "ok": True,
                     **profile,
@@ -1642,6 +1658,9 @@ class Broker:
                         """,
                         (user_id,),
                     ).fetchone()[0],
+                    "accepted_evaluation_requests": [
+                        dict(row) for row in accepted_evaluation_requests
+                    ],
                     "notifications": self._notification_history(connection, user_id),
                     "points_history": self._point_history(connection, user_id),
                 }
@@ -1657,9 +1676,13 @@ class Broker:
                        JOIN submissions s ON s.id = slot.submission_id
                        WHERE s.user_id = ? AND slot.status = 'open'
                          AND slot.accepted_by = request.reviewer_id
-                         AND request.status = 'pending')
+                         AND request.status = 'pending') +
+                      (SELECT COUNT(*) FROM evaluation_requests request
+                       JOIN evaluation_slots slot ON slot.id = request.slot_id
+                       WHERE request.reviewer_id = ? AND request.status = 'accepted'
+                         AND slot.status = 'open' AND slot.accepted_by = ?)
                     """,
-                    (user_id, user_id),
+                    (user_id, user_id, user_id, user_id),
                 ).fetchone()[0]
                 return {"ok": True, "count": count}
 

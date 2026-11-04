@@ -196,6 +196,9 @@ broker_progress_menu() {
   local entry_type
   local details
   local pending_request_count
+  local accepted_request_rows
+  local slot_id
+  local accepted_at
 
   response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
     broker_request progress.get token) || return 1
@@ -214,6 +217,21 @@ broker_progress_menu() {
     ui_message \
       "Você tem $pending_request_count pedido(s) de avaliação aguardando sua decisão. Acesse Minhas entregas." \
       warning
+  fi
+  accepted_request_rows=$(broker_response_rows \
+    "$response" accepted_evaluation_requests) || return 1
+  if [[ -n "$accepted_request_rows" ]]; then
+    ui_section "PEDIDOS ACEITOS PARA VOCÊ AVALIAR"
+    while IFS=$'\t' read -r _ slot_id submitter code name accepted_at; do
+      slot_id=$(db_hex_decode "$slot_id") || return 1
+      submitter=$(db_hex_decode "$submitter") || return 1
+      code=$(db_hex_decode "$code") || return 1
+      name=$(db_hex_decode "$name") || return 1
+      accepted_at=$(db_hex_decode "$accepted_at") || return 1
+      ui_wrap_text \
+        "Pedido #$slot_id aceito por $submitter: $code — $name ($accepted_at). Acesse Avaliações abertas." \
+        "$(ui_width)" 2
+    done <<<"$accepted_request_rows"
   fi
   ui_section "ENTREGAS POR STATUS"
   for relation in pending approved rejected; do
@@ -532,6 +550,9 @@ broker_submissions_menu() {
   ui_screen_begin "MINHAS ENTREGAS"
   if ((${#submission_rows[@]} == 0)); then
     ui_empty_state "Você ainda não registrou entregas."
+    ui_wrap_text \
+      "Se um pedido seu foi aceito, encontre a entrega em Avaliações abertas." \
+      "$(ui_width)" 2
   else
     for encoded in "${submission_rows[@]}"; do
       IFS=$'\t' read -r submission_id code name status kind commit_url directory \
@@ -572,7 +593,12 @@ broker_submissions_menu() {
       ui_panel_end
     done
   fi
-  evaluation_handle_pending_requests || return 1
+  if ! evaluation_handle_pending_requests; then
+    ui_warn "Não foi possível carregar ou responder aos pedidos de avaliação."
+  fi
+  ui_wrap_text \
+    "Esta tela mostra apenas suas entregas. Para avaliar uma entrega aceita, acesse Avaliações abertas." \
+    "$(ui_width)" 2
   ui_pause
 }
 
@@ -1495,12 +1521,12 @@ broker_mode_menu() {
 
   unread_notifications=$(progress_unread_notification_count) || return 1
   if ((unread_notifications > 0)); then
-    progress_label+=" ($unread_notifications novas)"
+    progress_label+=" ($unread_notifications alertas)"
   fi
   ui_screen_begin "INÍCIO"
   ui_home_intro "$CURRENT_USERNAME" || return 1
   if ((unread_notifications > 0)); then
-    ui_warn "Você tem $unread_notifications notificação(ões) nova(s). Confira Meu progresso."
+    ui_warn "Você tem $unread_notifications atualização(ões) pendente(s). Confira Meu progresso."
   fi
   menu_options=(
     "1|Catálogo de exercícios"
@@ -1513,7 +1539,6 @@ broker_mode_menu() {
     menu_options+=("6|Minhas entregas")
   else
     menu_options+=("5|Minhas entregas")
-    menu_options+=("6|Minhas entregas")
   fi
   menu_options+=("0|Sair")
   printf '\n'

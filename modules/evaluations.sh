@@ -372,7 +372,6 @@ evaluation_handle_pending_requests() {
     else
       ui_message "Pedido recusado. A entrega voltou à lista de avaliações."
     fi
-    ui_pause
   done
 }
 
