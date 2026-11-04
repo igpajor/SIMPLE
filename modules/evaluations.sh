@@ -725,60 +725,6 @@ submission_status_label() {
   esac
 }
 
-submission_separator() {
-  local width
-  local line
-
-  width=$(ui_width)
-  ((width > 4)) && width=$((width - 4)) || width=1
-  printf '  '
-  printf -v line '%*s' "$width" ''
-  ui_color_dim
-  printf '%s\n' "${line// /─}"
-  ui_color_reset
-}
-
-submission_render_summary() {
-  local id="$1"
-  local code="$2"
-  local name="$3"
-  local status="$4"
-  local kind="$5"
-  local commit_url="$6"
-  local directory="$7"
-  local submitted_at="$8"
-  local slot_id="$9"
-  local score="${10}"
-  local feedback="${11}"
-  local width
-  local status_label
-
-  width=$(ui_width)
-  status_label=$(submission_status_label "$status")
-  ui_panel "#$id · $code — $name"
-  ui_color_content
-  ui_wrap_text "Estado: $status_label · Enviada em: $submitted_at" "$width" 2
-  if [[ "$kind" == "github_commit" ]]; then
-    ui_wrap_text "Commit: $commit_url" "$width" 2
-    ui_wrap_text "Diretório: $directory" "$width" 2
-  else
-    ui_wrap_text "Slot de avaliação: $slot_id" "$width" 2
-  fi
-  ui_color_reset
-  submission_separator
-  if [[ -n "$score" ]]; then
-    ui_color_content
-    ui_wrap_text "Nota: $(ui_badge "$score/5" "info")" "$width" 2
-    [[ -n "$feedback" ]] && ui_wrap_text "Feedback: $feedback" "$width" 2
-    ui_color_reset
-  else
-    ui_color_content
-    ui_wrap_text "Slot de avaliação: $slot_id · aguardando" "$width" 2
-    ui_color_reset
-  fi
-  ui_panel_end
-}
-
 submission_detail_field() {
   local label="$1"
   local value="$2"
@@ -975,10 +921,8 @@ submissions_menu() {
   local feedback
   local encoded
   local choice
-  local index
-  local requests_checked=0
+  local status_label
   local -a submission_rows
-  local -a submission_ids
   local -a menu_options
 
   if [[ "${BROKER_MODE:-0}" == "1" ]]; then
@@ -1017,9 +961,7 @@ submissions_menu() {
   mapfile -t submission_rows <<<"$rows"
   while true; do
     ui_screen_begin "MINHAS ENTREGAS"
-    submission_ids=()
     menu_options=()
-    index=0
     for encoded in "${submission_rows[@]}"; do
       IFS='|' read -r id code name status kind commit_url directory \
         submitted_at slot_id score feedback <<<"$encoded"
@@ -1068,33 +1010,31 @@ submissions_menu() {
         return 1
       }
 
-      submission_render_summary "$id" "$code" "$name" "$status" "$kind" \
-        "$commit_url" "$directory" "$submitted_at" "$slot_id" "$score" "$feedback"
-      index=$((index + 1))
-      submission_ids+=("$id")
-      menu_options+=("$index|Abrir $code — $name")
+      status_label=$(submission_status_label "$status")
+      if [[ -n "$score" ]]; then
+        menu_options+=("$id|$code — $name · $status_label · nota $score/5")
+      else
+        menu_options+=("$id|$code — $name · $status_label")
+      fi
     done
 
-    if ((requests_checked == 0)); then
-      evaluation_handle_pending_requests || {
-        nav_pop
-        return 1
-      }
-      requests_checked=1
-    fi
     menu_options+=("0|Voltar")
     ui_menu_choice choice "ABRIR EXERCÍCIO ENTREGUE" "${menu_options[@]}" || {
       nav_pop
       return 1
     }
     if [[ "$choice" == "0" ]]; then
+      evaluation_handle_pending_requests || {
+        ui_error "Não foi possível carregar os pedidos de avaliação."
+        ui_pause
+      }
       break
     fi
-    index=$((choice - 1))
-    submission_render_local_detail "${submission_ids[$index]}" || {
-      nav_pop
-      return 1
-    }
+    if ! submission_render_local_detail "$choice"; then
+      ui_error "Não foi possível abrir esta entrega. Verifique a mensagem acima."
+      ui_pause
+      continue
+    fi
     ui_pause
   done
   nav_pop

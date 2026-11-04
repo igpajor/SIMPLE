@@ -79,7 +79,10 @@ while true; do
     evaluations_menu
     ;;
   3)
-    progress_menu
+    if ! progress_menu; then
+      ui_error "Não foi possível carregar Meu progresso. Consulte a mensagem acima."
+      ui_pause
+    fi
     ;;
   4)
     users_profile_menu
@@ -88,12 +91,18 @@ while true; do
     if users_is_admin "$CURRENT_USER_ID"; then
       admin_menu
     else
-      submissions_menu
+      if ! submissions_menu; then
+        ui_error "Não foi possível carregar Minhas entregas. Consulte a mensagem acima."
+        ui_pause
+      fi
     fi
     ;;
   6)
     if users_is_admin "$CURRENT_USER_ID"; then
-      submissions_menu
+      if ! submissions_menu; then
+        ui_error "Não foi possível carregar Minhas entregas. Consulte a mensagem acima."
+        ui_pause
+      fi
     else
       ui_error "Opção inválida. Escolha uma opção do menu."
       ui_pause

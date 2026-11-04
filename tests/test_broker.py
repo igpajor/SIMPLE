@@ -1680,7 +1680,7 @@ class BrokerTests(unittest.TestCase):
         )
         self.assertEqual(0, submitted.returncode, submitted.stderr)
         self.assertIn("Solução enviada.", submitted.stdout)
-        self.assertIn("Slot de avaliação:", submitted.stdout)
+        self.assertIn("Solução enviada. Slot ", submitted.stdout)
         self.assertNotIn("Acesso SQLite local bloqueado", submitted.stderr)
 
         with closing(sqlite3.connect(self.database_path)) as connection, connection:
@@ -1707,7 +1707,7 @@ class BrokerTests(unittest.TestCase):
             ["bash", str(ROOT_DIR / "simple.sh")],
             input=(
                 "2\ntui-owner\nsecure-pass-123\n"
-                "5\n1\n1\n0\n0\n"
+                "5\n1\n0\n1\n0\n"
             ),
             text=True,
             capture_output=True,

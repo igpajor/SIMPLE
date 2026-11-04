@@ -561,9 +561,9 @@ broker_submissions_menu() {
   local score
   local feedback
   local choice
-  local index
-  local requests_checked=0
+  local status_label
   local -a submission_rows
+  local -a menu_options
 
   response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
     broker_request submissions.list token) || return 1
@@ -592,9 +592,7 @@ broker_submissions_menu() {
 
   while true; do
     ui_screen_begin "MINHAS ENTREGAS"
-    local -a submission_ids=()
-    local -a menu_options=()
-    index=0
+    menu_options=()
     for encoded in "${submission_rows[@]}"; do
       IFS=$'\t' read -r submission_id code name status kind commit_url directory \
         submitted_at slot_id score feedback <<<"$encoded"
@@ -610,29 +608,30 @@ broker_submissions_menu() {
       score=$(db_hex_decode "$score") || return 1
       feedback=$(db_hex_decode "$feedback") || return 1
 
-      submission_render_summary "$submission_id" "$code" "$name" "$status" \
-        "$kind" "$commit_url" "$directory" "$submitted_at" "$slot_id" \
-        "$score" "$feedback"
-      index=$((index + 1))
-      submission_ids+=("$submission_id")
-      menu_options+=("$index|Abrir $code — $name")
+      status_label=$(submission_status_label "$status")
+      if [[ -n "$score" ]]; then
+        menu_options+=("$submission_id|$code — $name · $status_label · nota $score/5")
+      else
+        menu_options+=("$submission_id|$code — $name · $status_label")
+      fi
     done
     ui_wrap_text \
       "Para avaliar uma entrega aceita, acesse Avaliações abertas." \
       "$(ui_width)" 2
-    if ((requests_checked == 0)); then
-      if ! evaluation_handle_pending_requests; then
-        ui_warn "Não foi possível carregar ou responder aos pedidos de avaliação."
-      fi
-      requests_checked=1
-    fi
     menu_options+=("0|Voltar")
     ui_menu_choice choice "ABRIR EXERCÍCIO ENTREGUE" "${menu_options[@]}" || return 1
     if [[ "$choice" == "0" ]]; then
+      if ! evaluation_handle_pending_requests; then
+        ui_error "Não foi possível carregar os pedidos de avaliação."
+        ui_pause
+      fi
       break
     fi
-    index=$((choice - 1))
-    broker_submission_render_detail "${submission_ids[$index]}" || return 1
+    if ! broker_submission_render_detail "$choice"; then
+      ui_error "Não foi possível abrir esta entrega. Verifique a mensagem acima."
+      ui_pause
+      continue
+    fi
     ui_pause
   done
 }
@@ -1581,19 +1580,45 @@ broker_mode_menu() {
     return 1
   fi
   case "$choice" in
-  1) exercises_menu ;;
-  2) evaluations_menu ;;
-  3) progress_menu ;;
-  4) users_profile_menu ;;
+  1)
+    if ! exercises_menu; then
+      ui_error "Não foi possível carregar o catálogo de exercícios."
+      ui_pause
+    fi
+    ;;
+  2)
+    if ! evaluations_menu; then
+      ui_error "Não foi possível carregar as avaliações abertas."
+      ui_pause
+    fi
+    ;;
+  3)
+    if ! progress_menu; then
+      ui_error "Não foi possível carregar Meu progresso. Consulte a mensagem acima."
+      ui_pause
+    fi
+    ;;
+  4)
+    if ! users_profile_menu; then
+      ui_error "Não foi possível carregar seu perfil."
+      ui_pause
+    fi
+    ;;
   5)
     if [[ "$CURRENT_USER_IS_ADMIN" == "True" ]]; then
       admin_menu
     else
-      broker_submissions_menu
+      if ! broker_submissions_menu; then
+        ui_error "Não foi possível carregar Minhas entregas. Consulte a mensagem acima."
+        ui_pause
+      fi
     fi
     ;;
   6)
-    broker_submissions_menu
+    if ! broker_submissions_menu; then
+      ui_error "Não foi possível carregar Minhas entregas. Consulte a mensagem acima."
+      ui_pause
+    fi
     ;;
   0)
     broker_logout || return 1

@@ -431,6 +431,22 @@ if [[ "$submission_output" != *"aguardando avaliação"* ]] ||
   [[ "$submission_output" != *"Missão original preservada."* ]]; then
   fail "participante consegue acompanhar a própria entrega"
 fi
+submission_tui_output=$(
+  DB_PATH="$DB_PATH" EXERCISE_STORAGE_DIR="$EXERCISE_STORAGE_DIR" \
+    bash "$ROOT_DIR/simple.sh" <<'INPUT'
+2
+alice
+senha-segura-123
+6
+1
+0
+0
+INPUT
+)
+if [[ "$submission_tui_output" != *"ENTREGA #1"* ]] ||
+  [[ "$submission_tui_output" == *"Não foi possível abrir esta entrega"* ]]; then
+  fail "TUI local abre detalhes da entrega sem retornar à tela inicial"
+fi
 submission_help_output=$(
   (
     ui_read_line() {
@@ -538,6 +554,20 @@ if [[ "$progress_output" != *"Nova avaliação de bob em TEST-01"* ]] ||
   [[ "$progress_output" != *"Feedback: Ajustar: use ' aspas"* ]]; then
   fail "progresso mostra notificação e feedback recebido"
 fi
+progress_tui_output=$(
+  DB_PATH="$DB_PATH" EXERCISE_STORAGE_DIR="$EXERCISE_STORAGE_DIR" \
+    bash "$ROOT_DIR/simple.sh" <<'INPUT'
+2
+alice
+senha-segura-123
+3
+0
+INPUT
+)
+if [[ "$progress_tui_output" != *"HISTÓRICO DE AVALIAÇÕES"* ]] ||
+  [[ "$progress_tui_output" == *"Não foi possível carregar Meu progresso"* ]]; then
+  fail "TUI local mantém Meu progresso aberto após a seleção"
+fi
 submission_output=$(printf '1\n0\n' | submissions_menu)
 if [[ "$submission_output" != *"AVALIAÇÃO"* ]] ||
   [[ "$submission_output" != *"Ajustar: use ' aspas"* ]]; then
@@ -569,7 +599,7 @@ db_query "
                  'hostil' || char(10) || 'legado'
   WHERE slot_id = $alice_first_slot;
 "
-submission_output=$(printf '0\n' | submissions_menu)
+submission_output=$(printf '1\n0\n' | submissions_menu)
 if [[ "$submission_output" == *$'\033'* || "$submission_output" == *$'\233'* ]] ||
   [[ "$submission_output" != *"payloadhostil"* ]]; then
   fail "dados legados e alterados diretamente não injetam controles no terminal"
