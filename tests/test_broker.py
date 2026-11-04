@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import json
 import os
+import pty
+import select
 import signal
 import socket
 import sqlite3
+import struct
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import termios
+import fcntl
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
@@ -569,6 +574,135 @@ class BrokerTests(unittest.TestCase):
             process.stdout[last_chat_screen:],
         )
         self.assertNotIn("Operação não suportada", process.stdout)
+
+    def test_broker_tui_chat_preserves_draft_across_idle_refreshes(self) -> None:
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "NO_COLOR": "1",
+                "COLUMNS": "80",
+            }
+        )
+        master_fd, slave_fd = pty.openpty()
+        fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+        original_terminal = termios.tcgetattr(slave_fd)
+        reader_script = (
+            'SCRIPT_DIR="$1"; source "$SCRIPT_DIR/modules/chat.sh"; '
+            "chat_mark_typing() { return 0; }; "
+            "while true; do "
+            "chat_read_message 2; status=$?; "
+            'if ((status == 124)); then printf "REFRESH\\n"; '
+            "elif ((status == 0)); then "
+            'printf "LINE:%s\\n" "$CHAT_INPUT_LINE"; exit 0; '
+            "else exit \"$status\"; fi; done"
+        )
+        process = subprocess.Popen(
+            ["bash", "-c", reader_script, "chat-reader", str(ROOT_DIR)],
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            cwd=ROOT_DIR,
+            env=environment,
+            close_fds=True,
+        )
+        output = bytearray()
+
+        def read_until(needle: bytes, timeout: float = 12.0) -> None:
+            deadline = time.monotonic() + timeout
+            while needle not in output and time.monotonic() < deadline:
+                ready, _, _ = select.select([master_fd], [], [], 0.2)
+                if ready:
+                    try:
+                        output.extend(os.read(master_fd, 8192))
+                    except OSError:
+                        break
+                if process.poll() is not None:
+                    break
+            self.assertIn(needle, output, output.decode("utf-8", errors="replace"))
+
+        def drain_for(seconds: float) -> None:
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                ready, _, _ = select.select([master_fd], [], [], 0.1)
+                if ready:
+                    try:
+                        output.extend(os.read(master_fd, 8192))
+                    except OSError:
+                        break
+
+        def read_until_prompt_count(count: int, timeout: float = 6.0) -> None:
+            deadline = time.monotonic() + timeout
+            while output.count(b"MENSAGEM > ") < count and time.monotonic() < deadline:
+                ready, _, _ = select.select([master_fd], [], [], 0.2)
+                if ready:
+                    try:
+                        output.extend(os.read(master_fd, 8192))
+                    except OSError:
+                        break
+                if process.poll() is not None:
+                    break
+            self.assertGreaterEqual(
+                output.count(b"MENSAGEM > "),
+                count,
+                output.decode("utf-8", errors="replace"),
+            )
+
+        try:
+            read_until(b"MENSAGEM > ")
+            first_prompt_count = output.count(b"MENSAGEM > ")
+            read_until_prompt_count(first_prompt_count + 1)
+            os.write(master_fd, b"ab")
+            drain_for(2.5)
+            prompt_count_during_draft = output.count(b"MENSAGEM > ")
+            self.assertEqual(
+                first_prompt_count + 1,
+                prompt_count_during_draft,
+                output.decode("utf-8", errors="replace"),
+            )
+            os.write(master_fd, b"cd\r")
+            read_until(b"LINE:abcd", timeout=5.0)
+            process.wait(timeout=10)
+            self.assertEqual(0, process.returncode, output.decode("utf-8", errors="replace"))
+            self.assertEqual(original_terminal, termios.tcgetattr(slave_fd))
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
+            os.close(master_fd)
+            os.close(slave_fd)
+
+    def test_broker_admin_menu_orders_chat_before_submissions(self) -> None:
+        user = self.create_user("chat-admin-menu")
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            connection.execute(
+                "UPDATE users SET is_admin = 1 WHERE id = ?",
+                (user["user_id"],),
+            )
+        environment = os.environ.copy()
+        environment.update(
+            {"SIMPLE_MODE": "broker", "BROKER_SOCKET": str(self.socket_path)}
+        )
+        process = subprocess.run(
+            ["bash", str(ROOT_DIR / "simple.sh")],
+            input="2\nchat-admin-menu\nsecure-pass-123\n0\n",
+            text=True,
+            capture_output=True,
+            cwd=ROOT_DIR,
+            env=environment,
+            check=False,
+            timeout=15,
+        )
+        self.assertEqual(0, process.returncode, process.stderr)
+        option_lines = process.stdout.splitlines()
+        positions = [
+            next(index for index, line in enumerate(option_lines) if label in line)
+            for label in (
+                "[5] Administração",
+                "[6] Chat global",
+                "[7] Minhas entregas",
+            )
+        ]
+        self.assertEqual(sorted(positions), positions)
 
     def test_broker_exercise_detail_opens_its_chat_room(self) -> None:
         self.create_user("exercise-chat-tui")

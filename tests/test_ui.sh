@@ -3,6 +3,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$ROOT_DIR"
 TEST_DIR="$(mktemp -d)"
 TEST_BIN="$TEST_DIR/bin"
 mkdir -p -- "$TEST_BIN"
@@ -20,6 +21,8 @@ fail() {
 }
 
 source "$ROOT_DIR/core/ui.sh"
+source "$ROOT_DIR/core/database.sh"
+source "$ROOT_DIR/core/broker_client.sh"
 source "$ROOT_DIR/modules/chat.sh"
 
 ui_colors_enabled() { return 0; }
@@ -32,6 +35,61 @@ ui_colors_enabled() { return 1; }
 CHAT_TIMEZONE="America/Sao_Paulo"
 [[ "$(chat_local_time "2026-11-04 19:19:00")" == "2026-11-04 16:19" ]] ||
   fail "horário UTC do chat é convertido para o fuso local configurado"
+[[ -z "$(broker_response_nested_field '{"preview":null}' --allow-null preview body)" ]] ||
+  fail "prévia nula do dashboard é tratada como ausência de mensagem"
+empty_last_field=$(broker_response_rows '{"rows":[{"first":"x","last":null}]}' \
+  --separator "$CHAT_ROW_SEPARATOR" rows)
+IFS="$CHAT_ROW_SEPARATOR" read -r empty_first empty_last <<<"$empty_last_field"
+[[ "$(db_hex_decode "$empty_first")" == "x" &&
+  -z "$(db_hex_decode "$empty_last")" ]] ||
+  fail "separador do chat preserva campo vazio no fim da linha"
+
+chat_rows_response='{"messages":[{"id":7,"username":"ana","user_id":2,"body":"Oi","created_at":"2026-11-04 19:19:00","pinned_at":null,"reactions":"","mentioned":0},{"id":8,"username":"bia","user_id":3,"body":"Olá @ana","created_at":"2026-11-04 19:20:00","pinned_at":null,"reactions":"👍:1","mentioned":1}]}'
+chat_rows=$(broker_response_rows "$chat_rows_response" \
+  --separator "$CHAT_ROW_SEPARATOR" messages)
+CURRENT_USER_ID=2
+CURRENT_USERNAME=ana
+chat_row_one="${chat_rows%%$'\n'*}"
+chat_row_two="${chat_rows#*$'\n'}"
+IFS="$CHAT_ROW_SEPARATOR" read -r chat_id _ _ _ _ chat_pinned \
+  chat_reactions chat_mentioned \
+  <<<"$chat_row_one"
+[[ "$(db_hex_decode "$chat_id")" == "7" &&
+  "$(db_hex_decode "$chat_pinned")" == "" &&
+  "$(db_hex_decode "$chat_reactions")" == "" &&
+  "$(db_hex_decode "$chat_mentioned")" == "0" ]] ||
+  fail "separador do chat preserva campos vazios no meio da linha"
+CHAT_LAST_DATE=""
+first_chat_render=$(chat_render_message_row "$chat_row_one")
+[[ "$first_chat_render" == *"Oi"* &&
+  "$first_chat_render" != *"mensagem fixada"* ]] ||
+  fail "mensagem sem pin não aparece como fixada após parsing"
+CHAT_LAST_DATE=""
+second_chat_render=$(chat_render_message_row "$chat_row_two")
+[[ "$second_chat_render" == *"@ você"* &&
+  "$second_chat_render" == *"👍:1"* &&
+  "$second_chat_render" != *"mensagem fixada"* ]] ||
+  fail "menção e reação permanecem nos campos corretos sem pin"
+
+CHAT_CHANNEL="global"
+chat_command /sala ajuda
+[[ "$CHAT_CHANNEL" == "help" && "$CHAT_ROOM_NAME" == "Ajuda" ]] ||
+  fail "/sala ajuda seleciona o canal help"
+chat_command /sala help
+[[ "$CHAT_CHANNEL" == "help" && "$CHAT_ROOM_NAME" == "Ajuda" ]] ||
+  fail "/sala help seleciona o canal help"
+
+CHAT_HISTORY_HAS_MORE=True
+CHAT_BUFFER=("$chat_row_one")
+more_history_output=$(chat_render_buffer)
+[[ "$more_history_output" == *"use /historico"* ]] ||
+  fail "janela de conversa indica quando há histórico anterior"
+CHAT_SYNC_RESPONSE='{"pinned":[{"id":12,"username":"ana","body":"Aviso importante","created_at":"2026-11-04 19:19:00"}]}'
+pinned_output=$(chat_render_pinned "$CHAT_SYNC_RESPONSE")
+[[ "$pinned_output" == *"FIXADAS"* &&
+  "$pinned_output" == *"#12"* &&
+  "$pinned_output" == *"Aviso importante"* ]] ||
+  fail "chat destaca mensagens fixadas fora da janela recente"
 
 cat >"$TEST_BIN/gum" <<'GUM'
 #!/usr/bin/env bash
@@ -71,6 +129,7 @@ export SIMPLE_UI_TEST_LOG
 : >"$SIMPLE_UI_TEST_LOG"
 
 ui_can_interact() { return 1; }
+selected=""
 ui_menu_choice selected "Menu principal" \
   "1|Primeiro" "2|Segundo" < <(printf '2\n') >"$TEST_DIR/menu-output"
 menu_output=$(<"$TEST_DIR/menu-output")

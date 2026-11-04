@@ -115,14 +115,18 @@ O proxy deve ser executado como o usuário confiável do serviço. Processos mal
 
 Nos modos Broker e Proxy, o chat oferece as salas **global**, **ajuda** e uma
 sala para cada exercício disponível, além de conversas diretas entre duas
-contas. Use `/salas` para consultar as salas, `/sala global`, `/sala ajuda` ou
+contas. Use `/salas` para consultar as salas, `/sala global`, `/sala ajuda` (ou `/sala help`) ou
 `/sala exercise:SHELL00-EX00` para mudar de canal e `/dm usuario` para abrir
 uma conversa privada. O Broker valida o acesso a cada pedido; conversas
 diretas só podem ser lidas pelos dois participantes.
 
 O protocolo continua sendo requisição/resposta JSON por socket Unix, sem
 WebSocket. A tela atualiza presença e mensagens automaticamente a cada quatro
-segundos; Enter envia a mensagem e `/sair` retorna ao menu. A tela mantém as
+segundos enquanto o campo de entrada está vazio; a atualização pausa durante a
+digitação para preservar o rascunho. Enter envia a mensagem e `/sair` retorna
+ao menu. Backspace edita a linha; setas e edição por cursor não são suportadas
+no leitor interativo atual. Sem TTY, a entrada usa o leitor padrão e a
+atualização automática fica desativada. A tela mantém as
 últimas dez mensagens por padrão, oferece `/historico` para páginas anteriores
 e `/buscar termo` para pesquisar na sala atual. Horários persistidos em UTC são
 convertidos ao fuso configurado no cliente. Mensagens consecutivas do mesmo

@@ -1583,9 +1583,11 @@ broker_mode_menu() {
         chat_unread_count=0
       chat_mention_count=$(broker_response_field "$chat_status_response" mention_count) ||
         chat_mention_count=0
-      chat_preview=$(broker_response_nested_field "$chat_status_response" preview body) ||
+      chat_preview=$(broker_response_nested_field \
+        "$chat_status_response" --allow-null preview body) ||
         chat_preview=""
-      chat_preview_user=$(broker_response_nested_field "$chat_status_response" preview username) ||
+      chat_preview_user=$(broker_response_nested_field \
+        "$chat_status_response" --allow-null preview username) ||
         chat_preview_user=""
     fi
   fi
@@ -1631,11 +1633,13 @@ broker_mode_menu() {
   )
   if [[ "$CURRENT_USER_IS_ADMIN" == "True" ]]; then
     menu_options+=("5|Administração")
-    menu_options+=("7|Minhas entregas")
   else
     menu_options+=("5|Minhas entregas")
   fi
   menu_options+=("6|$chat_label")
+  if [[ "$CURRENT_USER_IS_ADMIN" == "True" ]]; then
+    menu_options+=("7|Minhas entregas")
+  fi
   menu_options+=("0|Sair")
   printf '\n'
   if ! ui_menu_choice choice "MENU PRINCIPAL" "${menu_options[@]}"; then

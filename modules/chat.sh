@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 
 CHAT_BUFFER_LIMIT="${CHAT_HISTORY_WINDOW:-10}"
+CHAT_ROW_SEPARATOR=$'\x1f'
+CHAT_TTY_STATE=""
+CHAT_READER_TYPING_ACTIVE=0
+CHAT_TYPING_WARNING=0
+CHAT_PREVIOUS_EXIT_TRAP=""
 
 chat_local_time() {
   local created_at="$1"
@@ -44,7 +49,7 @@ chat_render_message_row() {
   local code
   local -a colors=(32 33 34 35 36 91 92 93 94 95 96)
 
-  IFS=$'\t' read -r message_id_hex username_hex user_id_hex body_hex \
+  IFS="$CHAT_ROW_SEPARATOR" read -r message_id_hex username_hex user_id_hex body_hex \
     created_at_hex pinned_hex reactions_hex mentioned_hex <<<"$encoded"
   message_id=$(db_hex_decode "$message_id_hex") || return 1
   username=$(db_hex_decode "$username_hex") || return 1
@@ -124,6 +129,40 @@ chat_render_buffer() {
   for row in "${CHAT_BUFFER[@]}"; do
     chat_render_message_row "$row" || return 1
   done
+  if [[ "${CHAT_HISTORY_HAS_MORE:-False}" == "True" ]]; then
+    ui_color_dim
+    ui_wrap_text "Há mensagens anteriores · use /historico." "$(ui_width)" 2
+    ui_color_reset
+  fi
+}
+
+chat_render_pinned() {
+  local response="$1"
+  local rows
+  local row
+  local id_hex
+  local username_hex
+  local body_hex
+  local id
+  local username
+  local body
+
+  rows=$(broker_response_rows "$response" --separator "$CHAT_ROW_SEPARATOR" pinned) ||
+    return 1
+  [[ -n "$rows" ]] || return 0
+  ui_color_warning
+  ui_wrap_text "FIXADAS" "$(ui_width)" 2
+  while IFS= read -r row; do
+    [[ -n "$row" ]] || continue
+    IFS="$CHAT_ROW_SEPARATOR" read -r id_hex username_hex body_hex _ \
+      <<<"$row"
+    id=$(db_hex_decode "$id_hex") || return 1
+    username=$(db_hex_decode "$username_hex") || return 1
+    body=$(db_hex_decode "$body_hex") || return 1
+    ui_wrap_text "📌 #$id · $(ui_sanitize "$username"): $(ui_sanitize "$body")" \
+      "$(ui_width)" 2
+  done <<<"$rows"
+  ui_color_reset
 }
 
 chat_render_online_users() {
@@ -196,14 +235,16 @@ chat_append_response_messages() {
   local row
   local window_rows
 
-  rows=$(broker_response_rows "$response" messages) || return 1
+  rows=$(broker_response_rows "$response" --separator "$CHAT_ROW_SEPARATOR" messages) ||
+    return 1
   CHAT_NEW_MESSAGE_COUNT=0
   while IFS= read -r row; do
     if [[ -n "$row" ]]; then
       ((CHAT_NEW_MESSAGE_COUNT += 1))
     fi
   done <<<"$rows"
-  window_rows=$(broker_response_rows "$response" window) || return 1
+  window_rows=$(broker_response_rows "$response" --separator "$CHAT_ROW_SEPARATOR" window) ||
+    return 1
   CHAT_BUFFER=()
   while IFS= read -r row; do
     [[ -n "$row" ]] && CHAT_BUFFER+=("$row")
@@ -227,12 +268,16 @@ chat_show_result_rows() {
   local rows
   local row
   local has_more
+  local empty_hint
 
-  rows=$(broker_response_rows "$response" "$field") || return 1
+  rows=$(broker_response_rows "$response" --separator "$CHAT_ROW_SEPARATOR" "$field") ||
+    return 1
   has_more=$(broker_response_field "$response" has_more) || has_more="False"
   ui_screen_begin "$title"
   if [[ -z "$rows" ]]; then
-    ui_empty_state "Nenhum resultado." "Tente outra busca."
+    empty_hint="Tente outra busca."
+    [[ "$title" == HISTÓRICO* ]] && empty_hint="Não há mais mensagens anteriores."
+    ui_empty_state "Nenhum resultado." "$empty_hint"
   else
     while IFS= read -r row; do
       [[ -n "$row" ]] && chat_render_message_row "$row"
@@ -271,7 +316,7 @@ chat_command() {
   case "$command" in
     /ajuda)
       ui_screen_begin "AJUDA DO CHAT"
-      ui_wrap_text "/sair · /quem · /salas · /sala global|ajuda|exercise:CODIGO" "$(ui_width)" 2
+      ui_wrap_text "/sair · /quem · /salas · /sala global|help|ajuda|exercise:CODIGO" "$(ui_width)" 2
       ui_wrap_text "/dm usuario · /historico · /buscar termo · /limpar" "$(ui_width)" 2
       ui_wrap_text "/reagir ID 👍|❤️|😂|+1 · /denunciar ID motivo" "$(ui_width)" 2
       if [[ "$CURRENT_USER_IS_ADMIN" == "True" ]]; then
@@ -296,12 +341,12 @@ chat_command() {
       if ! broker_check_response "$response"; then
         return 1
       fi
-      rows=$(broker_response_rows "$response" rooms) || return 1
+      rows=$(broker_response_rows "$response" --separator "$CHAT_ROW_SEPARATOR" rooms) ||
+        return 1
       ui_screen_begin "SALAS DO CHAT"
       while IFS= read -r row; do
         [[ -n "$row" ]] || continue
-        IFS=$'\t' read -r _channel _name _kind <<<"$(printf '%s\n' "$row" |
-          cut -f1-3)"
+        IFS="$CHAT_ROW_SEPARATOR" read -r _channel _name _kind <<<"$row"
         _channel=$(db_hex_decode "$_channel") || return 1
         _name=$(db_hex_decode "$_name") || return 1
         ui_wrap_text "/sala $_channel · $_name" "$(ui_width)" 2
@@ -314,14 +359,18 @@ chat_command() {
         return 0
       }
       case "$argument" in
-        global|ajuda) CHAT_CHANNEL="$argument" ;;
+        global) CHAT_CHANNEL="global"; CHAT_ROOM_NAME="Chat global" ;;
+        ajuda|help) CHAT_CHANNEL="help"; CHAT_ROOM_NAME="Ajuda" ;;
         exercise:*) CHAT_CHANNEL="$argument" ;;
         *) ui_error "Sala inválida. Use /salas para ver as opções."; return 0 ;;
       esac
-      CHAT_ROOM_NAME="$argument"
+      if [[ "$argument" == exercise:* ]]; then
+        CHAT_ROOM_NAME="$argument"
+      fi
       CHAT_LAST_ID=0
       CHAT_BUFFER=()
       CHAT_HISTORY_BEFORE=""
+      CHAT_HISTORY_HAS_MORE="False"
       ;;
     /dm)
       [[ -n "$argument" ]] || {
@@ -338,6 +387,7 @@ chat_command() {
       CHAT_LAST_ID=0
       CHAT_BUFFER=()
       CHAT_HISTORY_BEFORE=""
+      CHAT_HISTORY_HAS_MORE="False"
       ;;
     /historico)
       if ((${#CHAT_BUFFER[@]} == 0)); then
@@ -347,7 +397,7 @@ chat_command() {
       if [[ -n "${CHAT_HISTORY_BEFORE:-}" ]]; then
         before_id="$CHAT_HISTORY_BEFORE"
       else
-        IFS=$'\t' read -r before_id _ <<<"${CHAT_BUFFER[0]}"
+        IFS="$CHAT_ROW_SEPARATOR" read -r before_id _ <<<"${CHAT_BUFFER[0]}"
         before_id=$(db_hex_decode "$before_id") || return 1
       fi
       response=$(printf '%s\0%s\0%s\0' \
@@ -356,10 +406,11 @@ chat_command() {
       if ! broker_check_response "$response"; then
         return 0
       fi
-      rows=$(broker_response_rows "$response" messages) || return 1
+      rows=$(broker_response_rows "$response" --separator "$CHAT_ROW_SEPARATOR" messages) ||
+        return 1
       if [[ -n "$rows" ]]; then
         row="${rows%%$'\n'*}"
-        IFS=$'\t' read -r before_id _ <<<"$row"
+        IFS="$CHAT_ROW_SEPARATOR" read -r before_id _ <<<"$row"
         CHAT_HISTORY_BEFORE=$(db_hex_decode "$before_id") || return 1
       fi
       chat_show_result_rows "$response" messages "HISTÓRICO · $CHAT_ROOM_NAME"
@@ -382,6 +433,7 @@ chat_command() {
     /limpar)
       CHAT_BUFFER=()
       CHAT_LAST_ID=0
+      CHAT_HISTORY_HAS_MORE="False"
       ;;
     /reagir)
       [[ "$argument" =~ ^[0-9]+$ && -n "$rest" ]] || {
@@ -439,13 +491,14 @@ chat_command() {
       if ! broker_check_response "$response"; then
         return 0
       fi
-      rows=$(broker_response_rows "$response" reports) || return 1
+      rows=$(broker_response_rows "$response" --separator "$CHAT_ROW_SEPARATOR" reports) ||
+        return 1
       ui_screen_begin "DENÚNCIAS ABERTAS"
       if [[ -z "$rows" ]]; then
         ui_empty_state "Nenhuma denúncia aberta."
       else
         while IFS= read -r row; do
-          IFS=$'\t' read -r _id _message_id _reason _status _at _reporter \
+          IFS="$CHAT_ROW_SEPARATOR" read -r _id _message_id _reason _status _at _reporter \
             _channel _author _body <<<"$row"
           _id=$(db_hex_decode "$_id") || return 1
           _message_id=$(db_hex_decode "$_message_id") || return 1
@@ -468,6 +521,7 @@ chat_command() {
 chat_sync() {
   local response
   local last_id
+  local requested_after_id="$CHAT_LAST_ID"
 
   response=$(printf '%s\0%s\0%s\0' \
     "$CURRENT_SESSION_TOKEN" "$CHAT_CHANNEL" "$CHAT_LAST_ID" |
@@ -482,12 +536,124 @@ chat_sync() {
     return 1
   }
   CHAT_LAST_ID="$last_id"
+  if [[ "$requested_after_id" == "0" ]]; then
+    CHAT_HISTORY_HAS_MORE=$(broker_response_field "$response" has_more) ||
+      CHAT_HISTORY_HAS_MORE="False"
+  fi
   CHAT_SYNC_RESPONSE="$response"
 }
 
-chat_menu() {
-  local message=""
+chat_tty_restore() {
+  local saved_state="$CHAT_TTY_STATE"
+  [[ -n "$saved_state" ]] || return 0
+  if stty "$saved_state" 2>/dev/null; then
+    CHAT_TTY_STATE=""
+    return 0
+  fi
+  return 1
+}
+
+chat_read_message() {
+  local refresh_seconds="$1"
+  local key=""
   local draft=""
+  local read_status
+  local last_refresh=$SECONDS
+
+  CHAT_INPUT_LINE=""
+  CHAT_READER_TYPING_ACTIVE=0
+  if [[ ! -t 0 ]] || ! CHAT_TTY_STATE=$(stty -g 2>/dev/null); then
+    CHAT_TTY_STATE=""
+    return 2
+  fi
+  if ! stty -icanon -echo -isig -ixon min 1 time 0 2>/dev/null; then
+    chat_tty_restore
+    return 2
+  fi
+
+  printf '  MENSAGEM > '
+  while true; do
+    if [[ -z "$draft" ]] && ((SECONDS - last_refresh >= refresh_seconds)); then
+      chat_tty_restore || return 1
+      printf '\n'
+      return 124
+    fi
+    if IFS= read -r -N 1 -t 0.25 key; then
+      case "$key" in
+        $'\n'|$'\r')
+          chat_tty_restore || return 1
+          printf '\n'
+          CHAT_INPUT_LINE="$draft"
+          return 0
+          ;;
+        $'\003')
+          chat_tty_restore || return 1
+          printf '\r\033[K\n'
+          if [[ -n "$draft" ]]; then
+            CHAT_INPUT_LINE=""
+            return 130
+          fi
+          return 131
+          ;;
+        $'\004')
+          if [[ -z "$draft" ]]; then
+            chat_tty_restore || return 1
+            printf '\n'
+            return 131
+          fi
+          ;;
+        $'\177'|$'\b')
+          if [[ -n "$draft" ]]; then
+            draft="${draft%?}"
+            printf '\b \b'
+            if [[ -z "$draft" && "$CHAT_READER_TYPING_ACTIVE" == "1" ]]; then
+              if chat_mark_typing 0; then
+                CHAT_READER_TYPING_ACTIVE=0
+              else
+                CHAT_TYPING_WARNING=1
+              fi
+            fi
+          fi
+          ;;
+        $'\033')
+          if IFS= read -r -N 1 -t 0.05 key &&
+            [[ "$key" == "[" || "$key" == "O" ]]; then
+            while IFS= read -r -N 1 -t 0.01 key; do
+              [[ "$key" == [@-~] ]] && break
+            done
+          fi
+          ;;
+        *)
+          if [[ "$key" != *[[:cntrl:]]* ]]; then
+            if ((${#draft} >= 500)); then
+              printf '\a'
+              continue
+            fi
+            draft+="$key"
+            printf '%s' "$key"
+            if [[ "$CHAT_READER_TYPING_ACTIVE" == "0" ]]; then
+              if chat_mark_typing 1; then
+                CHAT_READER_TYPING_ACTIVE=1
+              else
+                CHAT_TYPING_WARNING=1
+              fi
+            fi
+          fi
+          ;;
+      esac
+    else
+      read_status=$?
+      if ((read_status > 128)); then
+        continue
+      fi
+      chat_tty_restore || return 1
+      return 1
+    fi
+  done
+}
+
+chat_menu_loop() {
+  local message=""
   local read_status
   local refresh_seconds="${CHAT_REFRESH_SECONDS:-4}"
   local command
@@ -496,6 +662,8 @@ chat_menu() {
   local send_response
   local unread_count
   local typing_active=0
+  local last_synced_channel=""
+  local last_synced_room_name=""
 
   if [[ "${BROKER_MODE:-0}" != "1" ]]; then
     ui_error "O chat global está disponível apenas no modo Broker/Proxy."
@@ -519,12 +687,26 @@ chat_menu() {
   CHAT_LAST_ID=0
   CHAT_BUFFER=()
   CHAT_HISTORY_BEFORE=""
+  CHAT_HISTORY_HAS_MORE="False"
+  CHAT_TYPING_WARNING=0
   nav_push "CHAT GLOBAL"
   while true; do
     if ! chat_sync; then
+      if [[ -n "$last_synced_channel" &&
+        "$CHAT_CHANNEL" != "$last_synced_channel" ]]; then
+        CHAT_CHANNEL="$last_synced_channel"
+        CHAT_ROOM_NAME="$last_synced_room_name"
+        CHAT_LAST_ID=0
+        CHAT_BUFFER=()
+        CHAT_HISTORY_BEFORE=""
+        CHAT_HISTORY_HAS_MORE="False"
+        continue
+      fi
       nav_pop
       return 1
     fi
+    last_synced_channel="$CHAT_CHANNEL"
+    last_synced_room_name="$CHAT_ROOM_NAME"
     unread_count=$(broker_response_field "$CHAT_SYNC_RESPONSE" unread_count) ||
       unread_count=0
 
@@ -534,6 +716,10 @@ chat_menu() {
       return 1
     fi
     if ! chat_render_typing_users "$CHAT_SYNC_RESPONSE"; then
+      nav_pop
+      return 1
+    fi
+    if ! chat_render_pinned "$CHAT_SYNC_RESPONSE"; then
       nav_pop
       return 1
     fi
@@ -559,56 +745,63 @@ chat_menu() {
     ui_wrap_text "Limite: 500 caracteres · /historico carrega mensagens anteriores" \
       "$(ui_width)" 2
     ui_color_reset
+    if ((CHAT_TYPING_WARNING)); then
+      ui_warn "Indicador de digitação indisponível; o chat continua funcionando."
+      CHAT_TYPING_WARNING=0
+    fi
 
     message=""
     if ui_can_interact; then
-      if IFS= read -r -e -i "$draft" -t "$refresh_seconds" \
-        -p "  MENSAGEM > " message; then
-        draft=""
+      if chat_read_message "$refresh_seconds"; then
+        message="$CHAT_INPUT_LINE"
       else
         read_status=$?
-        if [[ -n "$message" ]]; then
-          draft="$message"
-          if ! chat_mark_typing 1; then
-            ui_error "Não foi possível atualizar o indicador de digitação."
-            nav_pop
-            return 1
+        typing_active="$CHAT_READER_TYPING_ACTIVE"
+        if ((read_status == 124 || read_status == 130)); then
+          if ((typing_active)); then
+            if chat_mark_typing 0; then
+              CHAT_READER_TYPING_ACTIVE=0
+            else
+              CHAT_TYPING_WARNING=1
+            fi
           fi
-          typing_active=1
-        elif ((typing_active)); then
-          if ! chat_mark_typing 0; then
-            ui_error "Não foi possível encerrar o indicador de digitação."
-            nav_pop
-            return 1
-          fi
-          typing_active=0
+          continue
         fi
-        if ((read_status > 128)); then
-          if ((read_status == 142)); then
-            continue
+        if ((read_status == 131)); then
+          if ((typing_active)) && ! chat_mark_typing 0; then
+            CHAT_TYPING_WARNING=1
+          fi
+          break
+        fi
+        if ((read_status == 2)); then
+          if ! ui_read_line message "  MENSAGEM > "; then
+            nav_pop
+            return 0
+          fi
+        elif ((read_status == 1)); then
+          if ((typing_active)) && ! chat_mark_typing 0; then
+            CHAT_TYPING_WARNING=1
           fi
           nav_pop
-          return 130
+          return 0
+        else
+          nav_pop
+          return 1
         fi
-        nav_pop
-        return 0
+      fi
+      typing_active="$CHAT_READER_TYPING_ACTIVE"
+      if ((typing_active)); then
+        if chat_mark_typing 0; then
+          CHAT_READER_TYPING_ACTIVE=0
+        else
+          CHAT_TYPING_WARNING=1
+        fi
       fi
     else
       if ! ui_read_line message "  MENSAGEM > "; then
-        if ((typing_active)); then
-          chat_mark_typing 0 || ui_error "Não foi possível encerrar a digitação."
-        fi
         nav_pop
         return 0
       fi
-    fi
-    if ((typing_active)); then
-      if ! chat_mark_typing 0; then
-        ui_error "Não foi possível encerrar o indicador de digitação."
-        nav_pop
-        return 1
-      fi
-      typing_active=0
     fi
 
     if [[ "$message" == "/sair" ]]; then
@@ -649,4 +842,29 @@ chat_menu() {
     fi
   done
   nav_pop
+}
+
+chat_menu() {
+  local previous_exit_trap
+  local menu_status
+
+  previous_exit_trap=$(trap -p EXIT)
+  CHAT_PREVIOUS_EXIT_TRAP="$previous_exit_trap"
+  trap 'chat_tty_restore; if [[ -n "$CHAT_PREVIOUS_EXIT_TRAP" ]]; then eval "$CHAT_PREVIOUS_EXIT_TRAP"; else trap - EXIT; fi' EXIT
+  if chat_menu_loop; then
+    menu_status=0
+  else
+    menu_status=$?
+  fi
+  if ! chat_tty_restore; then
+    ui_error "Não foi possível restaurar o estado do terminal."
+    menu_status=1
+  fi
+  if [[ -n "$previous_exit_trap" ]]; then
+    eval "$previous_exit_trap"
+  else
+    trap - EXIT
+  fi
+  CHAT_PREVIOUS_EXIT_TRAP=""
+  return "$menu_status"
 }

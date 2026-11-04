@@ -35,16 +35,25 @@ print(value)
 
 broker_response_nested_field() {
   local response="$1"
+  local allow_null=0
   shift
+  if [[ "${1:-}" == "--allow-null" ]]; then
+    allow_null=1
+    shift
+  fi
 
   printf '%s' "$response" |
     python3 -c '
 import json
 import sys
 value = json.load(sys.stdin)
-keys = sys.argv[1:]
+allow_null = sys.argv[1] == "1"
+keys = sys.argv[2:]
 for index, key in enumerate(keys):
     if not isinstance(value, dict):
+        if allow_null and value is None:
+            value = ""
+            break
         parent = ".".join(keys[:index]) or "raiz"
         raise SystemExit(
             "Resposta incompatível do SIMPLE Broker: esperava um objeto em "
@@ -67,19 +76,31 @@ if value is None:
 if not isinstance(value, (str, int, float, bool)):
     raise SystemExit("Campo de resposta inesperado")
 print(value)
-' "$@"
+' "$allow_null" "$@"
 }
 
 broker_response_rows() {
   local response="$1"
+  local separator=$'\t'
   shift
+  if [[ "${1:-}" == "--separator" ]]; then
+    [[ $# -ge 3 ]] || {
+      printf 'Separador de linhas não informado.\n' >&2
+      return 2
+    }
+    separator="$2"
+    shift 2
+  fi
 
   printf '%s' "$response" |
     python3 -c '
 import json
 import sys
 value = json.load(sys.stdin)
-for key in sys.argv[1:]:
+separator = sys.argv[1]
+if len(separator) != 1 or separator in "\r\n":
+    raise SystemExit("Separador de linhas inválido")
+for key in sys.argv[2:]:
     if not isinstance(value, dict):
         raise SystemExit("Objeto de resposta inesperado")
     value = value.get(key)
@@ -97,8 +118,8 @@ for row in value:
         if not isinstance(item, (str, int, float, bool)):
             raise SystemExit("Campo de registro inesperado")
         values.append(str(item).encode("utf-8").hex())
-    print("\t".join(values))
-' "$@"
+    print(separator.join(values))
+' "$separator" "$@"
 }
 
 broker_response_strings() {
