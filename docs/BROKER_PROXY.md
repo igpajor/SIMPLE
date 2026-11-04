@@ -121,12 +121,14 @@ uma conversa privada. O Broker valida o acesso a cada pedido; conversas
 diretas só podem ser lidas pelos dois participantes.
 
 O protocolo continua sendo requisição/resposta JSON por socket Unix, sem
-WebSocket. A tela atualiza presença e mensagens automaticamente a cada quatro
-segundos enquanto o campo de entrada está vazio; a atualização pausa durante a
-digitação para preservar o rascunho. Enter envia a mensagem e `/sair` retorna
-ao menu. Backspace edita a linha; setas e edição por cursor não são suportadas
-no leitor interativo atual. Sem TTY, a entrada usa o leitor padrão e a
-atualização automática fica desativada. A tela mantém as
+WebSocket. Por padrão, a atualização automática fica desativada: pressione
+Enter com o campo vazio para atualizar; digite uma mensagem e pressione Enter
+para enviá-la. Para ativar a atualização automática quando o campo estiver
+vazio, defina `CHAT_AUTO_REFRESH=1`; o intervalo padrão é quatro segundos e a
+atualização pausa durante a digitação para preservar o rascunho. `/sair`
+retorna ao menu. Backspace edita a linha; setas e edição por cursor não são
+suportadas no leitor interativo atual. Sem TTY, a entrada usa o leitor padrão e
+a atualização automática não é executada. A tela mantém as
 últimas dez mensagens por padrão, oferece `/historico` para páginas anteriores
 e `/buscar termo` para pesquisar na sala atual. Horários persistidos em UTC são
 convertidos ao fuso configurado no cliente. Mensagens consecutivas do mesmo
@@ -162,6 +164,7 @@ SSH. Valores inválidos do Broker impedem a inicialização do serviço:
 | `SIMPLE_CHAT_PAGE_SIZE` | Broker | 50 | 1–100 |
 | `SIMPLE_CHAT_ONLINE_WINDOW_SECONDS` | Broker | 300 | 30–86400 |
 | `SIMPLE_CHAT_SEND_INTERVAL_SECONDS` | Broker | 2 | 1–3600 |
+| `CHAT_AUTO_REFRESH` | Cliente | `0` (desativado) | `0` ou `1` |
 | `CHAT_REFRESH_SECONDS` | Cliente | 4 | 2–60 |
 | `CHAT_HISTORY_WINDOW` | Cliente | 10 | 1–100 |
 | `CHAT_TIMEZONE` | Cliente | `America/Sao_Paulo` | Fuso reconhecido pelo sistema |

@@ -553,6 +553,17 @@ chat_tty_restore() {
   return 1
 }
 
+chat_auto_refresh_enabled() {
+  case "${CHAT_AUTO_REFRESH:-0}" in
+    1) return 0 ;;
+    0) return 1 ;;
+    *)
+      ui_error "CHAT_AUTO_REFRESH deve ser 0 (manual) ou 1 (automático)."
+      return 2
+      ;;
+  esac
+}
+
 chat_read_message() {
   local refresh_seconds="$1"
   local key=""
@@ -664,6 +675,7 @@ chat_menu_loop() {
   local typing_active=0
   local last_synced_channel=""
   local last_synced_room_name=""
+  local auto_refresh_active=0
 
   if [[ "${BROKER_MODE:-0}" != "1" ]]; then
     ui_error "O chat global está disponível apenas no modo Broker/Proxy."
@@ -674,10 +686,18 @@ chat_menu_loop() {
     ui_error "CHAT_HISTORY_WINDOW deve estar entre 1 e 100."
     return 1
   fi
-  if [[ ! "$refresh_seconds" =~ ^[0-9]+$ ]] ||
-    ((refresh_seconds < 2 || refresh_seconds > 60)); then
-    ui_error "CHAT_REFRESH_SECONDS deve estar entre 2 e 60."
-    return 1
+  if chat_auto_refresh_enabled; then
+    auto_refresh_active=1
+    if [[ ! "$refresh_seconds" =~ ^[0-9]+$ ]] ||
+      ((refresh_seconds < 2 || refresh_seconds > 60)); then
+      ui_error "CHAT_REFRESH_SECONDS deve estar entre 2 e 60."
+      return 1
+    fi
+  else
+    read_status=$?
+    if ((read_status == 2)); then
+      return 1
+    fi
   fi
 
   CHAT_CHANNEL="${CHAT_INITIAL_CHANNEL:-global}"
@@ -740,8 +760,13 @@ chat_menu_loop() {
     fi
     printf '\n'
     ui_color_dim
-    ui_wrap_text "Autoatualiza ${refresh_seconds}s · Enter envia · vazio atualiza · /ajuda" \
-      "$(ui_width)" 2
+    if ((auto_refresh_active)); then
+      ui_wrap_text "Autoatualiza ${refresh_seconds}s quando vazio · Enter envia · /ajuda" \
+        "$(ui_width)" 2
+    else
+      ui_wrap_text "Atualização automática desativada · Enter vazio atualiza · Enter envia · /ajuda" \
+        "$(ui_width)" 2
+    fi
     ui_wrap_text "Limite: 500 caracteres · /historico carrega mensagens anteriores" \
       "$(ui_width)" 2
     ui_color_reset
@@ -751,7 +776,7 @@ chat_menu_loop() {
     fi
 
     message=""
-    if ui_can_interact; then
+    if ui_can_interact && ((auto_refresh_active)); then
       if chat_read_message "$refresh_seconds"; then
         message="$CHAT_INPUT_LINE"
       else

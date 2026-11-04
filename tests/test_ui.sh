@@ -35,6 +35,17 @@ ui_colors_enabled() { return 1; }
 CHAT_TIMEZONE="America/Sao_Paulo"
 [[ "$(chat_local_time "2026-11-04 19:19:00")" == "2026-11-04 16:19" ]] ||
   fail "horário UTC do chat é convertido para o fuso local configurado"
+unset CHAT_AUTO_REFRESH
+if chat_auto_refresh_enabled; then
+  fail "atualização automática do chat deve vir desativada por padrão"
+fi
+CHAT_AUTO_REFRESH=1
+chat_auto_refresh_enabled ||
+  fail "atualização automática pode ser habilitada explicitamente"
+CHAT_AUTO_REFRESH=0
+if chat_auto_refresh_enabled; then
+  fail "CHAT_AUTO_REFRESH=0 mantém o modo manual"
+fi
 [[ -z "$(broker_response_nested_field '{"preview":null}' --allow-null preview body)" ]] ||
   fail "prévia nula do dashboard é tratada como ausência de mensagem"
 empty_last_field=$(broker_response_rows '{"rows":[{"first":"x","last":null}]}' \

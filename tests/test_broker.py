@@ -568,7 +568,7 @@ class BrokerTests(unittest.TestCase):
         last_chat_screen = process.stdout.rfind("CHAT GLOBAL")
         self.assertIn("mensagem anterior", process.stdout[last_chat_screen:])
         self.assertIn("Hello everyone", process.stdout[last_chat_screen:])
-        self.assertIn("Autoatualiza 4s", process.stdout)
+        self.assertIn("Atualização automática desativada", process.stdout)
         self.assertIn(
             "Nenhuma mensagem nova; exibindo o histórico recente.",
             process.stdout[last_chat_screen:],
