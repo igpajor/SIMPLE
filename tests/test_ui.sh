@@ -20,6 +20,7 @@ fail() {
 }
 
 source "$ROOT_DIR/core/ui.sh"
+source "$ROOT_DIR/modules/chat.sh"
 
 ui_colors_enabled() { return 0; }
 color_sequence=$(ui_color_primary)
@@ -27,6 +28,10 @@ color_sequence=$(ui_color_primary)
   fail "cores emitem sequências ANSI reais, não texto escapado"
 ui_colors_enabled() { return 1; }
 [[ -z "$(ui_color_primary)" ]] || fail "cores respeitam ambiente sem cor"
+
+CHAT_TIMEZONE="America/Sao_Paulo"
+[[ "$(chat_local_time "2026-11-04 19:19:00")" == "2026-11-04 16:19" ]] ||
+  fail "horário UTC do chat é convertido para o fuso local configurado"
 
 cat >"$TEST_BIN/gum" <<'GUM'
 #!/usr/bin/env bash

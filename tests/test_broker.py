@@ -234,6 +234,19 @@ class BrokerTests(unittest.TestCase):
             }
         )
         self.assertEqual(["histórico-50"], [item["body"] for item in final_page["messages"]])
+        older_history = self.call(
+            {
+                "method": "chat.history",
+                "token": first_user["token"],
+                "channel": "global",
+                "before_id": str(latest["messages"][0]["id"]),
+            }
+        )
+        self.assertEqual(
+            ["Olá, grupo!", "histórico-0"],
+            [item["body"] for item in older_history["messages"]],
+        )
+        self.assertFalse(older_history["has_more"])
 
         third_user = self.create_user("chat-third")
         third_user_id = third_user["user_id"]
@@ -278,9 +291,254 @@ class BrokerTests(unittest.TestCase):
             {"method": "chat.status", "token": first_user["token"]}
         )
         self.assertNotIn("chat-second", logged_out_status["online_users"])
+        another_session = self.call(
+            {
+                "method": "auth.login",
+                "username": "chat-first",
+                "password": "secure-pass-123",
+            }
+        )
+        self.assertTrue(
+            self.call({"method": "auth.logout", "token": first_user["token"]})["ok"]
+        )
+        remaining_session_status = self.call(
+            {"method": "chat.status", "token": another_session["token"]}
+        )
+        self.assertIn("chat-first", remaining_session_status["online_users"])
+
+    def test_chat_rooms_unread_direct_messages_search_reactions_and_moderation(self) -> None:
+        alice = self.create_user("chat-alice")
+        bob = self.create_user("chat-bob")
+        carol = self.create_user("chat-carol")
+        admin = self.create_user("chat-moderator")
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            connection.execute(
+                "UPDATE users SET is_admin = 1 WHERE id = ?", (admin["user_id"],)
+            )
+        admin_login = self.call(
+            {
+                "method": "auth.login",
+                "username": "chat-moderator",
+                "password": "secure-pass-123",
+            }
+        )
+
+        posted = self.call(
+            {
+                "method": "chat.post",
+                "token": alice["token"],
+                "channel": "global",
+                "message": "Olá @chat-bob, procure esta Frase Árvore",
+            }
+        )
+        self.assertTrue(posted["ok"], posted)
+        dashboard = self.call(
+            {"method": "chat.dashboard", "token": bob["token"]}
+        )
+        self.assertEqual(1, dashboard["unread_count"])
+        self.assertEqual(1, dashboard["mention_count"])
+        self.assertEqual(
+            "Olá @chat-bob, procure esta Frase Árvore",
+            dashboard["preview"]["body"],
+        )
+        late_user = self.create_user("chat-latejoiner")
+        late_dashboard = self.call(
+            {"method": "chat.dashboard", "token": late_user["token"]}
+        )
+        self.assertEqual(0, late_dashboard["unread_count"])
+
+        direct = self.call(
+            {
+                "method": "chat.dm.open",
+                "token": alice["token"],
+                "username": "chat-bob",
+            }
+        )
+        self.assertTrue(direct["ok"], direct)
+        with patch.object(simple_broker, "CHAT_SEND_INTERVAL_SECONDS", 0.0):
+            direct_message = self.call(
+                {
+                    "method": "chat.post",
+                    "token": alice["token"],
+                    "channel": direct["channel"],
+                    "message": "Mensagem privada",
+                }
+            )
+        self.assertTrue(direct_message["ok"], direct_message)
+        unauthorized = self.call(
+            {
+                "method": "chat.sync",
+                "token": carol["token"],
+                "channel": direct["channel"],
+                "after_id": "0",
+            }
+        )
+        self.assertFalse(unauthorized["ok"])
+        self.assertIn("Acesso não autorizado", unauthorized["error"])
+        rooms = self.call({"method": "chat.rooms", "token": bob["token"]})
+        self.assertTrue(
+            any(room["channel"] == direct["channel"] for room in rooms["rooms"])
+        )
+        direct_sync = self.call(
+            {
+                "method": "chat.sync",
+                "token": bob["token"],
+                "channel": direct["channel"],
+                "after_id": "0",
+            }
+        )
+        self.assertEqual(
+            ["Mensagem privada"],
+            [message["body"] for message in direct_sync["messages"]],
+        )
+        self.assertEqual(1, direct_sync["unread_count"])
+
+        search = self.call(
+            {
+                "method": "chat.search",
+                "token": bob["token"],
+                "channel": "global",
+                "query": "frase árvore",
+            }
+        )
+        self.assertEqual(1, len(search["messages"]))
+        global_sync = self.call(
+            {
+                "method": "chat.sync",
+                "token": bob["token"],
+                "channel": "global",
+                "after_id": "0",
+            }
+        )
+        self.assertEqual(0, global_sync["unread_count"])
+        self.assertEqual(1, global_sync["messages"][0]["mentioned"])
+        reacted = self.call(
+            {
+                "method": "chat.react",
+                "token": bob["token"],
+                "message_id": str(posted["message_id"]),
+                "reaction": "👍",
+            }
+        )
+        self.assertTrue(reacted["active"])
+        reaction_refresh = self.call(
+            {
+                "method": "chat.sync",
+                "token": bob["token"],
+                "channel": "global",
+                "after_id": str(global_sync["last_id"]),
+            }
+        )
+        self.assertEqual([], reaction_refresh["messages"])
+        self.assertIn("👍:1", reaction_refresh["window"][0]["reactions"])
+
+        typing = self.call(
+            {
+                "method": "chat.typing",
+                "token": alice["token"],
+                "channel": "global",
+                "active": "1",
+            }
+        )
+        self.assertTrue(typing["ok"], typing)
+        typing_sync = self.call(
+            {
+                "method": "chat.sync",
+                "token": bob["token"],
+                "channel": "global",
+                "after_id": "0",
+            }
+        )
+        self.assertIn("chat-alice", typing_sync["typing_users"])
+        self.assertTrue(
+            self.call(
+                {
+                    "method": "chat.typing",
+                    "token": alice["token"],
+                    "channel": "global",
+                    "active": "0",
+                }
+            )["ok"]
+        )
+
+        report = self.call(
+            {
+                "method": "chat.report",
+                "token": carol["token"],
+                "message_id": str(posted["message_id"]),
+                "reason": "Conteúdo inadequado",
+            }
+        )
+        self.assertTrue(report["ok"], report)
+        reports = self.call(
+            {"method": "chat.admin.reports", "token": admin_login["token"]}
+        )
+        self.assertEqual(1, len(reports["reports"]))
+        pinned = self.call(
+            {
+                "method": "chat.admin.moderate",
+                "token": admin_login["token"],
+                "message_id": str(posted["message_id"]),
+                "action": "pin",
+            }
+        )
+        self.assertTrue(pinned["ok"], pinned)
+        hidden = self.call(
+            {
+                "method": "chat.admin.moderate",
+                "token": admin_login["token"],
+                "message_id": str(posted["message_id"]),
+                "action": "hide",
+            }
+        )
+        self.assertTrue(hidden["ok"], hidden)
+        hidden_sync = self.call(
+            {
+                "method": "chat.sync",
+                "token": bob["token"],
+                "channel": "global",
+                "after_id": "0",
+            }
+        )
+        self.assertEqual([], hidden_sync["messages"])
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            report_status = connection.execute(
+                "SELECT status FROM chat_reports WHERE message_id = ?",
+                (posted["message_id"],),
+            ).fetchone()[0]
+        self.assertEqual("resolved", report_status)
+        restored = self.call(
+            {
+                "method": "chat.admin.moderate",
+                "token": admin_login["token"],
+                "message_id": str(posted["message_id"]),
+                "action": "restore",
+            }
+        )
+        self.assertTrue(restored["ok"], restored)
+        restored_sync = self.call(
+            {
+                "method": "chat.sync",
+                "token": bob["token"],
+                "channel": "global",
+                "after_id": "0",
+            }
+        )
+        self.assertTrue(restored_sync["messages"][0]["pinned_at"])
 
     def test_broker_tui_chat_can_send_and_refresh_messages(self) -> None:
         self.create_user("chat-tui")
+        peer = self.create_user("chat-peer")
+        with patch.object(simple_broker, "CHAT_SEND_INTERVAL_SECONDS", 0.0):
+            for body in ("mensagem anterior", "histórico antigo"):
+                sent = self.call(
+                    {
+                        "method": "chat.send",
+                        "token": peer["token"],
+                        "message": body,
+                    }
+                )
+                self.assertTrue(sent["ok"], sent)
         environment = os.environ.copy()
         environment.update(
             {"SIMPLE_MODE": "broker", "BROKER_SOCKET": str(self.socket_path)}
@@ -289,7 +547,7 @@ class BrokerTests(unittest.TestCase):
             ["bash", str(ROOT_DIR / "simple.sh")],
             input=(
                 "2\nchat-tui\nsecure-pass-123\n"
-                "7\n\nHello everyone\n/sair\n0\n"
+                "6\n\nHello everyone\n\n/sair\n0\n"
             ),
             text=True,
             capture_output=True,
@@ -300,10 +558,41 @@ class BrokerTests(unittest.TestCase):
         )
         self.assertEqual(0, process.returncode, process.stderr)
         self.assertIn("CHAT GLOBAL", process.stdout)
-        self.assertIn("Online agora: 1", process.stdout)
-        self.assertIn("chat-tui: Hello everyone", process.stdout)
-        self.assertIn("Enter atualiza", process.stdout)
+        self.assertIn("Online agora: 2", process.stdout)
+        self.assertIn("você: Hello everyone", process.stdout)
+        last_chat_screen = process.stdout.rfind("CHAT GLOBAL")
+        self.assertIn("mensagem anterior", process.stdout[last_chat_screen:])
+        self.assertIn("Hello everyone", process.stdout[last_chat_screen:])
+        self.assertIn("Autoatualiza 4s", process.stdout)
+        self.assertIn(
+            "Nenhuma mensagem nova; exibindo o histórico recente.",
+            process.stdout[last_chat_screen:],
+        )
         self.assertNotIn("Operação não suportada", process.stdout)
+
+    def test_broker_exercise_detail_opens_its_chat_room(self) -> None:
+        self.create_user("exercise-chat-tui")
+        environment = os.environ.copy()
+        environment.update(
+            {"SIMPLE_MODE": "broker", "BROKER_SOCKET": str(self.socket_path)}
+        )
+        process = subprocess.run(
+            ["bash", str(ROOT_DIR / "simple.sh")],
+            input=(
+                "2\nexercise-chat-tui\nsecure-pass-123\n"
+                "1\n1\n2\n/sair\n0\n0\n0\n"
+            ),
+            text=True,
+            capture_output=True,
+            cwd=ROOT_DIR,
+            env=environment,
+            check=False,
+            timeout=15,
+        )
+        self.assertEqual(0, process.returncode, process.stderr)
+        self.assertIn("Chat deste exercício", process.stdout)
+        self.assertIn("SALA · SHELL00-EX00", process.stdout)
+        self.assertIn("Online (1): você", process.stdout)
 
     def test_temporary_password_is_enforced_by_broker(self) -> None:
         registered = self.create_user()
@@ -916,8 +1205,32 @@ class BrokerTests(unittest.TestCase):
             validate_database(exposed_database)
 
     def test_chat_schema_migrates_existing_database_with_validated_backup(self) -> None:
+        user = self.create_user("chat-migration")
+        author = self.create_user("chat-migration-peer")
         with closing(sqlite3.connect(self.database_path)) as connection, connection:
-            connection.execute("DROP TABLE chat_messages")
+            for table in (
+                "chat_mentions",
+                "chat_reactions",
+                "chat_reports",
+                "chat_direct_rooms",
+                "chat_reads",
+                "chat_messages",
+            ):
+                connection.execute(f"DROP TABLE {table}")
+            connection.execute(
+                """
+                CREATE TABLE chat_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL REFERENCES users(id),
+                    body TEXT NOT NULL CHECK (length(trim(body)) BETWEEN 1 AND 500),
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            connection.execute(
+                "INSERT INTO chat_messages (user_id, body) VALUES (?, ?)",
+                (author["user_id"], "mensagem anterior à migração"),
+            )
 
         validate_database(self.database_path, allow_pre_migration_schema=True)
         with self.assertRaisesRegex(RuntimeError, "chat_messages"):
@@ -934,7 +1247,25 @@ class BrokerTests(unittest.TestCase):
             columns = {
                 row[1] for row in connection.execute("PRAGMA table_info(chat_messages)")
             }
-        self.assertEqual({"id", "user_id", "body", "created_at"}, columns)
+            migrated_message = connection.execute(
+                "SELECT body, channel FROM chat_messages WHERE id = 1"
+            ).fetchone()
+        self.assertEqual(
+            {
+                "id", "user_id", "body", "channel", "recipient_id", "created_at",
+                "hidden_at", "pinned_at",
+            },
+            columns,
+        )
+        self.assertEqual(
+            ("mensagem anterior à migração", "global"), migrated_message
+        )
+        self.assertEqual(
+            0,
+            self.call(
+                {"method": "chat.dashboard", "token": user["token"]}
+            )["unread_count"],
+        )
 
     def test_database_rejects_relative_paths_and_untrusted_directories(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "absoluto"):

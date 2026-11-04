@@ -111,26 +111,62 @@ Os testes automatizados exercitam o `SO_PEERCRED` real do processo atual, resolu
 
 O proxy deve ser executado como o usuário confiável do serviço. Processos maliciosos que já executem sob esse mesmo UID podem acessar o socket privado e estão fora da fronteira de isolamento. A solução também depende da administração correta dos membros do grupo público e dos vínculos. A preparação systemd não implementa validação de TTY/SSH, confinamento de shell, alta disponibilidade nem auditoria de um host de produção. Portanto, esta implementação não declara o SIMPLE pronto para produção ou SSH público.
 
-## Chat global
+## Chat e salas
 
-Nos modos Broker e Proxy, a opção **Chat global** permite que participantes
-troquem mensagens curtas em uma sala compartilhada. O protocolo continua sendo
-requisição/resposta JSON por socket Unix: não há WebSocket nem entrega push.
-Enquanto a tela do chat está aberta, cada confirmação atualiza as mensagens e
-a presença; uma linha vazia consulta novamente, uma mensagem envia e `/sair`
-retorna ao menu. A tela do menu principal também consulta a contagem de pessoas
-online, sem impedir sua abertura se a consulta falhar.
+Nos modos Broker e Proxy, o chat oferece as salas **global**, **ajuda** e uma
+sala para cada exercício disponível, além de conversas diretas entre duas
+contas. Use `/salas` para consultar as salas, `/sala global`, `/sala ajuda` ou
+`/sala exercise:SHELL00-EX00` para mudar de canal e `/dm usuario` para abrir
+uma conversa privada. O Broker valida o acesso a cada pedido; conversas
+diretas só podem ser lidas pelos dois participantes.
 
-A presença é mantida somente em memória pelo Broker e considera online quem
-fez uma requisição autenticada nos últimos cinco minutos. Logout, expiração da
-janela e desativação da conta removem a pessoa da contagem. Reiniciar o Broker
-limpa sessões e presença; será necessário entrar novamente.
+O protocolo continua sendo requisição/resposta JSON por socket Unix, sem
+WebSocket. A tela atualiza presença e mensagens automaticamente a cada quatro
+segundos; Enter envia a mensagem e `/sair` retorna ao menu. A tela mantém as
+últimas dez mensagens por padrão, oferece `/historico` para páginas anteriores
+e `/buscar termo` para pesquisar na sala atual. Horários persistidos em UTC são
+convertidos ao fuso configurado no cliente. Mensagens consecutivas do mesmo
+autor são agrupadas visualmente; a autoria própria e as menções recebem
+destaque. Um indicador temporário informa quando outra pessoa está digitando
+na mesma sala.
 
-As mensagens são persistidas em `chat_messages`, limitadas a 500 caracteres,
-uma linha e sem caracteres de controle. Cada conta pode enviar no máximo uma
-mensagem a cada dois segundos. O chat mostra as últimas 50 mensagens na entrada
-e busca páginas subsequentes pelo ID ao atualizar. O histórico é mantido sem
-expurgo automático; não há ferramenta de moderação ou exclusão na interface.
+O menu principal mostra pessoas online, quantidade de mensagens não lidas,
+menções e prévia da última mensagem pendente. A leitura é persistida por conta
+e por sala. Mensagens anteriores à criação da conta não entram na contagem de
+não lidas.
+
+Mensagens têm até 500 caracteres, uma linha e sem caracteres de controle.
+Menções usam `@usuario`; há reações `👍`, `❤️`, `😂` e `+1`, denúncia de
+mensagens e avisos fixados por administradores. Administradores podem consultar
+denúncias, ocultar mensagens e restaurá-las depois. A ocultação é reversível,
+não remove o conteúdo do banco e não há expurgo automático. Comandos disponíveis:
+`/ajuda`, `/quem`, `/salas`, `/sala`, `/dm`, `/historico`, `/buscar`, `/limpar`,
+`/reagir ID reação` e `/denunciar ID motivo`. Para administradores:
+`/relatorios`, `/ocultar ID`, `/restaurar ID`, `/fixar ID` e `/desafixar ID`.
+
+A presença fica em memória no Broker e considera online quem fez uma
+requisição autenticada nos últimos cinco minutos. O envio é limitado a uma
+mensagem por conta a cada dois segundos. Reiniciar o Broker limpa sessões e
+presença; será necessário entrar novamente.
+
+Os valores padrão podem ser ajustados por ambiente. Configure as variáveis do
+Broker em um drop-in systemd e as variáveis do cliente no ambiente da sessão
+SSH. Valores inválidos do Broker impedem a inicialização do serviço:
+
+| Variável | Serviço | Padrão | Limites |
+|---|---|---:|---:|
+| `SIMPLE_CHAT_PAGE_SIZE` | Broker | 50 | 1–100 |
+| `SIMPLE_CHAT_ONLINE_WINDOW_SECONDS` | Broker | 300 | 30–86400 |
+| `SIMPLE_CHAT_SEND_INTERVAL_SECONDS` | Broker | 2 | 1–3600 |
+| `CHAT_REFRESH_SECONDS` | Cliente | 4 | 2–60 |
+| `CHAT_HISTORY_WINDOW` | Cliente | 10 | 1–100 |
+| `CHAT_TIMEZONE` | Cliente | `America/Sao_Paulo` | Fuso reconhecido pelo sistema |
+
+`CHAT_HISTORY_WINDOW` não pode exceder `SIMPLE_CHAT_PAGE_SIZE` se for necessário
+exibir toda a janela em um único pedido ao Broker.
+
+`/limpar` limpa somente a janela local e recarrega as mensagens recentes; não
+apaga conteúdo do histórico.
 
 Em uma instalação existente, atualize primeiro o checkout `/opt/simple` com o
 usuário que o possui. Depois pare Broker e Proxy e faça a migração explícita do
@@ -146,6 +182,6 @@ sudo systemctl start simple-proxy.service
 systemctl is-active simple-broker.service simple-proxy.service
 ```
 
-Atualize também os arquivos do cliente antes de usar a opção. O Proxy libera
-automaticamente os métodos do chat por meio da allowlist derivada de
-`METHOD_FIELDS`.
+Atualize também os arquivos do cliente antes de usar as salas e comandos novos.
+O Proxy libera automaticamente os métodos do chat por meio da allowlist
+derivada de `METHOD_FIELDS`.

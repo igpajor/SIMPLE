@@ -29,10 +29,32 @@ MAX_REQUEST_BYTES = 65536
 BROKER_MAX_CONNECTIONS = 64
 PROXY_INTERNAL_PROTOCOL = "simple-proxy-v1"
 SESSION_TTL_SECONDS = 8 * 60 * 60
-CHAT_ONLINE_WINDOW_SECONDS = 300
-CHAT_SEND_INTERVAL_SECONDS = 2.0
+
+
+def _environment_integer(name: str, default: int, minimum: int, maximum: int) -> int:
+    value = os.environ.get(name, str(default))
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise RuntimeError(f"Configuração inválida em {name}.") from error
+    if not minimum <= parsed <= maximum:
+        raise RuntimeError(f"Configuração inválida em {name}.")
+    return parsed
+
+
+CHAT_ONLINE_WINDOW_SECONDS = _environment_integer(
+    "SIMPLE_CHAT_ONLINE_WINDOW_SECONDS", 300, 30, 86400
+)
+CHAT_TYPING_TTL_SECONDS = 8
+CHAT_SEND_INTERVAL_SECONDS = float(
+    _environment_integer("SIMPLE_CHAT_SEND_INTERVAL_SECONDS", 2, 1, 3600)
+)
 CHAT_MESSAGE_MAX_LENGTH = 500
-CHAT_MESSAGES_PAGE_SIZE = 50
+CHAT_MESSAGES_PAGE_SIZE = _environment_integer("SIMPLE_CHAT_PAGE_SIZE", 50, 1, 100)
+CHAT_CHANNEL_PATTERN = re.compile(
+    r"^(global|help|exercise:[A-Z0-9][A-Z0-9_-]{1,63}|dm:[1-9][0-9]*:[1-9][0-9]*)$"
+)
+CHAT_MENTION_PATTERN = re.compile(r"(?<![A-Za-z0-9._-])@([A-Za-z0-9._-]{3,32})")
 USERNAME_PATTERN = re.compile(r"^[a-zA-Z0-9._-]{3,32}$")
 GITHUB_PATTERN = re.compile(r"^[A-Za-z0-9-]{1,39}$")
 EXERCISE_CODE_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9_-]{1,63}$")
@@ -59,6 +81,10 @@ MIGRATIONS = (
     ("submissions", "content_kind", "TEXT NOT NULL DEFAULT 'legacy' CHECK (content_kind IN ('legacy', 'github_commit'))"),
     ("submissions", "commit_url", "TEXT"),
     ("submissions", "delivery_directory", "TEXT"),
+    ("chat_messages", "channel", "TEXT NOT NULL DEFAULT 'global'"),
+    ("chat_messages", "recipient_id", "INTEGER REFERENCES users(id)"),
+    ("chat_messages", "hidden_at", "DATETIME"),
+    ("chat_messages", "pinned_at", "DATETIME"),
 )
 METHOD_FIELDS = {
     "auth.register": ("username", "password"),
@@ -68,6 +94,18 @@ METHOD_FIELDS = {
     "chat.status": ("token",),
     "chat.messages": ("token", "after_id"),
     "chat.send": ("token", "message"),
+    "chat.dashboard": ("token",),
+    "chat.rooms": ("token",),
+    "chat.dm.open": ("token", "username"),
+    "chat.post": ("token", "channel", "message"),
+    "chat.sync": ("token", "channel", "after_id"),
+    "chat.history": ("token", "channel", "before_id"),
+    "chat.search": ("token", "channel", "query"),
+    "chat.react": ("token", "message_id", "reaction"),
+    "chat.report": ("token", "message_id", "reason"),
+    "chat.admin.moderate": ("token", "message_id", "action"),
+    "chat.admin.reports": ("token",),
+    "chat.typing": ("token", "channel", "active"),
     "profile.get": ("token",),
     "profile.update": ("token", "display_name", "github_username", "bio"),
     "catalog.list": ("token",),
@@ -281,7 +319,17 @@ def _validate_database_connection(
         "notifications": {
             "id", "user_id", "type", "review_id", "read_at", "created_at",
         },
-        "chat_messages": {"id", "user_id", "body", "created_at"},
+        "chat_messages": {
+            "id", "user_id", "body", "channel", "recipient_id", "created_at",
+            "hidden_at", "pinned_at",
+        },
+        "chat_reads": {"user_id", "channel", "last_read_message_id"},
+        "chat_mentions": {"message_id", "user_id"},
+        "chat_direct_rooms": {"user_low_id", "user_high_id", "created_at"},
+        "chat_reactions": {"message_id", "user_id", "reaction", "created_at"},
+        "chat_reports": {
+            "id", "message_id", "reporter_id", "reason", "status", "created_at",
+        },
         "points_ledger": {
             "id", "user_id", "amount", "entry_type", "submission_id", "review_id",
             "details", "created_at",
@@ -299,6 +347,11 @@ def _validate_database_connection(
         required_columns.pop("notifications", None)
         required_columns.pop("evaluation_requests", None)
         required_columns.pop("chat_messages", None)
+        required_columns.pop("chat_reads", None)
+        required_columns.pop("chat_mentions", None)
+        required_columns.pop("chat_direct_rooms", None)
+        required_columns.pop("chat_reactions", None)
+        required_columns.pop("chat_reports", None)
 
     for table, expected_columns in required_columns.items():
         columns = {
@@ -423,6 +476,40 @@ def initialize_database(
             }
             if column not in columns:
                 connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_messages_channel_id "
+            "ON chat_messages(channel, id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_messages_recipient_channel_id "
+            "ON chat_messages(recipient_id, channel, id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_messages_pinned "
+            "ON chat_messages(channel, pinned_at, id) WHERE pinned_at IS NOT NULL"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_reports_status "
+            "ON chat_reports(status, created_at)"
+        )
+        connection.execute("DROP INDEX IF EXISTS idx_chat_messages_id")
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO chat_reads (user_id, channel, last_read_message_id)
+            SELECT users.id, channels.channel,
+                   COALESCE((
+                       SELECT MAX(messages.id) FROM chat_messages messages
+                       WHERE messages.channel = channels.channel
+                   ), 0)
+            FROM users
+            CROSS JOIN (
+                SELECT 'global' AS channel
+                UNION ALL SELECT 'help'
+                UNION ALL
+                SELECT 'exercise:' || code FROM exercises WHERE status = 'available'
+            ) channels
+            """
+        )
         connection.execute(
             """
             INSERT INTO evaluation_requests (
@@ -662,6 +749,7 @@ class Broker:
         self.sessions_lock = threading.Lock()
         self.presence: dict[int, float] = {}
         self.chat_last_sent: dict[int, float] = {}
+        self.chat_typing: dict[tuple[int, str], float] = {}
 
     def _connect(self) -> sqlite3.Connection:
         _validate_database_files(self.database_path)
@@ -670,6 +758,11 @@ class Broker:
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute("PRAGMA busy_timeout = 5000")
+            connection.create_function(
+                "simple_casefold",
+                1,
+                lambda value: value.casefold() if isinstance(value, str) else "",
+            )
             _validate_database_files(self.database_path)
             return connection
         except BaseException:
@@ -700,6 +793,11 @@ class Broker:
             user_id: sent_at
             for user_id, sent_at in self.chat_last_sent.items()
             if now - sent_at < CHAT_SEND_INTERVAL_SECONDS
+        }
+        self.chat_typing = {
+            key: last_seen
+            for key, last_seen in self.chat_typing.items()
+            if key[0] in active_users and now - last_seen < CHAT_TYPING_TTL_SECONDS
         }
 
     def _create_session(self, user_id: int) -> str:
@@ -739,6 +837,11 @@ class Broker:
         }
         self.presence.pop(user_id, None)
         self.chat_last_sent.pop(user_id, None)
+        self.chat_typing = {
+            key: last_seen
+            for key, last_seen in self.chat_typing.items()
+            if key[0] != user_id
+        }
 
     def _online_usernames(self, connection: sqlite3.Connection) -> list[str]:
         now = time.monotonic()
@@ -764,6 +867,251 @@ class Broker:
             ).fetchall()
             usernames.extend(row["username"] for row in rows)
         return sorted(usernames, key=str.casefold)
+
+    def _chat_typing_usernames(
+        self, connection: sqlite3.Connection, user_id: int, channel: str
+    ) -> list[str]:
+        now = time.monotonic()
+        with self.sessions_lock:
+            typing_ids = [
+                candidate_id
+                for (candidate_id, candidate_channel), last_seen in self.chat_typing.items()
+                if candidate_channel == channel
+                and candidate_id != user_id
+                and now - last_seen < CHAT_TYPING_TTL_SECONDS
+            ]
+        if not typing_ids:
+            return []
+        placeholders = ",".join("?" for _ in typing_ids)
+        rows = connection.execute(
+            f"""
+            SELECT username FROM users
+            WHERE is_active = 1 AND id IN ({placeholders})
+            """,
+            typing_ids,
+        ).fetchall()
+        return sorted((row["username"] for row in rows), key=str.casefold)
+
+    @staticmethod
+    def _chat_channel_access(
+        connection: sqlite3.Connection, user_id: int, channel: Any
+    ) -> int | None:
+        if (
+            not isinstance(channel, str)
+            or len(channel) > 128
+            or not CHAT_CHANNEL_PATTERN.fullmatch(channel)
+        ):
+            raise ValueError("Sala do chat inválida.")
+        if channel in {"global", "help"}:
+            return None
+        if channel.startswith("exercise:"):
+            code = channel.removeprefix("exercise:")
+            exercise = connection.execute(
+                "SELECT 1 FROM exercises WHERE code = ? AND status = 'available'",
+                (code,),
+            ).fetchone()
+            if exercise is None:
+                raise ValueError("Sala do exercício não encontrada.")
+            return None
+        first_id, second_id = (int(value) for value in channel.split(":")[1:])
+        if first_id > 2**63 - 1 or second_id > 2**63 - 1:
+            raise ValueError("Sala do chat inválida.")
+        if first_id >= second_id or user_id not in {first_id, second_id}:
+            raise PermissionError("Acesso não autorizado a esta conversa.")
+        other_id = second_id if user_id == first_id else first_id
+        room = connection.execute(
+            """
+            SELECT 1 FROM chat_direct_rooms
+            WHERE user_low_id = ? AND user_high_id = ?
+            """,
+            (first_id, second_id),
+        ).fetchone()
+        if room is None:
+            raise PermissionError("Conversa direta não encontrada.")
+        other = connection.execute(
+            "SELECT 1 FROM users WHERE id = ? AND is_active = 1", (other_id,)
+        ).fetchone()
+        if other is None:
+            raise ValueError("A outra conta não está disponível.")
+        return other_id
+
+    @staticmethod
+    def _chat_unread(
+        connection: sqlite3.Connection, user_id: int
+    ) -> tuple[int, int, dict[str, Any] | None]:
+        visible = """
+            (m.channel IN ('global', 'help')
+             OR m.channel IN (
+                 SELECT 'exercise:' || code FROM exercises WHERE status = 'available'
+             )
+             OR (
+                 m.recipient_id = ?
+                 AND EXISTS (
+                     SELECT 1 FROM chat_direct_rooms d
+                     JOIN users peer ON peer.id = m.user_id AND peer.is_active = 1
+                     WHERE d.user_low_id = MIN(?, m.user_id)
+                       AND d.user_high_id = MAX(?, m.user_id)
+                 )
+             ))
+        """
+        unread = connection.execute(
+            f"""
+            SELECT COUNT(DISTINCT m.id) AS total,
+                   COUNT(DISTINCT mention.message_id) AS mentions
+            FROM chat_messages m
+            LEFT JOIN chat_mentions mention
+              ON mention.message_id = m.id AND mention.user_id = ?
+            LEFT JOIN chat_reads r
+              ON r.user_id = ? AND r.channel = m.channel
+            WHERE m.user_id != ? AND m.hidden_at IS NULL
+              AND m.id > COALESCE(r.last_read_message_id, 0)
+              AND {visible}
+            """,
+            (user_id, user_id, user_id, user_id, user_id, user_id),
+        ).fetchone()
+        preview_row = connection.execute(
+            f"""
+            SELECT m.channel, u.username, m.body, m.created_at
+            FROM chat_messages m
+            JOIN users u ON u.id = m.user_id
+            LEFT JOIN chat_reads r
+              ON r.user_id = ? AND r.channel = m.channel
+            WHERE m.user_id != ? AND m.hidden_at IS NULL
+              AND m.id > COALESCE(r.last_read_message_id, 0)
+              AND {visible}
+            ORDER BY m.id DESC
+            LIMIT 1
+            """,
+            (user_id, user_id, user_id, user_id, user_id),
+        ).fetchone()
+        return (
+            int(unread["total"] or 0),
+            int(unread["mentions"] or 0),
+            dict(preview_row) if preview_row is not None else None,
+        )
+
+    @staticmethod
+    def _chat_message_rows(
+        connection: sqlite3.Connection,
+        channel: str,
+        viewer_id: int,
+        *,
+        after_id: int = 0,
+        before_id: int | None = None,
+        latest: bool = False,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        query = """
+            SELECT m.id, u.username, m.user_id, m.body, m.created_at,
+                   m.pinned_at,
+                   COALESCE((
+                       SELECT GROUP_CONCAT(reaction || ':' || reaction_count, ',')
+                       FROM (
+                           SELECT reaction, COUNT(*) AS reaction_count
+                           FROM chat_reactions
+                           WHERE message_id = m.id
+                           GROUP BY reaction
+                       )
+                   ), '') AS reactions,
+                   EXISTS(
+                       SELECT 1 FROM chat_mentions
+                       WHERE message_id = m.id AND user_id = ?
+                   ) AS mentioned
+            FROM chat_messages m
+            JOIN users u ON u.id = m.user_id
+            WHERE m.channel = ? AND m.hidden_at IS NULL
+        """
+        parameters: list[Any] = [viewer_id, channel]
+        if before_id is not None:
+            query += " AND m.id < ?"
+            parameters.append(before_id)
+        elif after_id > 0:
+            query += " AND m.id > ?"
+            parameters.append(after_id)
+        query += " ORDER BY m.id "
+        query += "DESC " if latest or before_id is not None else "ASC "
+        query += "LIMIT ?"
+        parameters.append(limit or CHAT_MESSAGES_PAGE_SIZE)
+        rows = [dict(row) for row in connection.execute(query, parameters).fetchall()]
+        if latest or before_id is not None:
+            rows.reverse()
+        return rows
+
+    def _chat_post(
+        self,
+        connection: sqlite3.Connection,
+        user_id: int,
+        channel: str,
+        message_value: Any,
+    ) -> dict[str, Any]:
+        recipient_id = self._chat_channel_access(connection, user_id, channel)
+        message = self._text(
+            message_value, "Mensagem", CHAT_MESSAGE_MAX_LENGTH, False
+        ).strip()
+        if any(unicodedata.category(char) == "Cc" for char in message):
+            raise ValueError("Mensagem contém caracteres de controle.")
+        if not message:
+            raise ValueError("A mensagem não pode estar vazia.")
+        now = time.monotonic()
+        with self.sessions_lock:
+            last_sent = self.chat_last_sent.get(user_id)
+            if (
+                last_sent is not None
+                and now - last_sent < CHAT_SEND_INTERVAL_SECONDS
+            ):
+                wait_seconds = max(
+                    1, int(CHAT_SEND_INTERVAL_SECONDS - (now - last_sent) + 0.999)
+                )
+                raise ValueError(
+                    f"Aguarde {wait_seconds}s antes de enviar outra mensagem."
+                )
+            self.chat_last_sent[user_id] = now
+        cursor = connection.execute(
+            """
+            INSERT INTO chat_messages (user_id, body, channel, recipient_id)
+            VALUES (?, ?, ?, ?)
+            """,
+            (user_id, message, channel, recipient_id),
+        )
+        mentioned_usernames = {
+            match.group(1).casefold()
+            for match in CHAT_MENTION_PATTERN.finditer(message)
+        }
+        allowed_mentioned_ids = {user_id}
+        if recipient_id is not None:
+            allowed_mentioned_ids.add(recipient_id)
+        for mentioned_username in mentioned_usernames:
+            mentioned_user = connection.execute(
+                """
+                SELECT id FROM users
+                WHERE username = ? COLLATE NOCASE AND is_active = 1
+                """,
+                (mentioned_username,),
+            ).fetchone()
+            if (
+                mentioned_user is not None
+                and (
+                    recipient_id is None
+                    or mentioned_user["id"] in allowed_mentioned_ids
+                )
+            ):
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO chat_mentions (message_id, user_id)
+                    VALUES (?, ?)
+                    """,
+                    (cursor.lastrowid, mentioned_user["id"]),
+                )
+        connection.commit()
+        created_at = connection.execute(
+            "SELECT created_at FROM chat_messages WHERE id = ?",
+            (cursor.lastrowid,),
+        ).fetchone()["created_at"]
+        return {
+            "ok": True,
+            "message_id": cursor.lastrowid,
+            "created_at": created_at,
+        }
 
     def _require_admin(self, connection: sqlite3.Connection, token: Any) -> int:
         user_id = self._session_user_id(connection, token)
@@ -1048,6 +1396,28 @@ class Broker:
                     if "users.username" in str(error):
                         raise ValueError("Este nome de usuário já está em uso.") from error
                     raise
+                public_channels = {
+                    "global",
+                    "help",
+                    *(
+                        f"exercise:{row['code']}"
+                        for row in connection.execute(
+                            "SELECT code FROM exercises WHERE status = 'available'"
+                        ).fetchall()
+                    ),
+                }
+                for channel in public_channels:
+                    latest = connection.execute(
+                        "SELECT COALESCE(MAX(id), 0) FROM chat_messages WHERE channel = ?",
+                        (channel,),
+                    ).fetchone()[0]
+                    connection.execute(
+                        """
+                        INSERT INTO chat_reads (user_id, channel, last_read_message_id)
+                        VALUES (?, ?, ?)
+                        """,
+                        (cursor.lastrowid, channel, latest),
+                    )
                 connection.commit()
                 return {"ok": True, **self._user_session(connection, cursor.lastrowid)}
 
@@ -1127,7 +1497,10 @@ class Broker:
             if method == "auth.logout":
                 with self.sessions_lock:
                     self.sessions.pop(request["token"], None)
-                    self.presence.pop(user_id, None)
+                    if not any(
+                        session[0] == user_id for session in self.sessions.values()
+                    ):
+                        self.presence.pop(user_id, None)
                 return {"ok": True}
 
             if method == "chat.status":
@@ -1137,6 +1510,386 @@ class Broker:
                     "online_count": len(online_users),
                     "online_users": online_users,
                 }
+
+            if method == "chat.dashboard":
+                online_users = self._online_usernames(connection)
+                unread_count, mention_count, preview = self._chat_unread(
+                    connection, user_id
+                )
+                return {
+                    "ok": True,
+                    "online_count": len(online_users),
+                    "online_users": online_users,
+                    "unread_count": unread_count,
+                    "mention_count": mention_count,
+                    "preview": preview,
+                }
+
+            if method == "chat.rooms":
+                rooms = [
+                    {"channel": "global", "name": "Chat global", "kind": "global"},
+                    {"channel": "help", "name": "Ajuda", "kind": "help"},
+                ]
+                exercises = connection.execute(
+                    """
+                    SELECT code, name FROM exercises
+                    WHERE status = 'available' ORDER BY code
+                    """
+                ).fetchall()
+                rooms.extend(
+                    {
+                        "channel": f"exercise:{row['code']}",
+                        "name": f"{row['code']} — {row['name']}",
+                        "kind": "exercise",
+                    }
+                    for row in exercises
+                )
+                direct_rooms = connection.execute(
+                    """
+                    SELECT user_low_id, user_high_id FROM chat_direct_rooms
+                    WHERE user_low_id = ? OR user_high_id = ?
+                    ORDER BY created_at DESC
+                    """,
+                    (user_id, user_id),
+                ).fetchall()
+                for row in direct_rooms:
+                    peer_id = (
+                        row["user_high_id"]
+                        if row["user_low_id"] == user_id
+                        else row["user_low_id"]
+                    )
+                    peer = connection.execute(
+                        "SELECT username FROM users WHERE id = ? AND is_active = 1",
+                        (peer_id,),
+                    ).fetchone()
+                    if peer is not None:
+                        rooms.append(
+                            {
+                                "channel": f"dm:{row['user_low_id']}:{row['user_high_id']}",
+                                "name": f"DM · {peer['username']}",
+                                "kind": "direct",
+                            }
+                        )
+                return {"ok": True, "rooms": rooms}
+
+            if method == "chat.dm.open":
+                username = self._text(
+                    request["username"], "Usuário", 32, False
+                ).strip()
+                target = connection.execute(
+                    """
+                    SELECT id, username FROM users
+                    WHERE username = ? COLLATE NOCASE AND is_active = 1
+                    """,
+                    (username,),
+                ).fetchone()
+                if target is None:
+                    raise ValueError("Usuário ativo não encontrado.")
+                if target["id"] == user_id:
+                    raise ValueError("Não é possível abrir uma conversa consigo.")
+                low_id, high_id = sorted((user_id, target["id"]))
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO chat_direct_rooms (user_low_id, user_high_id)
+                    VALUES (?, ?)
+                    """,
+                    (low_id, high_id),
+                )
+                connection.commit()
+                return {
+                    "ok": True,
+                    "channel": f"dm:{low_id}:{high_id}",
+                    "username": target["username"],
+                }
+
+            if method == "chat.sync":
+                channel = request["channel"]
+                self._chat_channel_access(connection, user_id, channel)
+                after_id = self._integer(
+                    request["after_id"], "ID da última mensagem", minimum=0
+                )
+                if after_id > 2**63 - 1:
+                    raise ValueError("ID da última mensagem inválido.")
+                messages = self._chat_message_rows(
+                    connection,
+                    channel,
+                    user_id,
+                    after_id=after_id,
+                    latest=after_id == 0,
+                )
+                window = self._chat_message_rows(
+                    connection, channel, user_id, latest=True
+                )
+                last_id = messages[-1]["id"] if messages else after_id
+                if after_id == 0:
+                    has_more = bool(
+                        window
+                        and connection.execute(
+                            """
+                            SELECT 1 FROM chat_messages
+                            WHERE channel = ? AND hidden_at IS NULL AND id < ?
+                            LIMIT 1
+                            """,
+                            (channel, window[0]["id"]),
+                        ).fetchone()
+                    )
+                else:
+                    has_more = bool(
+                        connection.execute(
+                            """
+                            SELECT 1 FROM chat_messages
+                            WHERE channel = ? AND hidden_at IS NULL AND id > ?
+                            LIMIT 1
+                            """,
+                            (channel, last_id),
+                        ).fetchone()
+                    )
+                if messages:
+                    connection.execute(
+                        """
+                        INSERT INTO chat_reads (user_id, channel, last_read_message_id)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(user_id, channel) DO UPDATE SET
+                            last_read_message_id = MAX(
+                                chat_reads.last_read_message_id,
+                                excluded.last_read_message_id
+                            )
+                        """,
+                        (user_id, channel, last_id),
+                    )
+                    connection.commit()
+                unread_count, mention_count, preview = self._chat_unread(
+                    connection, user_id
+                )
+                online_users = self._online_usernames(connection)
+                typing_users = self._chat_typing_usernames(
+                    connection, user_id, channel
+                )
+                pinned = connection.execute(
+                    """
+                    SELECT m.id, u.username, m.body, m.created_at
+                    FROM chat_messages m JOIN users u ON u.id = m.user_id
+                    WHERE m.channel = ? AND m.pinned_at IS NOT NULL
+                      AND m.hidden_at IS NULL
+                    ORDER BY m.pinned_at DESC LIMIT 5
+                    """,
+                    (channel,),
+                ).fetchall()
+                return {
+                    "ok": True,
+                    "messages": messages,
+                    "window": window,
+                    "last_id": last_id,
+                    "has_more": has_more,
+                    "online_count": len(online_users),
+                    "online_users": online_users,
+                    "typing_users": typing_users,
+                    "unread_count": unread_count,
+                    "mention_count": mention_count,
+                    "preview": preview,
+                    "pinned": [dict(row) for row in pinned],
+                }
+
+            if method == "chat.typing":
+                channel = request["channel"]
+                self._chat_channel_access(connection, user_id, channel)
+                active = request["active"]
+                if not isinstance(active, str) or active not in {"0", "1"}:
+                    raise ValueError("Estado de digitação inválido.")
+                with self.sessions_lock:
+                    key = (user_id, channel)
+                    if active == "1":
+                        self.chat_typing[key] = time.monotonic()
+                    else:
+                        self.chat_typing.pop(key, None)
+                return {"ok": True}
+
+            if method == "chat.history":
+                channel = request["channel"]
+                self._chat_channel_access(connection, user_id, channel)
+                before_id = self._integer(
+                    request["before_id"], "ID da mensagem", minimum=1
+                )
+                if before_id > 2**63 - 1:
+                    raise ValueError("ID da mensagem inválido.")
+                messages = self._chat_message_rows(
+                    connection,
+                    channel,
+                    user_id,
+                    before_id=before_id,
+                    limit=CHAT_MESSAGES_PAGE_SIZE + 1,
+                )
+                has_more = len(messages) > CHAT_MESSAGES_PAGE_SIZE
+                if has_more:
+                    messages = messages[-CHAT_MESSAGES_PAGE_SIZE:]
+                return {
+                    "ok": True,
+                    "messages": messages,
+                    "has_more": has_more,
+                }
+
+            if method == "chat.search":
+                channel = request["channel"]
+                self._chat_channel_access(connection, user_id, channel)
+                query = self._text(request["query"], "Busca", 80, False).strip()
+                if not query:
+                    raise ValueError("Digite um termo para buscar.")
+                rows = connection.execute(
+                    """
+                    SELECT m.id, u.username, m.user_id, m.body, m.created_at,
+                           m.pinned_at,
+                           COALESCE((
+                               SELECT GROUP_CONCAT(reaction || ':' || reaction_count, ',')
+                               FROM (
+                                   SELECT reaction, COUNT(*) AS reaction_count
+                                   FROM chat_reactions
+                                   WHERE message_id = m.id
+                                   GROUP BY reaction
+                               )
+                           ), '') AS reactions,
+                           EXISTS(
+                               SELECT 1 FROM chat_mentions
+                               WHERE message_id = m.id AND user_id = ?
+                           ) AS mentioned
+                    FROM chat_messages m JOIN users u ON u.id = m.user_id
+                    WHERE m.channel = ? AND m.hidden_at IS NULL
+                      AND instr(simple_casefold(m.body), simple_casefold(?)) > 0
+                    ORDER BY m.id DESC LIMIT ?
+                    """,
+                    (user_id, channel, query, CHAT_MESSAGES_PAGE_SIZE),
+                ).fetchall()
+                return {"ok": True, "messages": [dict(row) for row in reversed(rows)]}
+
+            if method == "chat.react":
+                message_id = self._integer(request["message_id"], "ID da mensagem")
+                if message_id > 2**63 - 1:
+                    raise ValueError("ID da mensagem inválido.")
+                reaction = request["reaction"]
+                if not isinstance(reaction, str) or reaction not in {
+                    "👍", "❤️", "😂", "+1",
+                }:
+                    raise ValueError("Reação não permitida.")
+                message = connection.execute(
+                    "SELECT channel FROM chat_messages WHERE id = ? AND hidden_at IS NULL",
+                    (message_id,),
+                ).fetchone()
+                if message is None:
+                    raise ValueError("Mensagem não encontrada.")
+                self._chat_channel_access(connection, user_id, message["channel"])
+                existing = connection.execute(
+                    """
+                    SELECT 1 FROM chat_reactions
+                    WHERE message_id = ? AND user_id = ? AND reaction = ?
+                    """,
+                    (message_id, user_id, reaction),
+                ).fetchone()
+                if existing:
+                    connection.execute(
+                        """
+                        DELETE FROM chat_reactions
+                        WHERE message_id = ? AND user_id = ? AND reaction = ?
+                        """,
+                        (message_id, user_id, reaction),
+                    )
+                    active = False
+                else:
+                    connection.execute(
+                        """
+                        INSERT INTO chat_reactions (message_id, user_id, reaction)
+                        VALUES (?, ?, ?)
+                        """,
+                        (message_id, user_id, reaction),
+                    )
+                    active = True
+                connection.commit()
+                return {"ok": True, "active": active}
+
+            if method == "chat.report":
+                message_id = self._integer(request["message_id"], "ID da mensagem")
+                if message_id > 2**63 - 1:
+                    raise ValueError("ID da mensagem inválido.")
+                reason = self._text(request["reason"], "Motivo", 500, False).strip()
+                if not reason:
+                    raise ValueError("Informe o motivo da denúncia.")
+                message = connection.execute(
+                    "SELECT channel FROM chat_messages WHERE id = ? AND hidden_at IS NULL",
+                    (message_id,),
+                ).fetchone()
+                if message is None:
+                    raise ValueError("Mensagem não encontrada.")
+                self._chat_channel_access(connection, user_id, message["channel"])
+                connection.execute(
+                    """
+                    INSERT INTO chat_reports (message_id, reporter_id, reason)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(message_id, reporter_id) DO UPDATE SET
+                        reason = excluded.reason, status = 'open',
+                        created_at = CURRENT_TIMESTAMP
+                    """,
+                    (message_id, user_id, reason),
+                )
+                connection.commit()
+                return {"ok": True}
+
+            if method == "chat.admin.moderate":
+                admin_id = self._require_admin(connection, request["token"])
+                message_id = self._integer(request["message_id"], "ID da mensagem")
+                if message_id > 2**63 - 1:
+                    raise ValueError("ID da mensagem inválido.")
+                action = request["action"]
+                if not isinstance(action, str) or action not in {
+                    "hide", "restore", "pin", "unpin",
+                }:
+                    raise ValueError("Ação de moderação inválida.")
+                message = connection.execute(
+                    "SELECT channel FROM chat_messages WHERE id = ?",
+                    (message_id,),
+                ).fetchone()
+                if message is None:
+                    raise ValueError("Mensagem não encontrada.")
+                if action == "hide":
+                    connection.execute(
+                        "UPDATE chat_messages SET hidden_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (message_id,),
+                    )
+                    connection.execute(
+                        "UPDATE chat_reports SET status = 'resolved' WHERE message_id = ?",
+                        (message_id,),
+                    )
+                elif action == "restore":
+                    connection.execute(
+                        "UPDATE chat_messages SET hidden_at = NULL WHERE id = ?",
+                        (message_id,),
+                    )
+                elif action == "pin":
+                    connection.execute(
+                        "UPDATE chat_messages SET pinned_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (message_id,),
+                    )
+                else:
+                    connection.execute(
+                        "UPDATE chat_messages SET pinned_at = NULL WHERE id = ?",
+                        (message_id,),
+                    )
+                connection.commit()
+                return {"ok": True, "admin_id": admin_id}
+
+            if method == "chat.admin.reports":
+                self._require_admin(connection, request["token"])
+                rows = connection.execute(
+                    """
+                    SELECT r.id, r.message_id, r.reason, r.status, r.created_at,
+                           reporter.username AS reporter, m.channel,
+                           author.username AS author, m.body
+                    FROM chat_reports r
+                    JOIN chat_messages m ON m.id = r.message_id
+                    JOIN users reporter ON reporter.id = r.reporter_id
+                    JOIN users author ON author.id = m.user_id
+                    WHERE r.status = 'open'
+                    ORDER BY r.created_at, r.id LIMIT 100
+                    """
+                ).fetchall()
+                return {"ok": True, "reports": [dict(row) for row in rows]}
 
             if method == "chat.messages":
                 after_id = self._integer(
@@ -1151,7 +1904,8 @@ class Broker:
                         FROM (
                             SELECT id, user_id, body, created_at
                             FROM chat_messages
-                            ORDER BY id DESC
+                                WHERE channel = 'global' AND hidden_at IS NULL
+                                ORDER BY id DESC
                             LIMIT ?
                         ) recent
                         JOIN users ON users.id = recent.user_id
@@ -1167,6 +1921,8 @@ class Broker:
                         FROM chat_messages
                         JOIN users ON users.id = chat_messages.user_id
                         WHERE chat_messages.id > ?
+                          AND chat_messages.channel = 'global'
+                          AND chat_messages.hidden_at IS NULL
                         ORDER BY chat_messages.id
                         LIMIT ?
                         """,
@@ -1181,37 +1937,12 @@ class Broker:
                 }
 
             if method == "chat.send":
-                message = self._text(
-                    request["message"], "Mensagem", CHAT_MESSAGE_MAX_LENGTH, False
+                return self._chat_post(connection, user_id, "global", request["message"])
+
+            if method == "chat.post":
+                return self._chat_post(
+                    connection, user_id, request["channel"], request["message"]
                 )
-                if any(unicodedata.category(char) == "Cc" for char in message):
-                    raise ValueError("Mensagem contém caracteres de controle.")
-                message = message.strip()
-                if not message:
-                    raise ValueError("A mensagem não pode estar vazia.")
-                now = time.monotonic()
-                with self.sessions_lock:
-                    last_sent = self.chat_last_sent.get(user_id)
-                    if (
-                        last_sent is not None
-                        and now - last_sent < CHAT_SEND_INTERVAL_SECONDS
-                    ):
-                        raise ValueError("Aguarde antes de enviar outra mensagem.")
-                    self.chat_last_sent[user_id] = now
-                cursor = connection.execute(
-                    "INSERT INTO chat_messages (user_id, body) VALUES (?, ?)",
-                    (user_id, message),
-                )
-                connection.commit()
-                row = connection.execute(
-                    "SELECT created_at FROM chat_messages WHERE id = ?",
-                    (cursor.lastrowid,),
-                ).fetchone()
-                return {
-                    "ok": True,
-                    "message_id": cursor.lastrowid,
-                    "created_at": row["created_at"],
-                }
 
             if method == "profile.get":
                 return {"ok": True, **self._profile(connection, user_id)}

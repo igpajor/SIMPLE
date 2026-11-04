@@ -443,6 +443,7 @@ broker_catalog_render_exercise() {
   local choice
   local width
   local points
+  local eligible
 
   response=$(printf '%s\0%s\0' "$CURRENT_SESSION_TOKEN" "$code" |
     broker_request catalog.get token exercise_code) || return 1
@@ -474,18 +475,29 @@ broker_catalog_render_exercise() {
     return 1
   fi
   local -a menu_options
-  if [[ "$(broker_response_field "$requirements" eligible)" == "True" ]]; then
+  eligible=$(broker_response_field "$requirements" eligible) || return 1
+  if [[ "$eligible" == "True" ]]; then
     points=$(broker_response_field "$requirements" points) || return 1
     printf '\n  Saldo: %s ponto(s). Enviar a solução abre um slot de avaliação.\n' "$points"
-    menu_options=("1|Registrar entrega para avaliação" "0|Voltar")
+    menu_options=(
+      "1|Registrar entrega para avaliação"
+      "2|Chat deste exercício"
+      "0|Voltar"
+    )
   else
     value=$(broker_response_field "$requirements" reason) || return 1
     ui_wrap_text "Entrega indisponível: $value" "$width" 2
-    menu_options=("0|Voltar")
+    menu_options=("2|Chat deste exercício" "0|Voltar")
   fi
   ui_menu_choice choice "EXERCÍCIO $code" "${menu_options[@]}" || return 0
-  if [[ "$choice" == "1" && "$(broker_response_field "$requirements" eligible)" == "True" ]]; then
+  if [[ "$choice" == "1" && "$eligible" == "True" ]]; then
     exercise_submit_prompt "$code"
+  elif [[ "$choice" == "2" ]]; then
+    # shellcheck disable=SC2034 # Consumed by chat_menu in the sourced chat module.
+    CHAT_INITIAL_CHANNEL="exercise:$code"
+    # shellcheck disable=SC2034
+    CHAT_INITIAL_ROOM_NAME="SALA · $code"
+    chat_menu || ui_error "Não foi possível acessar a sala deste exercício."
   fi
 }
 
@@ -1552,16 +1564,49 @@ broker_mode_menu() {
   local unread_notifications
   local online_count="indisponível"
   local chat_status_response
+  local chat_unread_count=0
+  local chat_mention_count=0
+  local chat_preview=""
+  local chat_preview_user=""
+  local chat_label="Chat global"
+  local chat_label_open=0
   local progress_label="Meu progresso"
   local -a menu_options
 
   unread_notifications=$(progress_unread_notification_count) || return 1
   if chat_status_response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
-    broker_request chat.status token); then
+    broker_request chat.dashboard token); then
     if broker_check_response "$chat_status_response"; then
       online_count=$(broker_response_field "$chat_status_response" online_count) ||
         online_count="indisponível"
+      chat_unread_count=$(broker_response_field "$chat_status_response" unread_count) ||
+        chat_unread_count=0
+      chat_mention_count=$(broker_response_field "$chat_status_response" mention_count) ||
+        chat_mention_count=0
+      chat_preview=$(broker_response_nested_field "$chat_status_response" preview body) ||
+        chat_preview=""
+      chat_preview_user=$(broker_response_nested_field "$chat_status_response" preview username) ||
+        chat_preview_user=""
     fi
+  fi
+  if [[ "$online_count" =~ ^[0-9]+$ ]]; then
+    chat_label+=" ($online_count online"
+    chat_label_open=1
+  fi
+  if [[ "$chat_unread_count" =~ ^[0-9]+$ ]] && ((chat_unread_count > 0)); then
+    if ((chat_label_open)); then
+      chat_label+=" · "
+    else
+      chat_label+=" ("
+      chat_label_open=1
+    fi
+    chat_label+="$chat_unread_count novas"
+    if [[ "$chat_mention_count" =~ ^[0-9]+$ ]] && ((chat_mention_count > 0)); then
+      chat_label+=", $chat_mention_count menções"
+    fi
+  fi
+  if ((chat_label_open)); then
+    chat_label+=")"
   fi
   if ((unread_notifications > 0)); then
     progress_label+=" ($unread_notifications alertas)"
@@ -1569,6 +1614,12 @@ broker_mode_menu() {
   ui_screen_begin "INÍCIO"
   ui_home_intro "$CURRENT_USERNAME" || return 1
   ui_labeled_value "Online agora" "$online_count" "$(ui_width)"
+  if [[ -n "$chat_preview" ]]; then
+    ui_color_content
+    ui_wrap_text "Prévia do chat · $(ui_sanitize "$chat_preview_user"): $(ui_sanitize "$chat_preview")" \
+      "$(ui_width)" 2
+    ui_color_reset
+  fi
   if ((unread_notifications > 0)); then
     ui_warn "Você tem $unread_notifications atualização(ões) pendente(s). Confira Meu progresso."
   fi
@@ -1580,11 +1631,11 @@ broker_mode_menu() {
   )
   if [[ "$CURRENT_USER_IS_ADMIN" == "True" ]]; then
     menu_options+=("5|Administração")
-    menu_options+=("6|Minhas entregas")
+    menu_options+=("7|Minhas entregas")
   else
     menu_options+=("5|Minhas entregas")
   fi
-  menu_options+=("7|Chat global")
+  menu_options+=("6|$chat_label")
   menu_options+=("0|Sair")
   printf '\n'
   if ! ui_menu_choice choice "MENU PRINCIPAL" "${menu_options[@]}"; then
@@ -1626,14 +1677,14 @@ broker_mode_menu() {
     fi
     ;;
   6)
-    if ! broker_submissions_menu; then
-      ui_error "Não foi possível carregar Minhas entregas. Consulte a mensagem acima."
+    if ! chat_menu; then
+      ui_error "Não foi possível acessar o chat global."
       ui_pause
     fi
     ;;
   7)
-    if ! chat_menu; then
-      ui_error "Não foi possível acessar o chat global."
+    if ! broker_submissions_menu; then
+      ui_error "Não foi possível carregar Minhas entregas. Consulte a mensagem acima."
       ui_pause
     fi
     ;;

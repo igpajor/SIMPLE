@@ -53,7 +53,8 @@ Unix.
 - Submissões rastreáveis por commit e diretório.
 - Avaliações por pares com feedback obrigatório e resposta opcional.
 - Perfil, progresso, notificações e histórico de pontos.
-- Chat global no modo Broker/Proxy, com histórico persistente e presença recente.
+- Chat colaborativo no modo Broker/Proxy: salas global, ajuda e por exercício,
+  mensagens diretas, presença recente, menções, reações e moderação.
 - Administração de exercícios, usuários e operação do sistema.
 - Modo local para uso individual e modos Broker/Proxy para acesso multiusuário
   em Linux.

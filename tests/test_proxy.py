@@ -16,12 +16,14 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT_DIR / "broker"))
 
 from simple_broker import Broker, BrokerServer, initialize_database
 from simple_proxy import ProxyServer, ProxyService, _prepare_socket_path
+import simple_broker
 
 
 class ProxyTests(unittest.TestCase):
@@ -88,6 +90,137 @@ class ProxyTests(unittest.TestCase):
                 "INSERT INTO identity_bindings (linux_uid, user_id) VALUES (?, ?)",
                 (linux_uid, user_id),
             )
+
+    def test_proxy_forwards_chat_rooms_direct_messages_and_moderation(self) -> None:
+        uid = os.geteuid()
+        user = self.create_user("proxy-chat-user")
+        peer = self.create_user("proxy-chat-peer")
+        self.bind_for_test(uid, int(user["user_id"]))
+        login = self.proxy_call(
+            {
+                "method": "auth.login",
+                "username": "proxy-chat-user",
+                "password": "secure-pass-123",
+            }
+        )
+        self.assertTrue(login["ok"], login)
+
+        dashboard = self.proxy_call(
+            {"method": "chat.dashboard", "token": login["token"]}
+        )
+        self.assertTrue(dashboard["ok"], dashboard)
+        rooms = self.proxy_call({"method": "chat.rooms", "token": login["token"]})
+        self.assertIn("global", [room["channel"] for room in rooms["rooms"]])
+        post = self.proxy_call(
+            {
+                "method": "chat.post",
+                "token": login["token"],
+                "channel": "global",
+                "message": "Proxy chat search phrase",
+            }
+        )
+        self.assertTrue(post["ok"], post)
+        sync = self.proxy_call(
+            {
+                "method": "chat.sync",
+                "token": login["token"],
+                "channel": "global",
+                "after_id": "0",
+            }
+        )
+        self.assertEqual("Proxy chat search phrase", sync["messages"][0]["body"])
+        typing = self.proxy_call(
+            {
+                "method": "chat.typing",
+                "token": login["token"],
+                "channel": "global",
+                "active": "1",
+            }
+        )
+        self.assertTrue(typing["ok"], typing)
+        self.assertTrue(
+            self.proxy_call(
+                {
+                    "method": "chat.typing",
+                    "token": login["token"],
+                    "channel": "global",
+                    "active": "0",
+                }
+            )["ok"]
+        )
+        search = self.proxy_call(
+            {
+                "method": "chat.search",
+                "token": login["token"],
+                "channel": "global",
+                "query": "search phrase",
+            }
+        )
+        self.assertEqual(1, len(search["messages"]))
+        with patch.object(simple_broker, "CHAT_SEND_INTERVAL_SECONDS", 0.0):
+            reaction = self.proxy_call(
+                {
+                    "method": "chat.react",
+                    "token": login["token"],
+                    "message_id": str(post["message_id"]),
+                    "reaction": "❤️",
+                }
+            )
+        self.assertTrue(reaction["active"])
+        direct = self.proxy_call(
+            {
+                "method": "chat.dm.open",
+                "token": login["token"],
+                "username": "proxy-chat-peer",
+            }
+        )
+        self.assertTrue(direct["ok"], direct)
+        with patch.object(simple_broker, "CHAT_SEND_INTERVAL_SECONDS", 0.0):
+            direct_post = self.proxy_call(
+                {
+                    "method": "chat.post",
+                    "token": login["token"],
+                    "channel": direct["channel"],
+                    "message": "Private via proxy",
+                }
+            )
+        self.assertTrue(direct_post["ok"], direct_post)
+        self.assertNotEqual(user["user_id"], peer["user_id"])
+
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            connection.execute(
+                "UPDATE users SET is_admin = 1 WHERE id = ?", (user["user_id"],)
+            )
+        admin_login = self.proxy_call(
+            {
+                "method": "auth.login",
+                "username": "proxy-chat-user",
+                "password": "secure-pass-123",
+            }
+        )
+        self.assertTrue(admin_login["ok"], admin_login)
+        report = self.proxy_call(
+            {
+                "method": "chat.report",
+                "token": admin_login["token"],
+                "message_id": str(post["message_id"]),
+                "reason": "Teste de encaminhamento",
+            }
+        )
+        self.assertTrue(report["ok"], report)
+        reports = self.proxy_call(
+            {"method": "chat.admin.reports", "token": admin_login["token"]}
+        )
+        self.assertTrue(reports["ok"], reports)
+        moderation = self.proxy_call(
+            {
+                "method": "chat.admin.moderate",
+                "token": admin_login["token"],
+                "message_id": str(post["message_id"]),
+                "action": "hide",
+            }
+        )
+        self.assertTrue(moderation["ok"], moderation)
 
     @unittest.skipIf(os.geteuid() == 0, "use the root-only multi-UID integration test")
     def test_proxy_uses_kernel_uid_and_preserves_password_authentication(self) -> None:

@@ -104,7 +104,50 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL REFERENCES users(id),
     body TEXT NOT NULL CHECK (length(trim(body)) BETWEEN 1 AND 500),
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    channel TEXT NOT NULL DEFAULT 'global',
+    recipient_id INTEGER REFERENCES users(id),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    hidden_at DATETIME,
+    pinned_at DATETIME
+);
+
+CREATE TABLE IF NOT EXISTS chat_reads (
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    channel TEXT NOT NULL,
+    last_read_message_id INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, channel)
+);
+
+CREATE TABLE IF NOT EXISTS chat_mentions (
+    message_id INTEGER NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    PRIMARY KEY (message_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS chat_direct_rooms (
+    user_low_id INTEGER NOT NULL REFERENCES users(id),
+    user_high_id INTEGER NOT NULL REFERENCES users(id),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (user_low_id < user_high_id),
+    PRIMARY KEY (user_low_id, user_high_id)
+);
+
+CREATE TABLE IF NOT EXISTS chat_reactions (
+    message_id INTEGER NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    reaction TEXT NOT NULL CHECK (reaction IN ('👍', '❤️', '😂', '+1')),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (message_id, user_id, reaction)
+);
+
+CREATE TABLE IF NOT EXISTS chat_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER NOT NULL REFERENCES chat_messages(id),
+    reporter_id INTEGER NOT NULL REFERENCES users(id),
+    reason TEXT NOT NULL CHECK (length(trim(reason)) BETWEEN 1 AND 500),
+    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'resolved')),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (message_id, reporter_id)
 );
 
 CREATE TABLE IF NOT EXISTS points_ledger (
@@ -165,8 +208,8 @@ CREATE INDEX IF NOT EXISTS idx_evaluation_requests_slot_status
 CREATE INDEX IF NOT EXISTS idx_evaluation_requests_reviewer_status
     ON evaluation_requests(reviewer_id, status);
 
-CREATE INDEX IF NOT EXISTS idx_chat_messages_id
-    ON chat_messages(id);
+CREATE INDEX IF NOT EXISTS idx_chat_mentions_user_message
+    ON chat_mentions(user_id, message_id);
 
 CREATE INDEX IF NOT EXISTS idx_admin_adjustments_user
     ON admin_point_adjustments(user_id, created_at);
