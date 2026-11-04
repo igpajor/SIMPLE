@@ -425,9 +425,10 @@ assert_equals "ex00" "$(db_query "SELECT delivery_directory FROM submissions WHE
   "nova submissão persiste diretório do repositório"
 assert_equals "Entrega referenciada no GitHub" "$(db_query "SELECT content FROM submissions WHERE id = 1;")" \
   "nova submissão não armazena código-fonte"
-submission_output=$(submissions_menu)
+submission_output=$(printf '1\n0\n' | submissions_menu)
 if [[ "$submission_output" != *"aguardando avaliação"* ]] ||
-  [[ "$submission_output" != *"$commit_url"* ]]; then
+  [[ "$submission_output" != *"$commit_url"* ]] ||
+  [[ "$submission_output" != *"Missão original preservada."* ]]; then
   fail "participante consegue acompanhar a própria entrega"
 fi
 submission_help_output=$(
@@ -537,6 +538,11 @@ if [[ "$progress_output" != *"Nova avaliação de bob em TEST-01"* ]] ||
   [[ "$progress_output" != *"Feedback: Ajustar: use ' aspas"* ]]; then
   fail "progresso mostra notificação e feedback recebido"
 fi
+submission_output=$(printf '1\n0\n' | submissions_menu)
+if [[ "$submission_output" != *"AVALIAÇÃO"* ]] ||
+  [[ "$submission_output" != *"Ajustar: use ' aspas"* ]]; then
+  fail "participante acessa o exercício e feedback da entrega"
+fi
 assert_equals "0" "$(progress_unread_notification_count)" \
   "abrir meu progresso marca notificações como lidas"
 alice_review_id="$(db_query "SELECT id FROM reviews WHERE slot_id = $alice_first_slot;")"
@@ -563,7 +569,7 @@ db_query "
                  'hostil' || char(10) || 'legado'
   WHERE slot_id = $alice_first_slot;
 "
-submission_output=$(submissions_menu)
+submission_output=$(printf '0\n' | submissions_menu)
 if [[ "$submission_output" == *$'\033'* || "$submission_output" == *$'\233'* ]] ||
   [[ "$submission_output" != *"payloadhostil"* ]]; then
   fail "dados legados e alterados diretamente não injetam controles no terminal"

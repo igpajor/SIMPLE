@@ -433,7 +433,6 @@ broker_catalog_render_exercise() {
   local code="$1"
   local response
   local requirements
-  local field
   local value
   local name
   local description
@@ -454,48 +453,20 @@ broker_catalog_render_exercise() {
   width=$(ui_width)
   ui_screen_begin "EXERCÍCIO $code"
   name=$(broker_response_nested_field "$response" exercise name) || return 1
-  [[ -n "$name" ]] && ui_wrap_text "$name" "$width" 2
   description=$(broker_response_nested_field "$response" exercise description) || return 1
-  if [[ -n "$description" ]]; then
-    ui_section "DESCRIÇÃO"
-    ui_wrap_text "$description" "$width" 2
-  fi
-
   delivery_directory=$(broker_response_nested_field "$response" exercise delivery_directory) || return 1
   delivery_files=$(broker_response_nested_field "$response" exercise delivery_files) || return 1
   allowed_functions=$(broker_response_nested_field "$response" exercise allowed_functions) || return 1
-  if [[ -n "$delivery_directory" || -n "$delivery_files" || -n "$allowed_functions" ]]; then
-    ui_section "ESPECIFICAÇÕES"
-    [[ -n "$delivery_directory" ]] &&
-      ui_labeled_value "Diretório de entrega" "$delivery_directory" "$width"
-    [[ -n "$delivery_files" ]] &&
-      ui_labeled_value "Arquivos a entregar" "$delivery_files" "$width"
-    [[ -n "$allowed_functions" ]] &&
-      ui_labeled_value "Funções permitidas" "$allowed_functions" "$width"
-  fi
   mission=$(broker_response_nested_field "$response" exercise statement) || return 1
-  if [[ -n "$mission" ]]; then
-    ui_section "MISSÃO"
-    ui_wrap_text "$mission" "$width" 2
-  fi
-
-  value=$(broker_response_nested_field "$response" exercise example) || return 1
-  if [[ -n "$value" ]]; then
-    ui_section "EXEMPLO DE EXECUÇÃO"
-    ui_code_block "$value"
-  fi
-  value=$(broker_response_nested_field "$response" exercise terminal_model) || return 1
-  if [[ -n "$value" ]]; then
-    ui_section "MODELO DO TERMINAL"
-    ui_code_block "$value"
-  fi
-  value=$(broker_response_nested_field "$response" exercise hints) || return 1
-  if [[ -n "$value" ]]; then
-    ui_section "DICAS"
-    while IFS= read -r field || [[ -n "$field" ]]; do
-      ui_wrap_text "- $field" "$width" 2
-    done <<<"$value"
-  fi
+  local example
+  example=$(broker_response_nested_field "$response" exercise example) || return 1
+  local terminal_model
+  terminal_model=$(broker_response_nested_field "$response" exercise terminal_model) || return 1
+  local hints
+  hints=$(broker_response_nested_field "$response" exercise hints) || return 1
+  exercise_render_content "$name" "$description" "$mission" "$example" \
+    "$delivery_directory" "$delivery_files" "$allowed_functions" \
+    "$terminal_model" "$hints"
   requirements=$(printf '%s\0%s\0' "$CURRENT_SESSION_TOKEN" "$code" |
     broker_request submissions.requirements token exercise_code) || return 1
   if ! broker_check_response "$requirements"; then
@@ -518,6 +489,62 @@ broker_catalog_render_exercise() {
   fi
 }
 
+broker_submission_render_detail() {
+  local submission_id="$1"
+  local response
+  local id
+  local code
+  local name
+  local description
+  local mission
+  local example
+  local exercise_directory
+  local delivery_files
+  local allowed_functions
+  local terminal_model
+  local hints
+  local status
+  local kind
+  local commit_url
+  local directory
+  local submitted_at
+  local slot_id
+  local score
+  local feedback
+
+  response=$(printf '%s\0%s\0' "$CURRENT_SESSION_TOKEN" "$submission_id" |
+    broker_request submissions.get token submission_id) || return 1
+  if ! broker_check_response "$response"; then
+    ui_pause
+    return 1
+  fi
+
+  id=$(broker_response_nested_field "$response" submission id) || return 1
+  code=$(broker_response_nested_field "$response" submission exercise_code) || return 1
+  name=$(broker_response_nested_field "$response" submission exercise name) || return 1
+  description=$(broker_response_nested_field "$response" submission exercise description) || return 1
+  mission=$(broker_response_nested_field "$response" submission exercise statement) || return 1
+  example=$(broker_response_nested_field "$response" submission exercise example) || return 1
+  exercise_directory=$(broker_response_nested_field "$response" submission exercise delivery_directory) || return 1
+  delivery_files=$(broker_response_nested_field "$response" submission exercise delivery_files) || return 1
+  allowed_functions=$(broker_response_nested_field "$response" submission exercise allowed_functions) || return 1
+  terminal_model=$(broker_response_nested_field "$response" submission exercise terminal_model) || return 1
+  hints=$(broker_response_nested_field "$response" submission exercise hints) || return 1
+  status=$(broker_response_nested_field "$response" submission status) || return 1
+  kind=$(broker_response_nested_field "$response" submission content_kind) || return 1
+  commit_url=$(broker_response_nested_field "$response" submission commit_url) || return 1
+  directory=$(broker_response_nested_field "$response" submission delivery_directory) || return 1
+  submitted_at=$(broker_response_nested_field "$response" submission submitted_at) || return 1
+  slot_id=$(broker_response_nested_field "$response" submission slot_id) || return 1
+  score=$(broker_response_nested_field "$response" submission score) || return 1
+  feedback=$(broker_response_nested_field "$response" submission feedback) || return 1
+
+  submission_render_detail "$id" "$code" "$name" "$description" "$mission" \
+    "$example" "$exercise_directory" "$delivery_files" "$allowed_functions" \
+    "$terminal_model" "$hints" "$status" "$kind" "$commit_url" "$directory" \
+    "$submitted_at" "$slot_id" "$score" "$feedback"
+}
+
 broker_submissions_menu() {
   local response
   local rows
@@ -533,6 +560,9 @@ broker_submissions_menu() {
   local slot_id
   local score
   local feedback
+  local choice
+  local index
+  local requests_checked=0
   local -a submission_rows
 
   response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
@@ -547,13 +577,24 @@ broker_submissions_menu() {
   else
     submission_rows=()
   fi
-  ui_screen_begin "MINHAS ENTREGAS"
   if ((${#submission_rows[@]} == 0)); then
+    ui_screen_begin "MINHAS ENTREGAS"
     ui_empty_state "Você ainda não registrou entregas."
     ui_wrap_text \
       "Se um pedido seu foi aceito, encontre a entrega em Avaliações abertas." \
       "$(ui_width)" 2
-  else
+    if ! evaluation_handle_pending_requests; then
+      ui_warn "Não foi possível carregar ou responder aos pedidos de avaliação."
+    fi
+    ui_pause
+    return 0
+  fi
+
+  while true; do
+    ui_screen_begin "MINHAS ENTREGAS"
+    local -a submission_ids=()
+    local -a menu_options=()
+    index=0
     for encoded in "${submission_rows[@]}"; do
       IFS=$'\t' read -r submission_id code name status kind commit_url directory \
         submitted_at slot_id score feedback <<<"$encoded"
@@ -562,44 +603,38 @@ broker_submissions_menu() {
       name=$(db_hex_decode "$name") || return 1
       status=$(db_hex_decode "$status") || return 1
       kind=$(db_hex_decode "$kind") || return 1
+      commit_url=$(db_hex_decode "$commit_url") || return 1
+      directory=$(db_hex_decode "$directory") || return 1
       submitted_at=$(db_hex_decode "$submitted_at") || return 1
       slot_id=$(db_hex_decode "$slot_id") || return 1
       score=$(db_hex_decode "$score") || return 1
       feedback=$(db_hex_decode "$feedback") || return 1
 
-      ui_panel "#$submission_id · $code — $name"
-      case "$status" in
-      pending) status_label="aguardando avaliação" ;;
-      approved) status_label="aprovada" ;;
-      rejected) status_label="reprovada" ;;
-      esac
-      ui_color_dim
-      ui_wrap_text "Estado: $(ui_badge "$status_label" "$status") · Enviada em: $submitted_at" "$(ui_width)" 2
-      ui_color_reset
-      if [[ "$kind" == "github_commit" ]]; then
-        commit_url=$(db_hex_decode "$commit_url") || return 1
-        directory=$(db_hex_decode "$directory") || return 1
-        ui_wrap_text "Commit: $commit_url" "$(ui_width)" 2
-        ui_wrap_text "Diretório: $directory" "$(ui_width)" 2
-      else
-        ui_wrap_text "Slot de avaliação: $slot_id" "$(ui_width)" 2
-      fi
-      if [[ -n "$score" ]]; then
-        ui_wrap_text "Nota: $(ui_badge "$score/5" "info")" "$(ui_width)" 2
-        [[ -n "$feedback" ]] && ui_wrap_text "Feedback: $feedback" "$(ui_width)" 2
-      else
-        ui_wrap_text "Slot de avaliação: $slot_id" "$(ui_width)" 2
-      fi
-      ui_panel_end
+      submission_render_summary "$submission_id" "$code" "$name" "$status" \
+        "$kind" "$commit_url" "$directory" "$submitted_at" "$slot_id" \
+        "$score" "$feedback"
+      index=$((index + 1))
+      submission_ids+=("$submission_id")
+      menu_options+=("$index|Abrir $code — $name")
     done
-  fi
-  if ! evaluation_handle_pending_requests; then
-    ui_warn "Não foi possível carregar ou responder aos pedidos de avaliação."
-  fi
-  ui_wrap_text \
-    "Esta tela mostra apenas suas entregas. Para avaliar uma entrega aceita, acesse Avaliações abertas." \
-    "$(ui_width)" 2
-  ui_pause
+    ui_wrap_text \
+      "Para avaliar uma entrega aceita, acesse Avaliações abertas." \
+      "$(ui_width)" 2
+    if ((requests_checked == 0)); then
+      if ! evaluation_handle_pending_requests; then
+        ui_warn "Não foi possível carregar ou responder aos pedidos de avaliação."
+      fi
+      requests_checked=1
+    fi
+    menu_options+=("0|Voltar")
+    ui_menu_choice choice "ABRIR EXERCÍCIO ENTREGUE" "${menu_options[@]}" || return 1
+    if [[ "$choice" == "0" ]]; then
+      break
+    fi
+    index=$((choice - 1))
+    broker_submission_render_detail "${submission_ids[$index]}" || return 1
+    ui_pause
+  done
 }
 
 broker_evaluation_review_prompt() {

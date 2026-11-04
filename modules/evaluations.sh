@@ -716,6 +716,250 @@ evaluations_menu() {
   done
 }
 
+submission_status_label() {
+  case "$1" in
+    pending) printf 'aguardando avaliação\n' ;;
+    approved) printf 'aprovada\n' ;;
+    rejected) printf 'reprovada\n' ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+submission_separator() {
+  local width
+  local line
+
+  width=$(ui_width)
+  ((width > 4)) && width=$((width - 4)) || width=1
+  printf '  '
+  printf -v line '%*s' "$width" ''
+  ui_color_dim
+  printf '%s\n' "${line// /─}"
+  ui_color_reset
+}
+
+submission_render_summary() {
+  local id="$1"
+  local code="$2"
+  local name="$3"
+  local status="$4"
+  local kind="$5"
+  local commit_url="$6"
+  local directory="$7"
+  local submitted_at="$8"
+  local slot_id="$9"
+  local score="${10}"
+  local feedback="${11}"
+  local width
+  local status_label
+
+  width=$(ui_width)
+  status_label=$(submission_status_label "$status")
+  ui_panel "#$id · $code — $name"
+  ui_color_content
+  ui_wrap_text "Estado: $status_label · Enviada em: $submitted_at" "$width" 2
+  if [[ "$kind" == "github_commit" ]]; then
+    ui_wrap_text "Commit: $commit_url" "$width" 2
+    ui_wrap_text "Diretório: $directory" "$width" 2
+  else
+    ui_wrap_text "Slot de avaliação: $slot_id" "$width" 2
+  fi
+  ui_color_reset
+  submission_separator
+  if [[ -n "$score" ]]; then
+    ui_color_content
+    ui_wrap_text "Nota: $(ui_badge "$score/5" "info")" "$width" 2
+    [[ -n "$feedback" ]] && ui_wrap_text "Feedback: $feedback" "$width" 2
+    ui_color_reset
+  else
+    ui_color_content
+    ui_wrap_text "Slot de avaliação: $slot_id · aguardando" "$width" 2
+    ui_color_reset
+  fi
+  ui_panel_end
+}
+
+submission_detail_field() {
+  local label="$1"
+  local value="$2"
+
+  ui_color_bold
+  ui_color_white
+  ui_wrap_text "$label" "$(ui_width)" 2
+  ui_color_reset
+  ui_color_content
+  ui_wrap_text "$value" "$(ui_width)" 4
+  ui_color_reset
+}
+
+submission_render_detail() {
+  local id="$1"
+  local code="$2"
+  local name="$3"
+  local description="$4"
+  local mission="$5"
+  local example="$6"
+  local exercise_directory="$7"
+  local delivery_files="$8"
+  local allowed_functions="$9"
+  local terminal_model="${10}"
+  local hints="${11}"
+  local status="${12}"
+  local kind="${13}"
+  local commit_url="${14}"
+  local directory="${15}"
+  local submitted_at="${16}"
+  local slot_id="${17}"
+  local score="${18}"
+  local feedback="${19}"
+  local status_label
+
+  ui_screen_begin "ENTREGA #$id · $code"
+  exercise_render_content "$name" "$description" "$mission" "$example" \
+    "$exercise_directory" "$delivery_files" "$allowed_functions" \
+    "$terminal_model" "$hints"
+
+  status_label=$(submission_status_label "$status")
+  ui_section "SUA ENTREGA"
+  submission_detail_field "Estado" "$status_label · Enviada em: $submitted_at"
+  if [[ "$kind" == "github_commit" ]]; then
+    submission_detail_field "Commit" "$commit_url"
+    submission_detail_field "Diretório" "$directory"
+  else
+    submission_detail_field "Slot de avaliação" "$slot_id"
+  fi
+
+  ui_separator
+  ui_section "AVALIAÇÃO"
+  if [[ -n "$score" ]]; then
+    submission_detail_field "Nota" "$score/5"
+  else
+    submission_detail_field "Nota" "Aguardando avaliação"
+  fi
+  if [[ -n "$feedback" ]]; then
+    submission_detail_field "Feedback" "$feedback"
+  else
+    submission_detail_field "Feedback" "Ainda não há feedback."
+  fi
+}
+
+submission_render_local_detail() {
+  local submission_id="$1"
+  local row
+  local id_hex
+  local code_hex
+  local name_hex
+  local description_hex
+  local mission_hex
+  local statement_path_hex
+  local example_hex
+  local exercise_directory_hex
+  local delivery_files_hex
+  local allowed_functions_hex
+  local terminal_model_hex
+  local hints_hex
+  local status_hex
+  local kind_hex
+  local commit_url_hex
+  local directory_hex
+  local submitted_at_hex
+  local slot_id_hex
+  local score_hex
+  local feedback_hex
+  local id
+  local code
+  local name
+  local description
+  local mission
+  local statement_path
+  local example
+  local exercise_directory
+  local delivery_files
+  local allowed_functions
+  local terminal_model
+  local hints
+  local status
+  local kind
+  local commit_url
+  local directory
+  local submitted_at
+  local slot_id
+  local score
+  local feedback
+  local full_path
+
+  [[ "$submission_id" =~ ^[0-9]+$ ]] || return 2
+  row=$(db_query "
+    SELECT hex(s.id) || '|' || hex(e.code) || '|' || hex(e.name) || '|' ||
+           hex(COALESCE(e.description, '')) || '|' ||
+           hex(COALESCE(e.statement, '')) || '|' ||
+           hex(COALESCE(e.statement_path, '')) || '|' ||
+           hex(COALESCE(e.example, '')) || '|' ||
+           hex(COALESCE(e.delivery_directory, '')) || '|' ||
+           hex(COALESCE(e.delivery_files, '')) || '|' ||
+           hex(COALESCE(e.allowed_functions, '')) || '|' ||
+           hex(COALESCE(e.terminal_model, '')) || '|' ||
+           hex(COALESCE(e.hints, '')) || '|' ||
+           hex(s.status) || '|' || hex(s.content_kind) || '|' ||
+           hex(COALESCE(s.commit_url, '')) || '|' ||
+           hex(COALESCE(s.delivery_directory, '')) || '|' ||
+           hex(s.submitted_at) || '|' || hex(COALESCE(slot.id, '')) || '|' ||
+           hex(COALESCE(r.score, '')) || '|' || hex(COALESCE(r.feedback, ''))
+    FROM submissions s
+    JOIN exercises e ON e.id = s.exercise_id
+    LEFT JOIN evaluation_slots slot ON slot.submission_id = s.id
+    LEFT JOIN reviews r ON r.slot_id = slot.id
+    WHERE s.id = $submission_id AND s.user_id = $CURRENT_USER_ID;
+  ") || return 1
+  if [[ -z "$row" ]]; then
+    ui_error "A entrega selecionada não foi encontrada."
+    return 1
+  fi
+
+  IFS='|' read -r id_hex code_hex name_hex description_hex mission_hex \
+    statement_path_hex example_hex exercise_directory_hex delivery_files_hex \
+    allowed_functions_hex terminal_model_hex hints_hex status_hex kind_hex \
+    commit_url_hex directory_hex submitted_at_hex slot_id_hex score_hex \
+    feedback_hex <<<"$row"
+  id=$(db_hex_decode "$id_hex") || return 1
+  code=$(db_hex_decode "$code_hex") || return 1
+  name=$(db_hex_decode "$name_hex") || return 1
+  description=$(db_hex_decode "$description_hex") || return 1
+  mission=$(db_hex_decode "$mission_hex") || return 1
+  statement_path=$(db_hex_decode "$statement_path_hex") || return 1
+  example=$(db_hex_decode "$example_hex") || return 1
+  exercise_directory=$(db_hex_decode "$exercise_directory_hex") || return 1
+  delivery_files=$(db_hex_decode "$delivery_files_hex") || return 1
+  allowed_functions=$(db_hex_decode "$allowed_functions_hex") || return 1
+  terminal_model=$(db_hex_decode "$terminal_model_hex") || return 1
+  hints=$(db_hex_decode "$hints_hex") || return 1
+  status=$(db_hex_decode "$status_hex") || return 1
+  kind=$(db_hex_decode "$kind_hex") || return 1
+  commit_url=$(db_hex_decode "$commit_url_hex") || return 1
+  directory=$(db_hex_decode "$directory_hex") || return 1
+  submitted_at=$(db_hex_decode "$submitted_at_hex") || return 1
+  slot_id=$(db_hex_decode "$slot_id_hex") || return 1
+  score=$(db_hex_decode "$score_hex") || return 1
+  feedback=$(db_hex_decode "$feedback_hex") || return 1
+
+  if [[ -z "$mission" && -n "$statement_path" ]]; then
+    full_path="$SCRIPT_DIR/$statement_path"
+    if [[ ! -f "$full_path" && -f "$EXERCISE_STORAGE_DIR/${statement_path##*/}" ]]; then
+      full_path="$EXERCISE_STORAGE_DIR/${statement_path##*/}"
+    fi
+    if [[ ! -f "$full_path" ]]; then
+      ui_error "Arquivo do enunciado indisponível: $statement_path"
+      return 1
+    fi
+    mission=$(<"$full_path")
+  fi
+
+  submission_render_detail "$id" "$code" "$name" "$description" "$mission" \
+    "$example" "$exercise_directory" "$delivery_files" "$allowed_functions" \
+    "$terminal_model" "$hints" "$status" "$kind" "$commit_url" "$directory" \
+    "$submitted_at" "$slot_id" "$score" "$feedback"
+}
+
 submissions_menu() {
   local rows
   local id
@@ -729,6 +973,13 @@ submissions_menu() {
   local slot_id
   local score
   local feedback
+  local encoded
+  local choice
+  local index
+  local requests_checked=0
+  local -a submission_rows
+  local -a submission_ids
+  local -a menu_options
 
   if [[ "${BROKER_MODE:-0}" == "1" ]]; then
     broker_submissions_menu
@@ -754,8 +1005,8 @@ submissions_menu() {
     return 1
   }
 
-  ui_screen_begin "MINHAS ENTREGAS"
   if [[ -z "$rows" ]]; then
+    ui_screen_begin "MINHAS ENTREGAS"
     ui_empty_state "Você ainda não registrou entregas." \
       "Abra um exercício para enviar uma referência de commit."
     nav_pop
@@ -763,79 +1014,88 @@ submissions_menu() {
     return 0
   fi
 
-  while IFS='|' read -r id code name status kind commit_url directory \
-    submitted_at slot_id score feedback; do
-    id=$(db_hex_decode "$id") || {
-      nav_pop
-      return 1
-    }
-    code=$(db_hex_decode "$code") || {
-      nav_pop
-      return 1
-    }
-    name=$(db_hex_decode "$name") || {
-      nav_pop
-      return 1
-    }
-    status=$(db_hex_decode "$status") || {
-      nav_pop
-      return 1
-    }
-    kind=$(db_hex_decode "$kind") || {
-      nav_pop
-      return 1
-    }
-    commit_url=$(db_hex_decode "$commit_url") || {
-      nav_pop
-      return 1
-    }
-    directory=$(db_hex_decode "$directory") || {
-      nav_pop
-      return 1
-    }
-    submitted_at=$(db_hex_decode "$submitted_at") || {
-      nav_pop
-      return 1
-    }
-    slot_id=$(db_hex_decode "$slot_id") || {
-      nav_pop
-      return 1
-    }
-    score=$(db_hex_decode "$score") || {
-      nav_pop
-      return 1
-    }
-    feedback=$(db_hex_decode "$feedback") || {
-      nav_pop
-      return 1
-    }
+  mapfile -t submission_rows <<<"$rows"
+  while true; do
+    ui_screen_begin "MINHAS ENTREGAS"
+    submission_ids=()
+    menu_options=()
+    index=0
+    for encoded in "${submission_rows[@]}"; do
+      IFS='|' read -r id code name status kind commit_url directory \
+        submitted_at slot_id score feedback <<<"$encoded"
+      id=$(db_hex_decode "$id") || {
+        nav_pop
+        return 1
+      }
+      code=$(db_hex_decode "$code") || {
+        nav_pop
+        return 1
+      }
+      name=$(db_hex_decode "$name") || {
+        nav_pop
+        return 1
+      }
+      status=$(db_hex_decode "$status") || {
+        nav_pop
+        return 1
+      }
+      kind=$(db_hex_decode "$kind") || {
+        nav_pop
+        return 1
+      }
+      commit_url=$(db_hex_decode "$commit_url") || {
+        nav_pop
+        return 1
+      }
+      directory=$(db_hex_decode "$directory") || {
+        nav_pop
+        return 1
+      }
+      submitted_at=$(db_hex_decode "$submitted_at") || {
+        nav_pop
+        return 1
+      }
+      slot_id=$(db_hex_decode "$slot_id") || {
+        nav_pop
+        return 1
+      }
+      score=$(db_hex_decode "$score") || {
+        nav_pop
+        return 1
+      }
+      feedback=$(db_hex_decode "$feedback") || {
+        nav_pop
+        return 1
+      }
 
-    ui_panel "#$id · $code — $name"
-    case "$status" in
-    pending) status_label="aguardando avaliação" ;;
-    approved) status_label="aprovada" ;;
-    rejected) status_label="reprovada" ;;
-    esac
-    ui_color_dim
-    ui_wrap_text "Estado: $(ui_badge "$status_label" "$status") · Enviada em: $submitted_at" "$(ui_width)" 2
-    ui_color_reset
-    if [[ "$kind" == "github_commit" ]]; then
-      ui_wrap_text "Commit: $commit_url" "$(ui_width)" 2
-      ui_wrap_text "Diretório: $directory" "$(ui_width)" 2
-    else
-      ui_wrap_text "Slot de avaliação: $slot_id" "$(ui_width)" 2
-    fi
-    if [[ -n "$score" ]]; then
-      ui_wrap_text "Nota: $(ui_badge "$score/5" "info")" "$(ui_width)" 2
-      [[ -n "$feedback" ]] && ui_wrap_text "Feedback: $feedback" "$(ui_width)" 2
-    fi
-    ui_panel_end
-  done <<<"$rows"
+      submission_render_summary "$id" "$code" "$name" "$status" "$kind" \
+        "$commit_url" "$directory" "$submitted_at" "$slot_id" "$score" "$feedback"
+      index=$((index + 1))
+      submission_ids+=("$id")
+      menu_options+=("$index|Abrir $code — $name")
+    done
 
-  evaluation_handle_pending_requests || {
-    nav_pop
-    return 1
-  }
+    if ((requests_checked == 0)); then
+      evaluation_handle_pending_requests || {
+        nav_pop
+        return 1
+      }
+      requests_checked=1
+    fi
+    menu_options+=("0|Voltar")
+    ui_menu_choice choice "ABRIR EXERCÍCIO ENTREGUE" "${menu_options[@]}" || {
+      nav_pop
+      return 1
+    }
+    if [[ "$choice" == "0" ]]; then
+      break
+    fi
+    index=$((choice - 1))
+    submission_render_local_detail "${submission_ids[$index]}" || {
+      nav_pop
+      return 1
+    }
+    ui_pause
+  done
   nav_pop
-  ui_pause
 }

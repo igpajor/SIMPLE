@@ -946,6 +946,14 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual(submission["submission_id"], submitted_list["submissions"][0]["id"])
         self.assertEqual("pending", submitted_detail["submission"]["status"])
         self.assertEqual(
+            "Descrição",
+            submitted_detail["submission"]["exercise"]["description"],
+        )
+        self.assertEqual(
+            "Missão",
+            submitted_detail["submission"]["exercise"]["statement"],
+        )
+        self.assertEqual(
             0,
             self.call({"method": "points.balance", "token": owner["token"]})["points"],
         )
@@ -1699,7 +1707,7 @@ class BrokerTests(unittest.TestCase):
             ["bash", str(ROOT_DIR / "simple.sh")],
             input=(
                 "2\ntui-owner\nsecure-pass-123\n"
-                "5\n1\n0\n"
+                "5\n1\n1\n0\n0\n"
             ),
             text=True,
             capture_output=True,
@@ -1711,6 +1719,9 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual(0, accepted.returncode, accepted.stderr)
         self.assertIn("Pedido aceito", accepted.stdout)
         self.assertIn("MINHAS ENTREGAS", accepted.stdout)
+        self.assertIn("Resolva o exercício", accepted.stdout)
+        self.assertIn("AVALIAÇÃO", accepted.stdout)
+        self.assertIn("Aguardando avaliação", accepted.stdout)
 
         reviewer_progress = subprocess.run(
             ["bash", str(ROOT_DIR / "simple.sh")],
@@ -1745,6 +1756,25 @@ class BrokerTests(unittest.TestCase):
         )
         self.assertEqual(0, reviewed.returncode, reviewed.stderr)
         self.assertIn("Avaliação registrada: aprovado.", reviewed.stdout)
+
+        owner_submission_detail = subprocess.run(
+            ["bash", str(ROOT_DIR / "simple.sh")],
+            input=(
+                "2\ntui-owner\nsecure-pass-123\n"
+                "5\n1\n0\n0\n"
+            ),
+            text=True,
+            capture_output=True,
+            cwd=ROOT_DIR,
+            env=environment,
+            check=False,
+            timeout=15,
+        )
+        self.assertEqual(
+            0, owner_submission_detail.returncode, owner_submission_detail.stderr
+        )
+        self.assertIn("Boa solução.", owner_submission_detail.stdout)
+        self.assertIn("5/5", owner_submission_detail.stdout)
 
         progress = subprocess.run(
             ["bash", str(ROOT_DIR / "simple.sh")],

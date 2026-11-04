@@ -34,6 +34,8 @@ ui_color_reset()   { ui_color '\033[0m'; }
 ui_color_bold()    { ui_color '\033[1m'; }
 ui_color_dim()     { ui_color '\033[2m'; }
 ui_color_primary() { ui_color '\033[1;36m'; }   # ciano
+ui_color_white()   { ui_color '\033[1;37m'; }
+ui_color_content() { ui_color '\033[0;37m'; }
 ui_color_success() { ui_color '\033[1;32m'; }   # verde
 ui_color_error()   { ui_color '\033[1;31m'; }   # vermelho
 ui_color_warning() { ui_color '\033[1;33m'; }   # amarelo
@@ -311,6 +313,7 @@ ui_section() {
   width=$(ui_width)
   printf '\n'
   ui_color_bold
+  ui_color_white
   ui_wrap_text "$title" "$width" 2
   ui_color_reset
   ui_separator
@@ -672,7 +675,7 @@ ui_code_block() {
   printf '\n'
   content=$(ui_sanitize "$content") || return 1
   while IFS= read -r line || [[ -n "$line" ]]; do
-    ui_color_dim
+    ui_color_content
     printf '  │ '
     ui_color_reset
     printf '%s\n' "$line"

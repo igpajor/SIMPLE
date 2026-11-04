@@ -1223,7 +1223,11 @@ class Broker:
                 ).fetchone()
                 if row is None:
                     raise ValueError("Submissão não encontrada.")
-                return {"ok": True, "submission": dict(row)}
+                submission = dict(row)
+                submission["exercise"] = self._exercise(
+                    connection, submission["exercise_code"]
+                )
+                return {"ok": True, "submission": submission}
 
             if method == "evaluations.slots.list":
                 rows = connection.execute(

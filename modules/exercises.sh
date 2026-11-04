@@ -7,6 +7,66 @@
 
 EXERCISE_STORAGE_DIR="${EXERCISE_STORAGE_DIR:-$SCRIPT_DIR/storage/exercises}"
 
+exercise_render_content() {
+  local name="$1"
+  local description="$2"
+  local mission="$3"
+  local example="$4"
+  local delivery_directory="$5"
+  local delivery_files="$6"
+  local allowed_functions="$7"
+  local terminal_model="$8"
+  local hints="$9"
+  local hint
+  local width
+
+  width=$(ui_width)
+  ui_color_content
+  ui_wrap_text "$(ui_sanitize "$name")" "$width" 2
+  ui_color_reset
+
+  if [[ -n "$description" ]]; then
+    ui_exercise_section "DESCRIÇÃO"
+    ui_color_content
+    ui_wrap_text "$description" "$width" 2
+    ui_color_reset
+  fi
+
+  if [[ -n "$delivery_directory" || -n "$delivery_files" || -n "$allowed_functions" ]]; then
+    ui_exercise_section "ESPECIFICAÇÕES"
+    ui_color_content
+    [[ -n "$delivery_directory" ]] &&
+      ui_labeled_value "Diretório de entrega" "$delivery_directory" "$width"
+    [[ -n "$delivery_files" ]] &&
+      ui_labeled_value "Arquivos a entregar" "$delivery_files" "$width"
+    [[ -n "$allowed_functions" ]] &&
+      ui_labeled_value "Funções permitidas" "$allowed_functions" "$width"
+    ui_color_reset
+  fi
+
+  ui_exercise_section "MISSÃO"
+  ui_color_content
+  ui_wrap_text "$mission" "$width" 2
+  ui_color_reset
+
+  if [[ -n "$example" ]]; then
+    ui_exercise_section "EXEMPLO DE EXECUÇÃO"
+    exercise_render_example "$example" "$width"
+  fi
+  if [[ -n "$terminal_model" ]]; then
+    ui_exercise_section "MODELO DO TERMINAL"
+    ui_code_block "$terminal_model"
+  fi
+  if [[ -n "$hints" ]]; then
+    ui_exercise_section "DICAS"
+    ui_color_content
+    while IFS= read -r hint || [[ -n "$hint" ]]; do
+      ui_wrap_text "- $hint" "$width" 2
+    done <<<"$hints"
+    ui_color_reset
+  fi
+}
+
 exercise_render_structured() {
   local code="$1"
   local code_sql
@@ -70,42 +130,9 @@ exercise_render_structured() {
   width=$(ui_width)
 
   ui_screen_begin "EXERCÍCIO $code"
-  ui_wrap_text "$(ui_sanitize "$name")" "$width" 2
-  if [[ -n "$description" ]]; then
-    ui_exercise_section "DESCRIÇÃO"
-    ui_wrap_text "$description" "$width" 2
-  fi
-
-  if [[ -n "$delivery_directory" || -n "$delivery_files" || -n "$allowed_functions" ]]; then
-    ui_exercise_section "ESPECIFICAÇÕES"
-    if [[ -n "$delivery_directory" ]]; then
-      ui_labeled_value "Diretório de entrega" "$delivery_directory" "$width"
-    fi
-    if [[ -n "$delivery_files" ]]; then
-      ui_labeled_value "Arquivos a entregar" "$delivery_files" "$width"
-    fi
-    if [[ -n "$allowed_functions" ]]; then
-      ui_labeled_value "Funções permitidas" "$allowed_functions" "$width"
-    fi
-  fi
-
-  ui_exercise_section "MISSÃO"
-  ui_wrap_text "$mission" "$width" 2
-
-  if [[ -n "$example" ]]; then
-    ui_exercise_section "EXEMPLO DE EXECUÇÃO"
-    exercise_render_example "$example" "$width"
-  fi
-  if [[ -n "$terminal_model" ]]; then
-    ui_exercise_section "MODELO DO TERMINAL"
-    ui_code_block "$terminal_model"
-  fi
-  if [[ -n "$hints" ]]; then
-    ui_exercise_section "DICAS"
-    while IFS= read -r hint || [[ -n "$hint" ]]; do
-      ui_wrap_text "- $hint" "$width" 2
-    done <<<"$hints"
-  fi
+  exercise_render_content "$name" "$description" "$mission" "$example" \
+    "$delivery_directory" "$delivery_files" "$allowed_functions" \
+    "$terminal_model" "$hints"
   printf '\n'
   ui_statusline
   ui_menu_choice action "EXERCÍCIO $(ui_sanitize "$code")" \
