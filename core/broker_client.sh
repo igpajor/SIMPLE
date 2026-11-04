@@ -42,10 +42,26 @@ broker_response_nested_field() {
 import json
 import sys
 value = json.load(sys.stdin)
-for key in sys.argv[1:]:
+keys = sys.argv[1:]
+for index, key in enumerate(keys):
     if not isinstance(value, dict):
-        raise SystemExit("Objeto de resposta inesperado")
-    value = value.get(key, "")
+        parent = ".".join(keys[:index]) or "raiz"
+        raise SystemExit(
+            "Resposta incompatível do SIMPLE Broker: esperava um objeto em "
+            + repr(parent)
+            + ". Atualize os arquivos e reinicie simple-broker.service."
+        )
+    if key not in value:
+        if index == len(keys) - 1:
+            value = ""
+            break
+        path = ".".join(keys[: index + 1])
+        raise SystemExit(
+            "Resposta incompatível do SIMPLE Broker: campo "
+            + repr(path)
+            + " ausente. Atualize os arquivos e reinicie simple-broker.service."
+        )
+    value = value[key]
 if value is None:
     value = ""
 if not isinstance(value, (str, int, float, bool)):

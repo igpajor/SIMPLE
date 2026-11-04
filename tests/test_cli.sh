@@ -32,6 +32,7 @@ assert_equals() {
 
 source "$ROOT_DIR/core/database.sh"
 source "$ROOT_DIR/core/auth.sh"
+source "$ROOT_DIR/core/broker_client.sh"
 source "$ROOT_DIR/core/ui.sh"
 source "$ROOT_DIR/core/navigation.sh"
 source "$ROOT_DIR/modules/points.sh"
@@ -45,6 +46,17 @@ source "$ROOT_DIR/modules/evaluations.sh"
 source "$ROOT_DIR/modules/progress.sh"
 EXERCISE_STORAGE_DIR="$TEST_DIR/exercises"
 source "$ROOT_DIR/modules/admin.sh"
+
+old_broker_response='{"ok":true,"submission":{"id":1,"exercise_code":"TEST-01"}}'
+if broker_nested_error=$(
+  broker_response_nested_field "$old_broker_response" submission exercise name 2>&1
+); then
+  fail "cliente detecta resposta do Broker sem detalhes do exercício"
+fi
+if [[ "$broker_nested_error" != *"submission.exercise"* ]] ||
+  [[ "$broker_nested_error" != *"reinicie simple-broker.service"* ]]; then
+  fail "resposta incompatível do Broker orienta atualização e reinício do serviço"
+fi
 
 narrow_header=$(COLUMNS=16 ui_header)
 if ! awk 'length($0) > 16 { exit 1 }' <<<"$narrow_header"; then
