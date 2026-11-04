@@ -320,7 +320,7 @@ chat_command() {
       ui_wrap_text "/dm usuario · /historico · /buscar termo · /limpar" "$(ui_width)" 2
       ui_wrap_text "/reagir ID 👍|❤️|😂|+1 · /denunciar ID motivo" "$(ui_width)" 2
       if [[ "$CURRENT_USER_IS_ADMIN" == "True" ]]; then
-        ui_wrap_text "/fixar ID · /desafixar ID · /ocultar ID · /restaurar ID · /relatorios" \
+        ui_wrap_text "/fixar ID · /desafixar ID · /ocultar ID · /restaurar ID · /relatorios · /apagar-historico" \
           "$(ui_width)" 2
       fi
       chat_pause_for_response
@@ -511,6 +511,31 @@ chat_command() {
         done <<<"$rows"
       fi
       chat_pause_for_response
+      ;;
+    /apagar-historico)
+      if [[ "$CURRENT_USER_IS_ADMIN" != "True" ]]; then
+        ui_error "Acesso administrativo não autorizado."
+        return 0
+      fi
+      if ! ui_confirm "Apagar permanentemente todo o histórico da sala '$CHAT_ROOM_NAME'? Esta ação não pode ser desfeita."; then
+        return 0
+      fi
+      response=$(printf '%s\0%s\0' "$CURRENT_SESSION_TOKEN" "$CHAT_CHANNEL" |
+        broker_request chat.admin.clear token channel) || return 1
+      if ! broker_check_response "$response"; then
+        return 0
+      fi
+      local deleted_count
+      deleted_count=$(broker_response_field "$response" deleted_count) || return 1
+      [[ "$deleted_count" =~ ^[0-9]+$ ]] || {
+        ui_error "O Broker retornou uma contagem de exclusões inválida."
+        return 1
+      }
+      CHAT_BUFFER=()
+      CHAT_LAST_ID=0
+      CHAT_HISTORY_BEFORE=""
+      CHAT_HISTORY_HAS_MORE="False"
+      ui_success "$deleted_count mensagem(ns) apagada(s) permanentemente desta sala."
       ;;
     *)
       return 2

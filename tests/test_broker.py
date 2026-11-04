@@ -531,6 +531,114 @@ class BrokerTests(unittest.TestCase):
         )
         self.assertTrue(restored_sync["messages"][0]["pinned_at"])
 
+    def test_chat_admin_permanently_clears_only_the_selected_room(self) -> None:
+        author = self.create_user("clear-author")
+        reporter = self.create_user("clear-reporter")
+        admin = self.create_user("clear-admin")
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            connection.execute(
+                "UPDATE users SET is_admin = 1 WHERE id = ?",
+                (admin["user_id"],),
+            )
+        admin_login = self.call(
+            {
+                "method": "auth.login",
+                "username": "clear-admin",
+                "password": "secure-pass-123",
+            }
+        )
+        with patch.object(simple_broker, "CHAT_SEND_INTERVAL_SECONDS", 0.0):
+            global_post = self.call(
+                {
+                    "method": "chat.post",
+                    "token": author["token"],
+                    "channel": "global",
+                    "message": "Apagar nesta sala",
+                }
+            )
+            help_post = self.call(
+                {
+                    "method": "chat.post",
+                    "token": author["token"],
+                    "channel": "help",
+                    "message": "Manter na sala de ajuda",
+                }
+            )
+        self.assertTrue(global_post["ok"], global_post)
+        self.assertTrue(help_post["ok"], help_post)
+        reaction = self.call(
+            {
+                "method": "chat.react",
+                "token": reporter["token"],
+                "message_id": str(global_post["message_id"]),
+                "reaction": "+1",
+            }
+        )
+        report = self.call(
+            {
+                "method": "chat.report",
+                "token": reporter["token"],
+                "message_id": str(global_post["message_id"]),
+                "reason": "Teste de exclusão",
+            }
+        )
+        self.assertTrue(reaction["ok"], reaction)
+        self.assertTrue(report["ok"], report)
+
+        rejected = self.call(
+            {
+                "method": "chat.admin.clear",
+                "token": author["token"],
+                "channel": "global",
+            }
+        )
+        self.assertFalse(rejected["ok"])
+        deleted = self.call(
+            {
+                "method": "chat.admin.clear",
+                "token": admin_login["token"],
+                "channel": "global",
+            }
+        )
+        self.assertTrue(deleted["ok"], deleted)
+        self.assertEqual(1, deleted["deleted_count"])
+        global_sync = self.call(
+            {
+                "method": "chat.sync",
+                "token": author["token"],
+                "channel": "global",
+                "after_id": "0",
+            }
+        )
+        help_sync = self.call(
+            {
+                "method": "chat.sync",
+                "token": author["token"],
+                "channel": "help",
+                "after_id": "0",
+            }
+        )
+        self.assertEqual([], global_sync["messages"])
+        self.assertEqual(
+            ["Manter na sala de ajuda"],
+            [message["body"] for message in help_sync["messages"]],
+        )
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            self.assertEqual(
+                0,
+                connection.execute(
+                    "SELECT COUNT(*) FROM chat_reports WHERE message_id = ?",
+                    (global_post["message_id"],),
+                ).fetchone()[0],
+            )
+            self.assertEqual(
+                0,
+                connection.execute(
+                    "SELECT COUNT(*) FROM chat_reactions WHERE message_id = ?",
+                    (global_post["message_id"],),
+                ).fetchone()[0],
+            )
+
     def test_broker_tui_chat_can_send_and_refresh_messages(self) -> None:
         self.create_user("chat-tui")
         peer = self.create_user("chat-peer")
@@ -703,6 +811,83 @@ class BrokerTests(unittest.TestCase):
             )
         ]
         self.assertEqual(sorted(positions), positions)
+
+    def test_broker_admin_can_confirm_room_history_deletion_in_chat(self) -> None:
+        author = self.create_user("clear-cli-author")
+        admin = self.create_user("clear-cli-admin")
+        self.assertTrue(
+            self.call(
+                {
+                    "method": "chat.post",
+                    "token": author["token"],
+                    "channel": "global",
+                    "message": "Mensagem para apagar",
+                }
+            )["ok"]
+        )
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            connection.execute(
+                "UPDATE users SET is_admin = 1 WHERE id = ?",
+                (admin["user_id"],),
+            )
+        environment = os.environ.copy()
+        environment.update(
+            {"SIMPLE_MODE": "broker", "BROKER_SOCKET": str(self.socket_path)}
+        )
+        cancelled = subprocess.run(
+            ["bash", str(ROOT_DIR / "simple.sh")],
+            input=(
+                "2\nclear-cli-admin\nsecure-pass-123\n"
+                "6\n/apagar-historico\nn\n/sair\n0\n"
+            ),
+            text=True,
+            capture_output=True,
+            cwd=ROOT_DIR,
+            env=environment,
+            check=False,
+            timeout=15,
+        )
+        self.assertEqual(0, cancelled.returncode, cancelled.stderr)
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            self.assertEqual(
+                1,
+                connection.execute(
+                    "SELECT COUNT(*) FROM chat_messages WHERE channel = 'global'"
+                ).fetchone()[0],
+            )
+        process = subprocess.run(
+            ["bash", str(ROOT_DIR / "simple.sh")],
+            input=(
+                "2\nclear-cli-admin\nsecure-pass-123\n"
+                "6\n/apagar-historico\ns\n/sair\n0\n"
+            ),
+            text=True,
+            capture_output=True,
+            cwd=ROOT_DIR,
+            env=environment,
+            check=False,
+            timeout=15,
+        )
+        self.assertEqual(0, process.returncode, process.stderr)
+        self.assertIn("1 mensagem(ns) apagada(s) permanentemente", process.stdout)
+        self.assertEqual(
+            0,
+            self.call(
+                {
+                    "method": "chat.sync",
+                    "token": author["token"],
+                    "channel": "global",
+                    "after_id": "0",
+                }
+            )["last_id"],
+        )
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            self.assertEqual(
+                0,
+                connection.execute(
+                    "SELECT COUNT(*) FROM chat_messages WHERE channel = 'global'"
+                ).fetchone()[0],
+            )
 
     def test_broker_exercise_detail_opens_its_chat_room(self) -> None:
         self.create_user("exercise-chat-tui")

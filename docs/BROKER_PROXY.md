@@ -149,6 +149,10 @@ não remove o conteúdo do banco e não há expurgo automático. Comandos dispon
 `/ajuda`, `/quem`, `/salas`, `/sala`, `/dm`, `/historico`, `/buscar`, `/limpar`,
 `/reagir ID reação` e `/denunciar ID motivo`. Para administradores:
 `/relatorios`, `/ocultar ID`, `/restaurar ID`, `/fixar ID` e `/desafixar ID`.
+Administradores também podem usar `/apagar-historico` dentro de uma sala para
+apagar permanentemente todas as mensagens daquela sala. A interface exige
+confirmação explícita; a exclusão não pode ser desfeita e remove também as
+reações, menções e denúncias associadas. Outras salas não são afetadas.
 
 A presença fica em memória no Broker e considera online quem fez uma
 requisição autenticada nos últimos cinco minutos. O envio é limitado a uma

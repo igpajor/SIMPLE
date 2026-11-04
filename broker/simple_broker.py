@@ -105,6 +105,7 @@ METHOD_FIELDS = {
     "chat.report": ("token", "message_id", "reason"),
     "chat.admin.moderate": ("token", "message_id", "action"),
     "chat.admin.reports": ("token",),
+    "chat.admin.clear": ("token", "channel"),
     "chat.typing": ("token", "channel", "active"),
     "profile.get": ("token",),
     "profile.update": ("token", "display_name", "github_username", "bio"),
@@ -1890,6 +1891,31 @@ class Broker:
                     """
                 ).fetchall()
                 return {"ok": True, "reports": [dict(row) for row in rows]}
+
+            if method == "chat.admin.clear":
+                admin_id = self._require_admin(connection, request["token"])
+                channel = request["channel"]
+                self._chat_channel_access(connection, admin_id, channel)
+                connection.execute(
+                    """
+                    DELETE FROM chat_reports
+                    WHERE message_id IN (
+                        SELECT id FROM chat_messages WHERE channel = ?
+                    )
+                    """,
+                    (channel,),
+                )
+                cursor = connection.execute(
+                    "DELETE FROM chat_messages WHERE channel = ?",
+                    (channel,),
+                )
+                connection.commit()
+                return {
+                    "ok": True,
+                    "admin_id": admin_id,
+                    "channel": channel,
+                    "deleted_count": cursor.rowcount,
+                }
 
             if method == "chat.messages":
                 after_id = self._integer(

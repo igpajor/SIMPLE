@@ -221,6 +221,15 @@ class ProxyTests(unittest.TestCase):
             }
         )
         self.assertTrue(moderation["ok"], moderation)
+        clear = self.proxy_call(
+            {
+                "method": "chat.admin.clear",
+                "token": admin_login["token"],
+                "channel": "global",
+            }
+        )
+        self.assertTrue(clear["ok"], clear)
+        self.assertEqual(1, clear["deleted_count"])
 
     @unittest.skipIf(os.geteuid() == 0, "use the root-only multi-UID integration test")
     def test_proxy_uses_kernel_uid_and_preserves_password_authentication(self) -> None:
