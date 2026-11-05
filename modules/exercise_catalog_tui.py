@@ -87,6 +87,11 @@ class ExerciseCatalogTui:
         self.detail_scroll = 0
         self.action_selection = 0
         self.searching = False
+        self.form_open = False
+        self.form_focus = 0
+        self.commit_url = ""
+        self.delivery_directory = ""
+        self.form_error = ""
         self.width = 80
         self.height = 24
         self.colors: dict[str, int] = {}
@@ -213,7 +218,7 @@ class ExerciseCatalogTui:
 
     def catalog_visible_height(self) -> int:
         panel_height = min(32, self.height - 2)
-        return max(1, panel_height - 12)
+        return max(1, (panel_height - 12) // 3)
 
     def open_detail(self, item: dict[str, Any]) -> None:
         self.detail = item
@@ -298,28 +303,57 @@ class ExerciseCatalogTui:
                 width - 8,
             )
         else:
-            for row, index in enumerate(range(start, end), start=1):
+            option_width = min(76, width - 10)
+            option_left = left + (width - option_width) // 2
+            option_y = list_top + 1
+            for index in range(start, end):
                 item = self.filtered_items[index]
                 status = item["status"]
                 label = (
                     f"{item['code']} · {item['name']}  [{STATUS_LABELS[status]}]"
                 )
                 selected = index == self.selection
-                visible_number = index - start + 1
-                direct_key = f"[{visible_number}]" if visible_number <= 9 else "   "
-                self.draw_text(
-                    screen,
-                    list_top + row,
-                    left + 4,
-                    f"{'›' if selected else ' '} {direct_key} {label}",
-                    "selected" if selected else status,
-                    width - 8,
-                )
+                if selected:
+                    self.draw_text(
+                        screen,
+                        option_y,
+                        option_left,
+                        f"┌{'─' * (option_width - 2)}┐",
+                        "selected",
+                        option_width,
+                    )
+                    self.draw_text(
+                        screen,
+                        option_y + 1,
+                        option_left + 2,
+                        f"› {label}",
+                        "selected",
+                        option_width - 4,
+                    )
+                    self.draw_text(
+                        screen,
+                        option_y + 2,
+                        option_left,
+                        f"└{'─' * (option_width - 2)}┘",
+                        "selected",
+                        option_width,
+                    )
+                    option_y += 3
+                else:
+                    self.draw_text(
+                        screen,
+                        option_y,
+                        option_left + 2,
+                        label,
+                        status,
+                        option_width - 4,
+                    )
+                    option_y += 1
 
         if self.searching:
             footer = "Digite para buscar · Enter aplicar · Esc cancelar"
         else:
-            footer = "↑/↓ navegar · Enter detalhes · 1-9 abrir · / buscar · A/D/E/C filtrar · 0 voltar"
+            footer = "↑/↓ navegar · Enter detalhes · / buscar · A/D/E/C filtrar · Esc voltar"
         self.draw_text(screen, bottom - 1, left + 2, footer, "muted", width - 4)
 
     def draw_detail(self, screen: Any, top: int, left: int, width: int, height: int) -> None:
@@ -363,18 +397,50 @@ class ExerciseCatalogTui:
             )
 
         actions = self.actions()
-        self.draw_text(screen, bottom - 4, left + 2, "AÇÕES", "title", width - 4)
-        action_width = max(1, (width - 8) // len(actions))
+        self.draw_text(screen, bottom - 6, left + 2, "AÇÕES", "title", width - 4)
+        action_gap = 2
+        action_width = min(
+            38,
+            max(1, (width - 8 - (len(actions) - 1) * action_gap) // len(actions)),
+        )
+        total_actions_width = len(actions) * action_width + (len(actions) - 1) * action_gap
+        action_left = left + max(2, (width - total_actions_width) // 2)
         for index, (action, label) in enumerate(actions):
-            key = {"submit": "1", "chat": "2", "back": "0"}[action]
-            self.draw_text(
-                screen,
-                bottom - 3,
-                left + 2 + index * action_width,
-                f"[{key}] {label}",
-                "selected" if index == self.action_selection else "text",
-                action_width,
-            )
+            x = action_left + index * (action_width + action_gap)
+            if index == self.action_selection:
+                self.draw_text(
+                    screen,
+                    bottom - 5,
+                    x,
+                    f"┌{'─' * (action_width - 2)}┐",
+                    "selected",
+                    action_width,
+                )
+                self.draw_text(
+                    screen,
+                    bottom - 4,
+                    x + 2,
+                    label,
+                    "selected",
+                    action_width - 4,
+                )
+                self.draw_text(
+                    screen,
+                    bottom - 3,
+                    x,
+                    f"└{'─' * (action_width - 2)}┘",
+                    "selected",
+                    action_width,
+                )
+            else:
+                self.draw_text(
+                    screen,
+                    bottom - 4,
+                    x + 2,
+                    label,
+                    "text",
+                    action_width - 4,
+                )
         self.draw_text(
             screen,
             bottom - 1,
@@ -384,10 +450,144 @@ class ExerciseCatalogTui:
             width - 4,
         )
 
+    def draw_form(self, screen: Any, top: int, left: int, width: int, height: int) -> None:
+        bottom = top + height - 1
+        self.draw_header(screen, top, left, width)
+        code = self.detail["code"] if self.detail else ""
+        self.draw_text(
+            screen,
+            top + 4,
+            left + 2,
+            f"REGISTRAR ENTREGA · {code}",
+            "title",
+            width - 4,
+        )
+        self.draw_text(
+            screen,
+            top + 5,
+            left + 2,
+            "O SIMPLE registra apenas a referência; não recebe nem executa seu código.",
+            "muted",
+            width - 4,
+        )
+
+        inner_left = left + 2
+        inner_width = width - 4
+        url_top = top + 7
+        self.draw_frame(
+            screen,
+            url_top,
+            inner_left,
+            inner_width,
+            4,
+            "LINK DO COMMIT GITHUB",
+        )
+        url_attr = "selected" if self.form_focus == 0 else "text"
+        self.draw_text(
+            screen,
+            url_top + 1,
+            inner_left + 2,
+            self.commit_url or "https://github.com/usuario/repositorio/commit/SHA",
+            url_attr if self.commit_url else "muted",
+            inner_width - 4,
+        )
+        directory_top = url_top + 5
+        self.draw_frame(
+            screen,
+            directory_top,
+            inner_left,
+            inner_width,
+            4,
+            "DIRETÓRIO DA ENTREGA",
+        )
+        directory_attr = "selected" if self.form_focus == 1 else "text"
+        self.draw_text(
+            screen,
+            directory_top + 1,
+            inner_left + 2,
+            self.delivery_directory or "ex00 (ou . se estiver na raiz)",
+            directory_attr if self.delivery_directory else "muted",
+            inner_width - 4,
+        )
+        self.draw_text(
+            screen,
+            directory_top + 4,
+            inner_left,
+            "O link deve conter /commit/SHA; não use links de arquivo ou pasta.",
+            "muted",
+            inner_width,
+        )
+
+        confirm_top = bottom - 5
+        confirm_width = min(44, inner_width)
+        confirm_left = inner_left + (inner_width - confirm_width) // 2
+        if self.form_focus == 2:
+            self.draw_text(
+                screen,
+                confirm_top,
+                confirm_left,
+                f"┌{'─' * (confirm_width - 2)}┐",
+                "selected",
+                confirm_width,
+            )
+            self.draw_text(
+                screen,
+                confirm_top + 1,
+                confirm_left + 2,
+                "Confirmar envio da referência",
+                "selected",
+                confirm_width - 4,
+            )
+            self.draw_text(
+                screen,
+                confirm_top + 2,
+                confirm_left,
+                f"└{'─' * (confirm_width - 2)}┘",
+                "selected",
+                confirm_width,
+            )
+        else:
+            self.draw_text(
+                screen,
+                confirm_top + 1,
+                confirm_left + 2,
+                "Confirmar envio da referência",
+                "text",
+                confirm_width - 4,
+            )
+        self.draw_text(
+            screen,
+            bottom - 1,
+            left + 2,
+            "Tab/↑↓ mudar campo · Enter editar/avançar · Esc cancelar",
+            "muted",
+            width - 4,
+        )
+        if self.form_error:
+            self.draw_text(
+                screen,
+                bottom - 2,
+                left + 2,
+                self.form_error,
+                "warning",
+                width - 4,
+            )
+
+    def edit_form_field(self, key: Any) -> None:
+        field_name = "commit_url" if self.form_focus == 0 else "delivery_directory"
+        current = getattr(self, field_name)
+        if key in (curses.KEY_BACKSPACE, "\x7f", "\b"):
+            setattr(self, field_name, current[:-1])
+        elif key == curses.KEY_DC:
+            setattr(self, field_name, "")
+        elif isinstance(key, str) and key.isprintable() and key not in "\t\r\n":
+            setattr(self, field_name, current + key)
+
     def draw(self, screen: Any) -> None:
         self.height, self.width = screen.getmaxyx()
         screen.erase()
-        if self.width < 40 or self.height < 18:
+        minimum_height = 27 if self.detail is not None else 18
+        if self.width < 40 or self.height < minimum_height:
             self.draw_text(screen, 0, 0, "Aumente a janela para abrir o catálogo.", "warning")
             self.draw_text(screen, self.height - 1, 0, "Esc voltar", "muted")
             screen.refresh()
@@ -397,7 +597,9 @@ class ExerciseCatalogTui:
         left = (self.width - panel_width) // 2
         top = (self.height - panel_height) // 2
         self.draw_frame(screen, top, left, panel_width, panel_height)
-        if self.detail is None:
+        if self.form_open:
+            self.draw_form(screen, top, left, panel_width, panel_height)
+        elif self.detail is None:
             self.draw_catalog(screen, top, left, panel_width, panel_height)
         else:
             self.draw_detail(screen, top, left, panel_width, panel_height)
@@ -412,6 +614,8 @@ class ExerciseCatalogTui:
                 self.filter,
                 self.query.replace("\t", " "),
                 self.selected_code,
+                self.commit_url if action == "submit" else "",
+                self.delivery_directory if action == "submit" else "",
             )
         )
         os.write(
@@ -429,6 +633,25 @@ class ExerciseCatalogTui:
             self.draw(screen)
             key = screen.get_wch()
             if key == curses.KEY_RESIZE:
+                continue
+            if self.form_open:
+                if key in ("\x1b", 27):
+                    self.form_open = False
+                    self.form_error = ""
+                elif key in ("\t", curses.KEY_DOWN, curses.KEY_UP):
+                    self.form_focus = (self.form_focus + 1) % 3
+                    self.form_error = ""
+                elif key in ("\n", "\r", curses.KEY_ENTER):
+                    if self.form_focus < 2:
+                        self.form_focus += 1
+                    elif self.commit_url and self.delivery_directory:
+                        self.choose("submit")
+                        return
+                    else:
+                        self.form_error = "Informe o link do commit e o diretório da entrega."
+                elif self.form_focus < 2:
+                    self.edit_form_field(key)
+                    self.form_error = ""
                 continue
             if self.detail is None:
                 if self.searching:
@@ -456,7 +679,7 @@ class ExerciseCatalogTui:
                     item = self.selected_item()
                     if item is not None:
                         self.open_detail(item)
-                elif key in ("\x1b", 27, "0"):
+                elif key in ("\x1b", 27):
                     self.choose("back")
                     return
                 elif key in ("/",):
@@ -469,13 +692,6 @@ class ExerciseCatalogTui:
                         "c": "approved",
                     }
                     self.change_filter(aliases[key.casefold()])
-                elif isinstance(key, str) and key.isdigit() and key != "0":
-                    visible_height = self.catalog_visible_height()
-                    start, end = self.visible_range(visible_height)
-                    index = start + int(key) - 1
-                    if start <= index < end:
-                        self.selection = index
-                        self.open_detail(self.filtered_items[index])
             else:
                 actions = self.actions()
                 if key in (curses.KEY_UP, curses.KEY_LEFT):
@@ -491,24 +707,18 @@ class ExerciseCatalogTui:
                 elif key in ("\x1b", 27):
                     self.detail = None
                 elif key in ("\n", "\r", curses.KEY_ENTER):
-                    self.choose(actions[self.action_selection][0])
-                    return
-                elif isinstance(key, str) and key in {"1", "2", "0"}:
-                    action_name = {"1": "submit", "2": "chat", "0": "back"}[key]
-                    action_index = next(
-                        (
-                            index
-                            for index, (action, _label) in enumerate(actions)
-                            if action == action_name
-                        ),
-                        None,
-                    )
-                    if action_index is not None:
-                        if action_name == "back":
-                            self.detail = None
-                        else:
-                            self.choose(action_name)
-                            return
+                    action = actions[self.action_selection][0]
+                    if action == "back":
+                        self.detail = None
+                    elif action == "submit":
+                        self.commit_url = ""
+                        self.delivery_directory = ""
+                        self.form_focus = 0
+                        self.form_error = ""
+                        self.form_open = True
+                    else:
+                        self.choose(action)
+                        return
 
 
 def load_config() -> dict[str, Any]:

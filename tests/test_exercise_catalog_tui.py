@@ -134,12 +134,34 @@ class ExerciseCatalogTuiTests(unittest.TestCase):
                     break
             self.fail(f"Missing {needle!r} in PTY output: {output.decode(errors='replace')}")
 
+        def drain_output(duration: float = 0.2) -> None:
+            deadline = time.monotonic() + duration
+            while time.monotonic() < deadline:
+                ready, _, _ = select.select([master_fd], [], [], 0.03)
+                if ready:
+                    try:
+                        output.extend(os.read(master_fd, 8192))
+                    except OSError:
+                        break
+
         try:
             read_until("CATÁLOGO DE EXERCÍCIOS".encode("utf-8"))
+            self.assertIn(b"lqq", output)
+            os.write(master_fd, b"1")
+            drain_output()
+            self.assertNotIn(b"DETALHES", output)
+            self.assertNotIn(b"1-9 abrir", output)
             os.write(master_fd, b"\r")
             read_until(b"DETALHES")
             self.assertIn("Descrição do exercício".encode("utf-8"), output)
             os.write(master_fd, b"\r")
+            read_until(b"REGISTRAR ENTREGA")
+            for char in "https://github.com/user/repo/commit/abcdef0":
+                os.write(master_fd, char.encode("utf-8"))
+            os.write(master_fd, b"\t")
+            for char in "ex00":
+                os.write(master_fd, char.encode("utf-8"))
+            os.write(master_fd, b"\t\r")
             process.wait(timeout=5)
             while select.select([master_fd], [], [], 0.1)[0]:
                 try:
@@ -147,7 +169,10 @@ class ExerciseCatalogTuiTests(unittest.TestCase):
                 except OSError:
                     break
             self.assertEqual(0, process.returncode, output.decode(errors="replace"))
-            self.assertIn(b"submit\tEX-01\tall\t\tEX-01\n", output)
+            self.assertIn(
+                b"submit\tEX-01\tall\t\tEX-01\thttps://github.com/user/repo/commit/abcdef0\tex00\n",
+                output,
+            )
         finally:
             if process.poll() is None:
                 process.terminate()

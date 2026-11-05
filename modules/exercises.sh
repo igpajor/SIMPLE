@@ -158,6 +158,8 @@ exercise_catalog_tui() {
   local returned_filter
   local returned_query
   local returned_code
+  local commit_url
+  local delivery_directory
   local tui_path
 
   tui_path="$SCRIPT_DIR/modules/exercise_catalog_tui.py"
@@ -262,7 +264,8 @@ print(json.dumps({
       exec 4>&-
       return "$status"
     fi
-    IFS=$'\t' read -r action code returned_filter returned_query returned_code <<<"$result"
+    IFS=$'\t' read -r action code returned_filter returned_query returned_code \
+      commit_url delivery_directory <<<"$result"
     [[ -n "$returned_filter" ]] && filter="$returned_filter"
     query="$returned_query"
     [[ -n "$returned_code" ]] && selected_code="$returned_code"
@@ -272,8 +275,10 @@ print(json.dumps({
       return 0
       ;;
     submit)
-      [[ -n "$code" ]] || return 1
-      exercise_submit_prompt "$code" || return 1
+      [[ -n "$code" && -n "$commit_url" && -n "$delivery_directory" ]] || return 1
+      if ! exercise_submit "$code" "$commit_url" "$delivery_directory"; then
+        ui_pause
+      fi
       ;;
     chat)
       [[ -n "$code" ]] || return 1
