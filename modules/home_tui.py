@@ -118,7 +118,7 @@ class HomeTui:
             screen.refresh()
             return
 
-        panel_width = min(78, self.width - 4)
+        panel_width = min(110, self.width - 2)
         if panel_width < 38:
             panel_width = self.width - 2
         left = max(0, (self.width - panel_width) // 2)

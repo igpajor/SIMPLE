@@ -7,16 +7,21 @@ import json
 import os
 import pty
 import select
+import sys
 import struct
 import subprocess
 import termios
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 HOME_TUI = ROOT_DIR / "modules" / "home_tui.py"
+
+sys.path.insert(0, str(ROOT_DIR))
+from modules.home_tui import HomeTui
 
 
 class HomeTuiTests(unittest.TestCase):
@@ -109,6 +114,37 @@ class HomeTuiTests(unittest.TestCase):
         output = self.run_home(48, [b"0"])
         self.assertNotIn(b"Aumente o terminal", output)
         self.assertTrue(output.endswith(b"0\r\n"), output[-100:])
+
+    def test_wide_terminal_expands_home_to_chat_panel_width(self) -> None:
+        tui = HomeTui(
+            {
+                "username": "student",
+                "stats": [{"label": "Pontos", "value": "12"}],
+                "options": [
+                    {"key": "1", "label": "Exercícios"},
+                    {"key": "0", "label": "Sair"},
+                ],
+            }
+        )
+        screen = Mock()
+        screen.getmaxyx.return_value = (24, 140)
+
+        with patch.multiple(
+            "modules.home_tui.curses",
+            create=True,
+            ACS_ULCORNER=0,
+            ACS_URCORNER=0,
+            ACS_LLCORNER=0,
+            ACS_LRCORNER=0,
+            ACS_HLINE=0,
+            ACS_VLINE=0,
+        ):
+            tui.draw(screen)
+
+        outer_border = next(
+            call for call in screen.hline.call_args_list if call.args[3] == 108
+        )
+        self.assertEqual(16, outer_border.args[1])
 
 
 if __name__ == "__main__":
