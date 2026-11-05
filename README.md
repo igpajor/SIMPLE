@@ -66,7 +66,17 @@ Unix.
 - Bash
 - SQLite (`sqlite3`) e OpenSSL (`openssl`)
 - Python 3.9+ para os modos Broker e Proxy
+- `pypdf` para leitura de texto dos PDFs no catálogo de exercícios
 - Gum 2.0+ opcional, para entradas e confirmações aprimoradas
+
+Instale a dependência do leitor de PDF com:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+O catálogo também mantém visível o link do PDF original; a leitura no terminal
+extrai texto e não preserva diagramação nem imagens.
 
 ### Executar
 

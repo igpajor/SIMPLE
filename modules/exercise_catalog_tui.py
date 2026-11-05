@@ -4,11 +4,16 @@
 from __future__ import annotations
 
 import curses
+import io
 import json
 import os
 import sys
 import unicodedata
+from http.client import HTTPException
 from typing import Any
+from urllib.error import URLError
+from urllib.parse import urlsplit
+from urllib.request import Request, urlopen
 
 
 FILTERS = {
@@ -17,6 +22,9 @@ FILTERS = {
     "pending": "E Em avaliação",
     "approved": "C Aprovados",
 }
+PDF_MAX_BYTES = 20 * 1024 * 1024
+PDF_MAX_PAGES = 500
+PDF_DOWNLOAD_TIMEOUT_SECONDS = 15
 STATUS_LABELS = {
     "available": "Disponível",
     "pending": "Em avaliação",
@@ -32,6 +40,7 @@ DETAIL_FIELDS = (
     ("EXEMPLO DE EXECUÇÃO", "example"),
     ("MODELO DO TERMINAL", "terminal_model"),
     ("DICAS", "hints"),
+    ("PDF ORIGINAL", "pdf_url"),
 )
 
 
@@ -249,8 +258,161 @@ class ExerciseCatalogTui:
         actions = []
         if self.detail["status"] == "available":
             actions.append(("submit", "Registrar entrega"))
+        if self.detail.get("pdf_url"):
+            actions.append(("pdf", "Ler PDF original"))
         actions.extend((("chat", "Chat do exercício"), ("back", "Voltar ao catálogo")))
         return actions
+
+    @staticmethod
+    def fetch_pdf_pages(url: str) -> list[str]:
+        try:
+            parsed = urlsplit(url)
+            parsed.port
+        except ValueError as error:
+            raise ValueError("O link do PDF não é uma URL HTTPS válida.") from error
+        if (
+            len(url) > 2048
+            or parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or any(char.isspace() for char in url)
+        ):
+            raise ValueError("O link do PDF não é uma URL HTTPS válida.")
+
+        try:
+            from pypdf import PdfReader
+            from pypdf.errors import PyPdfError
+        except ImportError as error:
+            raise RuntimeError(
+                "O leitor PDF requer a dependência pypdf. Instale os requisitos do projeto."
+            ) from error
+
+        request = Request(url, headers={"User-Agent": "SIMPLE PDF reader"})
+        with urlopen(request, timeout=PDF_DOWNLOAD_TIMEOUT_SECONDS) as response:
+            try:
+                final_url = urlsplit(response.geturl())
+                final_url.port
+            except ValueError as error:
+                raise ValueError(
+                    "O servidor redirecionou para um endereço inseguro."
+                ) from error
+            if (
+                final_url.scheme != "https"
+                or not final_url.hostname
+                or final_url.username is not None
+                or final_url.password is not None
+                or len(response.geturl()) > 2048
+                or any(char.isspace() for char in response.geturl())
+            ):
+                raise ValueError("O servidor redirecionou para um endereço inseguro.")
+            content_length = response.headers.get("Content-Length")
+            if content_length and int(content_length) > PDF_MAX_BYTES:
+                raise ValueError("O PDF excede o limite de 20 MB.")
+            data = bytearray()
+            while True:
+                chunk = response.read(min(65536, PDF_MAX_BYTES + 1 - len(data)))
+                if not chunk:
+                    break
+                data.extend(chunk)
+                if len(data) > PDF_MAX_BYTES:
+                    raise ValueError("O PDF excede o limite de 20 MB.")
+
+        if b"%PDF-" not in data[:1024]:
+            raise ValueError("O endereço não retornou um arquivo PDF válido.")
+
+        try:
+            reader = PdfReader(io.BytesIO(data), strict=False)
+            if reader.is_encrypted:
+                raise ValueError("Este PDF é protegido por senha e não pode ser lido.")
+            if len(reader.pages) > PDF_MAX_PAGES:
+                raise ValueError("O PDF excede o limite de 500 páginas.")
+            pages = [page.extract_text() or "" for page in reader.pages]
+            if not pages:
+                raise ValueError("O PDF não contém páginas.")
+            return pages
+        except PyPdfError as error:
+            raise ValueError(f"Não foi possível ler o PDF: {error}") from error
+
+    def draw_pdf_page(
+        self,
+        screen: Any,
+        pages: list[str] | None = None,
+        page_index: int = 0,
+        scroll: int = 0,
+        error: str = "",
+    ) -> int:
+        self.height, self.width = screen.getmaxyx()
+        screen.erase()
+        panel_width = min(110, self.width - 2)
+        panel_height = min(30, self.height - 2)
+        if panel_width < 4 or panel_height < 5:
+            self.draw_text(screen, 0, 0, "Aumente o tamanho do terminal.", "warning")
+            screen.refresh()
+            return 0
+
+        left = (self.width - panel_width) // 2
+        top = (self.height - panel_height) // 2
+        page_count = len(pages or [])
+        title = (
+            f"PDF ORIGINAL · PÁGINA {page_index + 1}/{page_count}"
+            if pages
+            else "LEITOR DE PDF"
+        )
+        self.draw_frame(screen, top, left, panel_width, panel_height, title, "title")
+        body_width = panel_width - 4
+        body_height = panel_height - 4
+        if error:
+            lines = wrap_text(error, body_width)
+        else:
+            page_text = (pages or [""])[page_index]
+            lines = wrap_text(page_text or "Esta página não contém texto extraível.", body_width)
+        max_scroll = max(0, len(lines) - body_height)
+        scroll = min(max(0, scroll), max_scroll)
+        for offset, line in enumerate(lines[scroll : scroll + body_height]):
+            self.draw_text(screen, top + 2 + offset, left + 2, line, "text", body_width)
+        footer = (
+            "Pressione qualquer tecla para voltar"
+            if error
+            else "↑/↓ rolar · PgUp/PgDn rolar mais · ←/→ página anterior/próxima · Esc voltar"
+        )
+        self.draw_text(screen, top + panel_height - 2, left + 2, footer, "muted", body_width)
+        screen.refresh()
+        return max_scroll
+
+    def read_pdf(self, screen: Any) -> None:
+        assert self.detail is not None
+        screen.erase()
+        self.draw_text(screen, 1, 2, "Baixando e preparando o PDF...", "muted")
+        screen.refresh()
+        try:
+            pages = self.fetch_pdf_pages(self.detail["pdf_url"])
+        except (HTTPException, OSError, RuntimeError, ValueError, URLError) as error:
+            self.draw_pdf_page(screen, error=str(error))
+            screen.get_wch()
+            return
+
+        page_index = 0
+        scroll = 0
+        while True:
+            max_scroll = self.draw_pdf_page(screen, pages, page_index, scroll)
+            key = screen.get_wch()
+            if key in ("\x1b", 27):
+                return
+            if key in (curses.KEY_UP,):
+                scroll = max(0, scroll - 1)
+            elif key in (curses.KEY_DOWN,):
+                scroll = min(max_scroll, scroll + 1)
+            elif key == curses.KEY_PPAGE:
+                scroll = max(0, scroll - max(1, (self.height - 6) // 2))
+            elif key == curses.KEY_NPAGE:
+                scroll = min(max_scroll, scroll + max(1, (self.height - 6) // 2))
+            elif key in (curses.KEY_LEFT,):
+                page_index = max(0, page_index - 1)
+                scroll = 0
+            elif key in (curses.KEY_RIGHT, "\n", "\r", curses.KEY_ENTER):
+                page_index = min(len(pages) - 1, page_index + 1)
+                scroll = 0
 
     def draw_header(self, screen: Any, top: int, left: int, width: int) -> None:
         self.draw_text(
@@ -834,6 +996,8 @@ class ExerciseCatalogTui:
                         self.form_focus = 0
                         self.form_error = ""
                         self.form_open = True
+                    elif action == "pdf":
+                        self.read_pdf(screen)
                     else:
                         self.choose(action)
                         return
@@ -861,9 +1025,12 @@ def load_config() -> dict[str, Any]:
         "allowed_functions",
         "terminal_model",
         "hints",
+        "pdf_url",
         "status",
     }
     for item in items:
+        if isinstance(item, dict):
+            item.setdefault("pdf_url", "")
         if (
             not isinstance(item, dict)
             or not required.issubset(item)

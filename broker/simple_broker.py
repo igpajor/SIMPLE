@@ -23,12 +23,34 @@ import unicodedata
 from contextlib import closing
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 
 MAX_REQUEST_BYTES = 65536
 BROKER_MAX_CONNECTIONS = 64
 PROXY_INTERNAL_PROTOCOL = "simple-proxy-v1"
 SESSION_TTL_SECONDS = 8 * 60 * 60
+PDF_URL_MAX_LENGTH = 2048
+
+
+def _validated_pdf_url(value: str) -> str:
+    if not value:
+        return ""
+    try:
+        parsed = urlsplit(value)
+        parsed.port
+    except ValueError as error:
+        raise ValueError("O link do PDF deve ser uma URL HTTPS válida.") from error
+    if (
+        len(value) > PDF_URL_MAX_LENGTH
+        or parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or any(char.isspace() for char in value)
+    ):
+        raise ValueError("O link do PDF deve ser uma URL HTTPS válida.")
+    return value
 
 
 def _environment_integer(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -67,6 +89,7 @@ MIGRATIONS = (
     ("exercises", "example", "TEXT NOT NULL DEFAULT ''"),
     ("exercises", "terminal_model", "TEXT NOT NULL DEFAULT ''"),
     ("exercises", "hints", "TEXT NOT NULL DEFAULT ''"),
+    ("exercises", "pdf_url", "TEXT NOT NULL DEFAULT ''"),
     ("users", "is_admin", "INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1))"),
     ("users", "must_change_password", "INTEGER NOT NULL DEFAULT 0 CHECK (must_change_password IN (0, 1))"),
     ("users", "display_name", "TEXT NOT NULL DEFAULT ''"),
@@ -150,6 +173,7 @@ METHOD_FIELDS = {
         "allowed_functions",
         "terminal_model",
         "hints",
+        "pdf_url",
     ),
     "admin.exercise.update": ("token", "exercise_code", "field", "value"),
     "admin.exercise.archive": ("token", "exercise_code"),
@@ -302,7 +326,7 @@ def _validate_database_connection(
         "exercises": {
             "id", "code", "name", "description", "status", "statement_path",
             "statement", "example", "delivery_directory", "delivery_files",
-            "allowed_functions", "terminal_model", "hints", "created_at",
+            "allowed_functions", "terminal_model", "hints", "pdf_url", "created_at",
         },
         "submissions": {
             "id", "user_id", "exercise_id", "content", "status", "content_kind",
@@ -1271,7 +1295,7 @@ class Broker:
             """
             SELECT code, name, description, statement_path, statement, example,
                    delivery_directory, delivery_files, allowed_functions,
-                   terminal_model, hints, status
+                   terminal_model, hints, pdf_url, status
             FROM exercises WHERE code = ?
             """,
             (code,),
@@ -2147,7 +2171,7 @@ class Broker:
                            COALESCE(e.delivery_directory, '') AS delivery_directory,
                            COALESCE(e.delivery_files, '') AS delivery_files,
                            COALESCE(e.allowed_functions, '') AS allowed_functions,
-                           e.terminal_model, e.hints,
+                           e.terminal_model, e.hints, e.pdf_url,
                            COALESCE((
                                SELECT s.status
                                FROM submissions s
@@ -2217,6 +2241,8 @@ class Broker:
             if method == "submissions.create":
                 code = self._text(request["exercise_code"], "Código", 64, False)
                 commit_url = request["commit_url"]
+                if isinstance(commit_url, str):
+                    commit_url = commit_url.split("#", 1)[0]
                 directory = self._text(
                     request["delivery_directory"], "Diretório de entrega", 256, False
                 )
@@ -3005,7 +3031,7 @@ class Broker:
                         for field in (
                             "name", "description", "statement", "example",
                             "delivery_directory", "delivery_files", "allowed_functions",
-                            "terminal_model", "hints",
+                            "terminal_model", "hints", "pdf_url",
                         )
                     }
                     values["name"] = self._text(request["name"], "Nome", 120, False)
@@ -3019,6 +3045,7 @@ class Broker:
                         raise ValueError("Nome e descrição são obrigatórios.")
                     if not values["statement"].strip():
                         raise ValueError("O enunciado é obrigatório.")
+                    values["pdf_url"] = _validated_pdf_url(values["pdf_url"])
                     connection.execute("BEGIN IMMEDIATE")
                     try:
                         inserted = connection.execute(
@@ -3026,15 +3053,15 @@ class Broker:
                             INSERT INTO exercises (
                                 code, name, description, statement, example,
                                 delivery_directory, delivery_files, allowed_functions,
-                                terminal_model, hints, status
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'available')
+                                terminal_model, hints, pdf_url, status
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'available')
                             """,
                             (
                                 code, values["name"], values["description"],
                                 values["statement"], values["example"],
                                 values["delivery_directory"], values["delivery_files"],
                                 values["allowed_functions"], values["terminal_model"],
-                                values["hints"],
+                                values["hints"], values["pdf_url"],
                             ),
                         )
                     except sqlite3.IntegrityError as error:
@@ -3048,11 +3075,13 @@ class Broker:
                     allowed_fields = {
                         "name", "description", "statement", "example",
                         "delivery_directory", "delivery_files", "allowed_functions",
-                        "terminal_model", "hints",
+                        "terminal_model", "hints", "pdf_url",
                     }
                     if not isinstance(field, str) or field not in allowed_fields:
                         raise ValueError("Campo de exercício não editável.")
                     value = self._text(request["value"], str(field), 100000)
+                    if field == "pdf_url":
+                        value = _validated_pdf_url(value)
                     if field in {"name", "delivery_directory"}:
                         value = self._text(request["value"], str(field), 256, False)
                     if field in {"name", "description", "statement"} and not value.strip():

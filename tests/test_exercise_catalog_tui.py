@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import curses
 import fcntl
+import io
 import json
 import os
 import pty
 import select
 import struct
 import subprocess
+import sys
 import termios
 import time
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -35,6 +38,7 @@ def catalog_item(
         "allowed_functions": "",
         "terminal_model": "",
         "hints": "",
+        "pdf_url": "",
         "status": status,
     }
 
@@ -85,6 +89,56 @@ class ExerciseCatalogTuiTests(unittest.TestCase):
             ["chat", "back"],
             [action for action, _label in tui.actions()],
         )
+
+    def test_pdf_url_is_shown_and_reader_action_is_available(self) -> None:
+        item = catalog_item("EX-01", "Com PDF", "available")
+        item["pdf_url"] = "https://example.org/exercise.pdf"
+        tui = ExerciseCatalogTui(
+            {"username": "student", "points": 1, "items": [item]}
+        )
+        tui.open_detail(item)
+        self.assertIn(("pdf", "Ler PDF original"), tui.actions())
+        self.assertIn(
+            ("https://example.org/exercise.pdf", "text"),
+            tui.detail_lines,
+        )
+
+    def test_pdf_reader_extracts_text_from_https_pdf(self) -> None:
+        class FakeReader:
+            is_encrypted = False
+            pages = [types.SimpleNamespace(extract_text=lambda: "Texto da página")]
+
+            def __init__(self, _file: io.BytesIO, strict: bool) -> None:
+                self.asserted_strict = strict
+
+        pypdf_module = types.ModuleType("pypdf")
+        pypdf_module.__path__ = []
+        pypdf_module.PdfReader = FakeReader
+        errors_module = types.ModuleType("pypdf.errors")
+        errors_module.PyPdfError = type("PyPdfError", (Exception,), {})
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.geturl.return_value = "https://example.org/exercise.pdf"
+        response.headers = {}
+        response.read.side_effect = [b"%PDF-1.7 sample", b""]
+        with (
+            patch("modules.exercise_catalog_tui.urlopen", return_value=response),
+            patch.dict(
+                sys.modules,
+                {"pypdf": pypdf_module, "pypdf.errors": errors_module},
+            ),
+        ):
+            self.assertEqual(
+                ["Texto da página"],
+                ExerciseCatalogTui.fetch_pdf_pages(
+                    "https://example.org/exercise.pdf"
+                ),
+            )
+
+    def test_pdf_reader_rejects_non_https_urls(self) -> None:
+        with self.assertRaisesRegex(ValueError, "HTTPS"):
+            ExerciseCatalogTui.fetch_pdf_pages("http://example.org/exercise.pdf")
 
     def test_catalog_entries_stay_inside_the_inner_frame(self) -> None:
         tui = ExerciseCatalogTui(

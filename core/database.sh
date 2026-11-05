@@ -71,6 +71,7 @@ exercises	statement	TEXT NOT NULL DEFAULT ''
 exercises	example	TEXT NOT NULL DEFAULT ''
 exercises	terminal_model	TEXT NOT NULL DEFAULT ''
 exercises	hints	TEXT NOT NULL DEFAULT ''
+exercises	pdf_url	TEXT NOT NULL DEFAULT ''
 users	is_admin	INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1))
 users	must_change_password	INTEGER NOT NULL DEFAULT 0 CHECK (must_change_password IN (0, 1))
 users	display_name	TEXT NOT NULL DEFAULT ''

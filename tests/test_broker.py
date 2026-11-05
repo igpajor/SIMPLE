@@ -198,8 +198,8 @@ class BrokerTests(unittest.TestCase):
                 INSERT INTO exercises (
                     code, name, description, statement, example,
                     delivery_directory, delivery_files, allowed_functions,
-                    terminal_model, hints
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    terminal_model, hints, pdf_url
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     "CAT-01",
@@ -212,6 +212,7 @@ class BrokerTests(unittest.TestCase):
                     "echo",
                     "$ ./main.sh",
                     "Dica",
+                    "https://example.org/catalog.pdf",
                 ),
             )
             connection.execute(
@@ -235,6 +236,7 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual("Descrição completa", item["description"])
         self.assertEqual("Missão completa", item["statement"])
         self.assertEqual("Dica", item["hints"])
+        self.assertEqual("https://example.org/catalog.pdf", item["pdf_url"])
         self.assertEqual(0, dashboard["points"])
         self.assertFalse(
             self.call(
@@ -1572,7 +1574,10 @@ class BrokerTests(unittest.TestCase):
                 "method": "submissions.create",
                 "token": owner["token"],
                 "exercise_code": "LEGACY-01",
-                "commit_url": "https://github.com/student/project/commit/abcdef0123456",
+                "commit_url": (
+                    "https://github.com/student/project/commit/abcdef0123456"
+                    "#diff-0854656b87dca0ccf0ff47f4be14dfcf39cde6543c13e8f9feb37703f3f9c1a3"
+                ),
                 "delivery_directory": ".",
             }
         )
@@ -2243,7 +2248,10 @@ class BrokerTests(unittest.TestCase):
                 "method": "submissions.create",
                 "token": owner["token"],
                 "exercise_code": "C-42",
-                "commit_url": "https://github.com/student/project/commit/abcdef0123456",
+                "commit_url": (
+                    "https://github.com/student/project/commit/abcdef0123456"
+                    "#diff-0854656b87dca0ccf0ff47f4be14dfcf39cde6543c13e8f9feb37703f3f9c1a3"
+                ),
                 "delivery_directory": "src",
             }
         )
@@ -2267,6 +2275,10 @@ class BrokerTests(unittest.TestCase):
         )
         self.assertEqual(submission["submission_id"], submitted_list["submissions"][0]["id"])
         self.assertEqual("pending", submitted_detail["submission"]["status"])
+        self.assertEqual(
+            "https://github.com/student/project/commit/abcdef0123456",
+            submitted_detail["submission"]["commit_url"],
+        )
         self.assertEqual(
             "Descrição",
             submitted_detail["submission"]["exercise"]["description"],
@@ -2687,10 +2699,48 @@ class BrokerTests(unittest.TestCase):
                 "allowed_functions": "write",
                 "terminal_model": "$ ./a.out",
                 "hints": "Leia a missão",
+                "pdf_url": "https://example.org/exercise.pdf",
             }
         )
         self.assertTrue(created["ok"], created)
         self.assertEqual("ADMIN-01", created["code"])
+        dashboard = self.call(
+            {"method": "catalog.dashboard", "token": student["token"]}
+        )
+        admin_exercise = next(
+            item for item in dashboard["exercises"] if item["code"] == "ADMIN-01"
+        )
+        self.assertEqual(
+            "https://example.org/exercise.pdf", admin_exercise["pdf_url"]
+        )
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            self.assertEqual(
+                "https://example.org/exercise.pdf",
+                connection.execute(
+                    "SELECT pdf_url FROM exercises WHERE code = 'ADMIN-01'"
+                ).fetchone()[0],
+            )
+        invalid_pdf_url = self.call(
+            {
+                "method": "admin.exercise.update",
+                "token": token,
+                "exercise_code": "ADMIN-01",
+                "field": "pdf_url",
+                "value": "http://example.org/exercise.pdf",
+            }
+        )
+        self.assertFalse(invalid_pdf_url["ok"])
+        self.assertIn("HTTPS", invalid_pdf_url["error"])
+        cleared_pdf_url = self.call(
+            {
+                "method": "admin.exercise.update",
+                "token": token,
+                "exercise_code": "ADMIN-01",
+                "field": "pdf_url",
+                "value": "",
+            }
+        )
+        self.assertTrue(cleared_pdf_url["ok"], cleared_pdf_url)
         edited = self.call(
             {
                 "method": "admin.exercise.update",

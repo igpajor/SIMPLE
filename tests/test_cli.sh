@@ -110,6 +110,8 @@ assert_equals "1" "$(db_query "SELECT COUNT(*) FROM pragma_table_info('exercises
   "migração adiciona dicas"
 assert_equals "1" "$(db_query "SELECT COUNT(*) FROM pragma_table_info('exercises') WHERE name = 'example';")" \
   "migração adiciona exemplo de execução"
+assert_equals "1" "$(db_query "SELECT COUNT(*) FROM pragma_table_info('exercises') WHERE name = 'pdf_url';")" \
+  "migração adiciona a URL do PDF"
 assert_equals "1" "$(db_query "SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'is_admin';")" \
   "migração adiciona o papel administrativo"
 assert_equals "1" "$(db_query "SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'must_change_password';")" \
@@ -305,6 +307,7 @@ Resultado esperado
 .fim
 Use cat para ler o arquivo.
 .fim
+https://example.org/exercise.pdf
 INPUT
 admin_create_exercise "$alice_id" <"$TEST_DIR/admin-input"
 assert_equals "1" "$(db_query "SELECT COUNT(*) FROM exercises WHERE code = 'NEW-EX';")" \
@@ -314,6 +317,8 @@ Resultado esperado" "$(db_query "SELECT terminal_model FROM exercises WHERE code
   "modelo do terminal é persistido"
 assert_equals "Use cat para ler o arquivo." "$(db_query "SELECT hints FROM exercises WHERE code = 'NEW-EX';")" \
   "dicas são persistidas"
+assert_equals "https://example.org/exercise.pdf" "$(db_query "SELECT pdf_url FROM exercises WHERE code = 'NEW-EX';")" \
+  "URL HTTPS do PDF é persistida"
 assert_equals "SIMPLE > executar
 Resultado esperado" "$(db_query "SELECT example FROM exercises WHERE code = 'NEW-EX';")" \
   "exemplo de execução é um campo independente"
@@ -346,7 +351,8 @@ fi
 if [[ "$exercise_output" != *"Diretório de entrega"* ]] ||
   [[ "$exercise_output" != *"Funções permitidas"* ]] ||
   [[ "$exercise_output" != *"Makefile"* ]] ||
-  [[ "$exercise_output" != *"EXEMPLO DE EXECUÇÃO"* ]]; then
+  [[ "$exercise_output" != *"EXEMPLO DE EXECUÇÃO"* ]] ||
+  [[ "$exercise_output" != *"https://example.org/exercise.pdf"* ]]; then
   fail "visualização apresenta todas as especificações"
 fi
 if admin_archive_exercise NEW-EX >/dev/null 2>&1; then
@@ -426,14 +432,16 @@ assert_equals "$alice_id" "$CURRENT_USER_ID" "login restaura a identidade"
 
 CURRENT_USER_ID="$alice_id"
 commit_url="https://github.com/acme/simple/commit/abcdef0123456789"
-exercise_submit TEST-01 "$commit_url" "ex00"
+exercise_submit TEST-01 \
+  "${commit_url}#diff-0854656b87dca0ccf0ff47f4be14dfcf39cde6543c13e8f9feb37703f3f9c1a3" \
+  "Shell00/ex01"
 alice_first_slot="$(db_query "SELECT id FROM evaluation_slots WHERE status = 'open';")"
 assert_equals "0" "$(points_balance "$alice_id")" "abrir slot consome um ponto"
 assert_equals "github_commit" "$(db_query "SELECT content_kind FROM submissions WHERE id = 1;")" \
   "nova submissão registra referência GitHub"
 assert_equals "$commit_url" "$(db_query "SELECT commit_url FROM submissions WHERE id = 1;")" \
   "nova submissão persiste URL de commit"
-assert_equals "ex00" "$(db_query "SELECT delivery_directory FROM submissions WHERE id = 1;")" \
+assert_equals "Shell00/ex01" "$(db_query "SELECT delivery_directory FROM submissions WHERE id = 1;")" \
   "nova submissão persiste diretório do repositório"
 assert_equals "Entrega referenciada no GitHub" "$(db_query "SELECT content FROM submissions WHERE id = 1;")" \
   "nova submissão não armazena código-fonte"
@@ -550,7 +558,7 @@ CURRENT_USER_ID="$bob_id"
 review_output=$(printf "2\nAjustar: use ' aspas\ns\n" |
   evaluation_review_prompt "$alice_first_slot")
 if [[ "$review_output" != *"$commit_url"* ]] ||
-  [[ "$review_output" != *"Diretório: ex00"* ]] ||
+  [[ "$review_output" != *"Diretório: Shell00/ex01"* ]] ||
   [[ "$review_output" == *"minha solução"* ]]; then
   fail "avaliador recebe referência externa sem conteúdo de código"
 fi

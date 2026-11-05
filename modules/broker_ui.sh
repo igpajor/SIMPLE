@@ -437,6 +437,7 @@ broker_catalog_render_exercise() {
   local name
   local description
   local mission
+  local pdf_url
   local delivery_directory
   local delivery_files
   local allowed_functions
@@ -465,9 +466,10 @@ broker_catalog_render_exercise() {
   terminal_model=$(broker_response_nested_field "$response" exercise terminal_model) || return 1
   local hints
   hints=$(broker_response_nested_field "$response" exercise hints) || return 1
+  pdf_url=$(broker_response_nested_field "$response" exercise pdf_url) || return 1
   exercise_render_content "$name" "$description" "$mission" "$example" \
     "$delivery_directory" "$delivery_files" "$allowed_functions" \
-    "$terminal_model" "$hints"
+    "$terminal_model" "$hints" "$pdf_url"
   requirements=$(printf '%s\0%s\0' "$CURRENT_SESSION_TOKEN" "$code" |
     broker_request submissions.requirements token exercise_code) || return 1
   if ! broker_check_response "$requirements"; then
@@ -927,6 +929,7 @@ broker_admin_exercise_create() {
   local example
   local terminal_model
   local hints
+  local pdf_url
   local response
 
   ui_screen_begin "CADASTRAR EXERCÍCIO"
@@ -947,12 +950,13 @@ broker_admin_exercise_create() {
   ui_read_multiline terminal_model || return 1
   printf '  Dicas:\n'
   ui_read_multiline hints || return 1
-  response=$(printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0' \
+  ui_read_line pdf_url "  URL HTTPS do PDF original (opcional) > " || return 1
+  response=$(printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0' \
     "$CURRENT_SESSION_TOKEN" "$code" "$name" "$description" "$statement" \
     "$example" "$delivery_directory" "$delivery_files" "$allowed_functions" \
-    "$terminal_model" "$hints" |
+    "$terminal_model" "$hints" "$pdf_url" |
     broker_request admin.exercise.create token code name description statement example \
-      delivery_directory delivery_files allowed_functions terminal_model hints) || return 1
+      delivery_directory delivery_files allowed_functions terminal_model hints pdf_url) || return 1
   if broker_check_response "$response"; then
     ui_message "Exercício $(broker_response_field "$response" code) cadastrado."
   fi
@@ -979,7 +983,7 @@ broker_admin_exercise_manage() {
         "3|Editar missão/enunciado" "4|Editar diretório de entrega"
         "5|Editar arquivos esperados" "6|Editar funções permitidas"
         "7|Editar exemplo" "8|Editar modelo do terminal"
-        "9|Editar dicas" "a|Reativar exercício" "0|Voltar"
+        "9|Editar dicas" "10|Editar PDF original" "a|Reativar exercício" "0|Voltar"
       )
     else
       menu_options=(
@@ -987,7 +991,7 @@ broker_admin_exercise_manage() {
         "3|Editar missão/enunciado" "4|Editar diretório de entrega"
         "5|Editar arquivos esperados" "6|Editar funções permitidas"
         "7|Editar exemplo" "8|Editar modelo do terminal"
-        "9|Editar dicas" "a|Arquivar exercício" "0|Voltar"
+        "9|Editar dicas" "10|Editar PDF original" "a|Arquivar exercício" "0|Voltar"
       )
     fi
     ui_menu_choice choice "GERENCIAR EXERCÍCIO $code" \
@@ -1002,6 +1006,7 @@ broker_admin_exercise_manage() {
     7) field=example; label="novo exemplo" ;;
     8) field=terminal_model; label="novo modelo do terminal" ;;
     9) field=hints; label="novas dicas" ;;
+    10) field=pdf_url; label="nova URL HTTPS do PDF (vazia remove)" ;;
     0) return 0 ;;
     a)
       if ! ui_confirm "Confirmar operação?"; then
@@ -1024,10 +1029,15 @@ broker_admin_exercise_manage() {
       continue
       ;;
     esac
-    if [[ "$choice" =~ ^[1-9]$ ]]; then
-      if [[ "$field" == "name" || "$field" == "delivery_directory" ]]; then
-        ui_read_line value "  $label (vazio mantém o atual) > " || return 1
-        [[ -z "$value" ]] && continue
+    if [[ "$choice" =~ ^([1-9]|10)$ ]]; then
+      if [[ "$field" == "name" || "$field" == "delivery_directory" ||
+        "$field" == "pdf_url" ]]; then
+        local prompt="  $label (vazio mantém o atual) > "
+        [[ "$field" == "pdf_url" ]] && prompt="  $label > "
+        ui_read_line value "$prompt" || return 1
+        if [[ -z "$value" && "$field" != "pdf_url" ]]; then
+          continue
+        fi
       else
         printf '  %s:\n' "$label"
         ui_read_multiline value || return 1

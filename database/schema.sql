@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS exercises (
     statement TEXT NOT NULL DEFAULT '',
     example TEXT NOT NULL DEFAULT '',
     terminal_model TEXT NOT NULL DEFAULT '',
-    hints TEXT NOT NULL DEFAULT ''
+    hints TEXT NOT NULL DEFAULT '',
+    pdf_url TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS users (

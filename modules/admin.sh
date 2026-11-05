@@ -235,6 +235,7 @@ admin_create_exercise() {
   local allowed_functions
   local terminal_model
   local hints
+  local pdf_url
   local code_sql
   local name_sql
   local description_sql
@@ -244,6 +245,7 @@ admin_create_exercise() {
   local allowed_functions_sql
   local terminal_model_sql
   local hints_sql
+  local pdf_url_sql
   local relative_path
   local final_path
 
@@ -287,6 +289,11 @@ admin_create_exercise() {
   ui_read_multiline terminal_model || return 1
   printf '\n  Dicas (opcional):\n'
   ui_read_multiline hints || return 1
+  ui_read_line pdf_url "  URL HTTPS do PDF original (opcional) > " || return 1
+  if ! admin_validate_pdf_url "$pdf_url"; then
+    printf '  Informe uma URL HTTPS válida para o PDF.\n'
+    return 1
+  fi
 
   code_sql=$(db_sql_quote "$code")
   name_sql=$(db_sql_quote "$name")
@@ -299,6 +306,7 @@ admin_create_exercise() {
   allowed_functions_sql=$(db_sql_quote "$allowed_functions")
   terminal_model_sql=$(db_sql_quote "$terminal_model")
   hints_sql=$(db_sql_quote "$hints")
+  pdf_url_sql=$(db_sql_quote "$pdf_url")
   relative_path="storage/exercises/$code.txt"
   final_path="$EXERCISE_STORAGE_DIR/$code.txt"
 
@@ -311,12 +319,12 @@ admin_create_exercise() {
     INSERT INTO exercises (
       code, name, description, delivery_directory, delivery_files,
       allowed_functions, status, statement_path, statement, example,
-      terminal_model, hints
+      terminal_model, hints, pdf_url
     ) VALUES (
       $code_sql, $name_sql, $description_sql, $delivery_directory_sql,
       $delivery_files_sql, $allowed_functions_sql, 'available',
       $(db_sql_quote "$relative_path"), $statement_sql, $example_sql,
-      $terminal_model_sql, $hints_sql
+      $terminal_model_sql, $hints_sql, $pdf_url_sql
     );
   "; then
     printf '  Não foi possível cadastrar o exercício no banco de dados.\n' >&2
@@ -531,6 +539,7 @@ admin_edit_exercise() {
       "7|Exemplo de execução" \
       "8|Modelo do terminal" \
       "9|Dicas" \
+      "10|PDF original (URL)" \
       "0|Voltar" || return 0
     case "$choice" in
     1) column="name"; label="Nome" ;;
@@ -542,6 +551,7 @@ admin_edit_exercise() {
     7) column="example"; label="Exemplo de execução" ;;
     8) column="terminal_model"; label="Modelo do terminal" ;;
     9) column="hints"; label="Dicas" ;;
+    10) column="pdf_url"; label="PDF original (URL)" ;;
     0) return 0 ;;
     *)
       ui_message "Opção inválida."
@@ -552,9 +562,19 @@ admin_edit_exercise() {
 
     field_value=$(db_query "SELECT $column FROM exercises WHERE code = $code_sql;") || return 1
     printf '\n  Valor atual:\n%s\n\n' "$(ui_sanitize "$field_value")"
-    if [[ "$choice" == "1" || "$choice" == "2" || "$choice" == "3" ]]; then
-      ui_read_line field_value "  Novo $label (ENTER mantém o atual) > " || return 1
-      [[ -z "$field_value" ]] && continue
+    if [[ "$choice" == "1" || "$choice" == "2" || "$choice" == "3" ||
+      "$choice" == "10" ]]; then
+      local prompt="Novo $label (ENTER mantém o atual) > "
+      [[ "$choice" == "10" ]] && prompt="Nova URL (vazia remove) > "
+      ui_read_line field_value "$prompt" || return 1
+      if [[ "$choice" != "10" && -z "$field_value" ]]; then
+        continue
+      fi
+      if [[ "$choice" == "10" ]] && ! admin_validate_pdf_url "$field_value"; then
+        ui_message "Informe uma URL HTTPS válida ou deixe vazio para remover."
+        ui_pause
+        continue
+      fi
     else
       printf '  Novo %s (conteúdo vazio limpa o campo):\n' "$label"
       ui_read_multiline field_value || return 1
@@ -574,6 +594,31 @@ admin_edit_exercise() {
     ui_message "Informação atualizada."
     ui_pause
   done
+}
+
+admin_validate_pdf_url() {
+  local value="$1"
+  [[ -z "$value" ]] && return 0
+  python3 -c '
+import sys
+from urllib.parse import urlsplit
+
+value = sys.argv[1]
+try:
+    parsed = urlsplit(value)
+    parsed.port
+    valid = (
+        len(value) <= 2048
+        and parsed.scheme == "https"
+        and bool(parsed.hostname)
+        and parsed.username is None
+        and parsed.password is None
+        and not any(char.isspace() for char in value)
+    )
+except ValueError:
+    valid = False
+raise SystemExit(0 if valid else 1)
+' "$value"
 }
 
 admin_archive_exercise() {

@@ -17,6 +17,7 @@ exercise_render_content() {
   local allowed_functions="$7"
   local terminal_model="$8"
   local hints="$9"
+  local pdf_url="${10:-}"
   local hint
   local width
 
@@ -65,6 +66,12 @@ exercise_render_content() {
     done <<<"$hints"
     ui_color_reset
   fi
+  if [[ -n "$pdf_url" ]]; then
+    ui_exercise_section "PDF ORIGINAL"
+    ui_color_content
+    ui_wrap_text "$pdf_url" "$width" 2
+    ui_color_reset
+  fi
 }
 
 exercise_render_structured() {
@@ -80,6 +87,7 @@ exercise_render_structured() {
   local functions_hex
   local terminal_hex
   local hints_hex
+  local pdf_url_hex
   local name
   local description
   local mission
@@ -89,6 +97,7 @@ exercise_render_structured() {
   local allowed_functions
   local terminal_model
   local hints
+  local pdf_url
   local action
   local width
 
@@ -107,7 +116,8 @@ exercise_render_structured() {
            hex(COALESCE(delivery_files, '')) || '|' ||
            hex(COALESCE(allowed_functions, '')) || '|' ||
            hex(COALESCE(terminal_model, '')) || '|' ||
-           hex(COALESCE(hints, ''))
+           hex(COALESCE(hints, '')) || '|' ||
+           hex(COALESCE(pdf_url, ''))
     FROM exercises
     WHERE code = $code_sql AND status = 'available';
   ") || return 1
@@ -117,7 +127,7 @@ exercise_render_structured() {
   fi
 
   IFS='|' read -r name_hex description_hex mission_hex example_hex \
-    directory_hex files_hex functions_hex terminal_hex hints_hex <<<"$fields"
+    directory_hex files_hex functions_hex terminal_hex hints_hex pdf_url_hex <<<"$fields"
   name=$(db_hex_decode "$name_hex") || return 1
   description=$(db_hex_decode "$description_hex") || return 1
   mission=$(db_hex_decode "$mission_hex") || return 1
@@ -127,12 +137,13 @@ exercise_render_structured() {
   allowed_functions=$(db_hex_decode "$functions_hex") || return 1
   terminal_model=$(db_hex_decode "$terminal_hex") || return 1
   hints=$(db_hex_decode "$hints_hex") || return 1
+  pdf_url=$(db_hex_decode "$pdf_url_hex") || return 1
   width=$(ui_width)
 
   ui_screen_begin "EXERCÍCIO $code"
   exercise_render_content "$name" "$description" "$mission" "$example" \
     "$delivery_directory" "$delivery_files" "$allowed_functions" \
-    "$terminal_model" "$hints"
+    "$terminal_model" "$hints" "$pdf_url"
   printf '\n'
   ui_statusline
   ui_menu_choice action "EXERCÍCIO $(ui_sanitize "$code")" \
@@ -183,7 +194,7 @@ if not isinstance(items, list) or type(points) is not int or points < 0:
 required = (
     "code", "name", "description", "statement", "example",
     "delivery_directory", "delivery_files", "allowed_functions",
-    "terminal_model", "hints", "status",
+    "terminal_model", "hints", "pdf_url", "status",
 )
 for item in items:
     if not isinstance(item, dict) or any(
@@ -210,6 +221,8 @@ print(json.dumps({
                hex(COALESCE(e.allowed_functions, '')) || '|' ||
                hex(COALESCE(e.terminal_model, '')) || '|' ||
                hex(COALESCE(e.hints, '')) || '|' ||
+               hex(COALESCE(e.pdf_url, '')) || '|' ||
+               hex(COALESCE(e.pdf_url, '')) || '|' ||
                COALESCE((
                  SELECT s.status FROM submissions s
                  WHERE s.user_id = $CURRENT_USER_ID AND s.exercise_id = e.id
@@ -227,10 +240,10 @@ username, points, filter_name, query, selected_code = sys.argv[1:]
 items = []
 for line in sys.stdin:
     fields = line.rstrip("\n").split("|")
-    if len(fields) != 11:
+    if len(fields) != 12:
         raise SystemExit("Registro do catálogo inválido")
-    values = [bytes.fromhex(value).decode("utf-8") for value in fields[:10]]
-    submission_status = fields[10]
+    values = [bytes.fromhex(value).decode("utf-8") for value in fields[:11]]
+    submission_status = fields[11]
     status = (
         submission_status
         if submission_status in {"pending", "approved"}
@@ -239,7 +252,7 @@ for line in sys.stdin:
     items.append(dict(zip((
         "code", "name", "description", "statement", "example",
         "delivery_directory", "delivery_files", "allowed_functions",
-        "terminal_model", "hints",
+        "terminal_model", "hints", "pdf_url",
     ), values), status=status))
 print(json.dumps({
     "username": username,
@@ -621,6 +634,7 @@ exercise_submit() {
     return 0
   fi
 
+  commit_url="${commit_url%%#*}"
   if [[ ! "$commit_url" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/commit/[a-fA-F0-9]{7,64}$ ]]; then
     printf '  Informe uma URL direta de commit GitHub (SHA de 7 a 64 caracteres hexadecimais).\n'
     return 1
