@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import unicodedata
+from dataclasses import dataclass
 from http.client import HTTPException
 from typing import Any
 from urllib.error import URLError
@@ -30,6 +31,8 @@ PDF_MAX_BYTES = 20 * 1024 * 1024
 PDF_MAX_PAGES = 500
 PDF_DOWNLOAD_TIMEOUT_SECONDS = 15
 DRIVE_FILE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{10,256}$")
+PDF_LAYOUT_COLUMNS = 88
+PDF_LAYOUT_ROWS = 72
 STATUS_LABELS = {
     "available": "Disponível",
     "pending": "Em avaliação",
@@ -130,6 +133,14 @@ DETAIL_FIELDS = (
 )
 
 
+@dataclass(frozen=True)
+class PdfTextSpan:
+    row: int
+    column: int
+    text: str
+    emphasis: bool = False
+
+
 def safe_text(value: Any) -> str:
     return "".join(
         char
@@ -165,21 +176,67 @@ def wrap_text(text: str, width: int) -> list[str]:
     return lines
 
 
-def format_pdf_text(text: str) -> str:
-    lines: list[str] = []
-    previous_blank = True
-    for source in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-        line = re.sub(r"[ \t]+", " ", source).strip()
-        if not line:
-            if not previous_blank:
-                lines.append("")
-            previous_blank = True
-            continue
-        lines.append(line)
-        previous_blank = False
-    while lines and not lines[-1]:
-        lines.pop()
-    return "\n".join(lines)
+def extract_pdf_layout(page: Any) -> list[PdfTextSpan]:
+    box = page.mediabox
+    left = float(box.left)
+    right = float(box.right)
+    bottom = float(box.bottom)
+    top = float(box.top)
+    page_width = max(1.0, right - left)
+    page_height = max(1.0, top - bottom)
+    extracted: list[tuple[float, float, float, str, bool]] = []
+
+    def collect(
+        text: str,
+        _current_matrix: Any,
+        text_matrix: Any,
+        font_dictionary: Any,
+        font_size: float,
+    ) -> None:
+        normalized = re.sub(r"\s+", " ", text).strip()
+        if not normalized:
+            return
+        x = float(text_matrix[4])
+        y = float(text_matrix[5])
+        font_name = str(font_dictionary.get("/BaseFont", "")) if font_dictionary else ""
+        extracted.append((y, x, float(font_size), normalized, "bold" in font_name.lower()))
+
+    page.extract_text(visitor_text=collect)
+    if not extracted:
+        return []
+
+    font_sizes = sorted(size for _y, _x, size, _text, _bold in extracted if size > 0)
+    typical_size = font_sizes[len(font_sizes) // 2] if font_sizes else 10.0
+    baselines: list[tuple[float, list[tuple[float, float, str, bool]]]] = []
+    for y, x, size, text, bold in sorted(extracted, key=lambda span: -span[0]):
+        tolerance = max(1.5, min(3.0, size * 0.18))
+        target = next(
+            (line for line in baselines if abs(line[0] - y) <= tolerance),
+            None,
+        )
+        if target is None:
+            target = (y, [])
+            baselines.append(target)
+        target[1].append((x, size, text, bold))
+
+    spans: list[PdfTextSpan] = []
+    for baseline, fragments in baselines:
+        row = round((top - baseline) / page_height * (PDF_LAYOUT_ROWS - 1))
+        for x, size, text, bold in sorted(fragments, key=lambda fragment: fragment[0]):
+            column = round((x - left) / page_width * (PDF_LAYOUT_COLUMNS - 1))
+            column = max(0, min(PDF_LAYOUT_COLUMNS - 1, column))
+            for line_offset, line in enumerate(
+                wrap_text(text, PDF_LAYOUT_COLUMNS - column)
+            ):
+                spans.append(
+                    PdfTextSpan(
+                        row=max(0, min(PDF_LAYOUT_ROWS - 1, row + line_offset)),
+                        column=column,
+                        text=line,
+                        emphasis=bold or size >= typical_size * 1.25,
+                    )
+                )
+    return spans
 
 
 class ExerciseCatalogTui:
@@ -378,7 +435,7 @@ class ExerciseCatalogTui:
         return actions
 
     @staticmethod
-    def fetch_pdf_pages(url: str) -> list[str]:
+    def fetch_pdf_pages(url: str) -> list[list[PdfTextSpan]]:
         try:
             parsed = urlsplit(url)
             parsed.port
@@ -455,18 +512,13 @@ class ExerciseCatalogTui:
                 )
             raise ValueError("O endereço não retornou um arquivo PDF válido.")
 
-        previous_log_disable = logging.root.manager.disable
-        logging.disable(logging.WARNING)
         try:
-            try:
-                from pypdf import PdfReader
-                from pypdf.errors import PyPdfError
-            except ImportError as error:
-                raise RuntimeError(
-                    "O leitor PDF requer a dependência pypdf. Instale os requisitos do projeto."
-                ) from error
-        finally:
-            logging.disable(previous_log_disable)
+            from pypdf import PdfReader
+            from pypdf.errors import PyPdfError
+        except ImportError as error:
+            raise RuntimeError(
+                "O leitor PDF requer a dependência pypdf. Instale os requisitos do projeto."
+            ) from error
 
         previous_log_disable = logging.root.manager.disable
         logging.disable(logging.WARNING)
@@ -477,10 +529,7 @@ class ExerciseCatalogTui:
                     raise ValueError("Este PDF é protegido por senha e não pode ser lido.")
                 if len(reader.pages) > PDF_MAX_PAGES:
                     raise ValueError("O PDF excede o limite de 500 páginas.")
-                pages = [
-                    format_pdf_text(page.extract_text(extraction_mode="layout") or "")
-                    for page in reader.pages
-                ]
+                pages = [extract_pdf_layout(page) for page in reader.pages]
             except PyPdfError as error:
                 raise ValueError(f"Não foi possível ler o PDF: {error}") from error
             if not pages:
@@ -514,7 +563,7 @@ class ExerciseCatalogTui:
     def draw_pdf_page(
         self,
         screen: Any,
-        pages: list[str] | None = None,
+        pages: list[list[PdfTextSpan]] | None = None,
         page_index: int = 0,
         scroll: int = 0,
         error: str = "",
@@ -568,10 +617,39 @@ class ExerciseCatalogTui:
                 separator_y += 1
             content_top = separator_y + 1
             content_height = max(1, top + panel_height - 2 - content_top)
-            page_text = (pages or [""])[page_index]
-            lines = wrap_text(
-                page_text or "Esta página não contém texto extraível.", body_width
+            page_spans = (pages or [[]])[page_index]
+            if not page_spans:
+                page_spans = [
+                    PdfTextSpan(0, 0, "Esta página não contém texto extraível.")
+                ]
+            for span in page_spans:
+                visible_row = span.row - scroll
+                if 0 <= visible_row < content_height:
+                    self.draw_text(
+                        screen,
+                        content_top + visible_row,
+                        left + 2 + span.column,
+                        span.text,
+                        "title" if span.emphasis else "text",
+                        max(1, body_width - span.column),
+                    )
+            max_scroll = max(
+                0,
+                max(span.row for span in page_spans) - content_height + 1,
             )
+            footer = (
+                "↑/↓ rolar · PgUp/PgDn rolar mais · ←/→ página anterior/próxima · Esc voltar"
+            )
+            self.draw_text(
+                screen,
+                top + panel_height - 2,
+                left + 2,
+                footer,
+                "muted",
+                body_width,
+            )
+            screen.refresh()
+            return max_scroll
         max_scroll = max(0, len(lines) - content_height)
         scroll = min(max(0, scroll), max_scroll)
         for offset, line in enumerate(lines[scroll : scroll + content_height]):

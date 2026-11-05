@@ -19,8 +19,9 @@ from unittest.mock import Mock, patch
 
 from modules.exercise_catalog_tui import (
     ExerciseCatalogTui,
-    format_pdf_text,
     load_config,
+    extract_pdf_layout,
+    PdfTextSpan,
 )
 
 
@@ -45,6 +46,39 @@ def catalog_item(
         "pdf_url": "",
         "status": status,
     }
+
+
+def pdf_page_with_text() -> Any:
+    page = types.SimpleNamespace(
+        mediabox=types.SimpleNamespace(left=0, right=612, bottom=0, top=792)
+    )
+
+    def extract_text(visitor_text: Any) -> str:
+        visitor_text(
+            "Capítulo III",
+            None,
+            [1, 0, 0, 1, 50, 750],
+            {"/BaseFont": "/Example-Bold"},
+            20,
+        )
+        visitor_text(
+            "Exercício 00 : Z",
+            None,
+            [1, 0, 0, 1, 50, 700],
+            {"/BaseFont": "/Example-Bold"},
+            18,
+        )
+        visitor_text(
+            "Crie um arquivo z que, ao executar um cat nele, exiba Z.",
+            None,
+            [1, 0, 0, 1, 100, 250],
+            {"/BaseFont": "/Example-Regular"},
+            10,
+        )
+        return ""
+
+    page.extract_text = extract_text
+    return page
 
 
 class ExerciseCatalogTuiTests(unittest.TestCase):
@@ -115,10 +149,20 @@ class ExerciseCatalogTuiTests(unittest.TestCase):
             tui.detail_lines,
         )
 
-    def test_pdf_reader_formats_extracted_text(self) -> None:
+    def test_pdf_layout_preserves_text_positions_and_heading_emphasis(self) -> None:
+        spans = extract_pdf_layout(pdf_page_with_text())
         self.assertEqual(
-            "Título\nUma linha com espaços\n\nOutro parágrafo",
-            format_pdf_text("  Título   \nUma   linha\tcom espaços \n\n\nOutro parágrafo  \n"),
+            [
+                PdfTextSpan(row=4, column=7, text="Capítulo III", emphasis=True),
+                PdfTextSpan(row=8, column=7, text="Exercício 00 : Z", emphasis=True),
+                PdfTextSpan(
+                    row=49,
+                    column=14,
+                    text="Crie um arquivo z que, ao executar um cat nele, exiba Z.",
+                    emphasis=False,
+                ),
+            ],
+            spans,
         )
 
     def test_pdf_reader_displays_original_link(self) -> None:
@@ -142,7 +186,10 @@ class ExerciseCatalogTuiTests(unittest.TestCase):
             ACS_HLINE=0,
             ACS_VLINE=0,
         ):
-            tui.draw_pdf_page(screen, ["Conteúdo formatado"])
+            tui.draw_pdf_page(
+                screen,
+                [[PdfTextSpan(5, 3, "Conteúdo formatado")]],
+            )
 
         rendered_text = "\n".join(
             call.args[2]
@@ -156,15 +203,7 @@ class ExerciseCatalogTuiTests(unittest.TestCase):
     def test_pdf_reader_extracts_text_from_https_pdf(self) -> None:
         class FakeReader:
             is_encrypted = False
-            pages = [
-                types.SimpleNamespace(
-                    extract_text=lambda **kwargs: (
-                        "Texto da página"
-                        if kwargs == {"extraction_mode": "layout"}
-                        else ""
-                    )
-                )
-            ]
+            pages = [pdf_page_with_text()]
 
             def __init__(self, _file: io.BytesIO, strict: bool) -> None:
                 self.asserted_strict = strict
@@ -191,7 +230,7 @@ class ExerciseCatalogTuiTests(unittest.TestCase):
             ),
         ):
             self.assertEqual(
-                ["Texto da página"],
+                [extract_pdf_layout(pdf_page_with_text())],
                 ExerciseCatalogTui.fetch_pdf_pages(
                     "https://example.org/exercise.pdf"
                 ),
@@ -200,15 +239,7 @@ class ExerciseCatalogTuiTests(unittest.TestCase):
     def test_google_drive_share_link_downloads_pdf_after_confirmation(self) -> None:
         class FakeReader:
             is_encrypted = False
-            pages = [
-                types.SimpleNamespace(
-                    extract_text=lambda **kwargs: (
-                        "PDF do Drive"
-                        if kwargs == {"extraction_mode": "layout"}
-                        else ""
-                    )
-                )
-            ]
+            pages = [pdf_page_with_text()]
 
             def __init__(self, _file: io.BytesIO, strict: bool) -> None:
                 self.asserted_strict = strict
@@ -254,7 +285,7 @@ class ExerciseCatalogTuiTests(unittest.TestCase):
                 "1TmHY5cXXz78pbdzOanDy47_P_pqXrVwz/view?usp=drive_link"
             )
 
-        self.assertEqual(["PDF do Drive"], pages)
+        self.assertEqual([extract_pdf_layout(pdf_page_with_text())], pages)
         self.assertIn(
             "https://drive.google.com/uc?export=download&id="
             "1TmHY5cXXz78pbdzOanDy47_P_pqXrVwz",
