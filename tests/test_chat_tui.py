@@ -95,15 +95,35 @@ class ChatTuiTests(unittest.TestCase):
     def test_evaluation_room_link_is_highlighted_in_direct_message(self) -> None:
         tui = self.make_tui()
         tui.width = 100
+        url = "https://meet.jit.si/SIMPLE-Eval-" + "0" * 48
         invite = self.message(
             43,
-            "SALA AO VIVO · AVALIAÇÃO #8 · "
-            "https://meet.jit.si/SIMPLE-Eval-0123456789abcdef",
+            f"SALA AO VIVO · AVALIAÇÃO #8 · {url}",
         )
         rows = tui.message_display_rows(invite)
-        self.assertIn("SALA DA AVALIAÇÃO", rows[0][0])
-        self.assertIn("https://meet.jit.si/SIMPLE-Eval-", rows[0][0])
-        self.assertEqual("live_room", rows[0][1])
+        rendered = [text for text, _ in rows]
+        self.assertIn("SALA DA AVALIAÇÃO · SLOT #8", rendered[0])
+        self.assertNotIn("[#43", "\n".join(rendered))
+        self.assertIn("┌", rendered[1])
+        self.assertIn("└", rendered[-1])
+        self.assertEqual(url, "".join(line[1:-1].strip() for line in rendered[2:-1]))
+        self.assertTrue(all(color == "live_room" for _, color in rows))
+
+    def test_evaluation_room_card_fits_narrow_terminal_without_date_row(self) -> None:
+        tui = self.make_tui()
+        tui.width = 48
+        url = "https://meet.jit.si/SIMPLE-Eval-" + "a" * 48
+        tui.messages = [
+            self.message(44, f"SALA AO VIVO · AVALIAÇÃO #12 · {url}")
+        ]
+        rows = tui.all_display_rows(width=48)
+        rendered = [text for text, _ in rows]
+        self.assertFalse(any(text == "2026-11-05" for text in rendered))
+        self.assertTrue(all(len(text) <= 42 for text in rendered))
+        self.assertEqual(
+            url,
+            "".join(line[1:-1].strip() for line in rendered[2:-1]),
+        )
 
     def test_display_rows_are_cached_until_message_content_changes(self) -> None:
         tui = self.make_tui()

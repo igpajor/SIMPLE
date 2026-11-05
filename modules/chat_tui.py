@@ -368,15 +368,34 @@ class ChatTui:
     def message_display_rows(
         self, message: dict[str, Any], width: int | None = None
     ) -> list[tuple[str, str]]:
+        body = safe_text(message["body"])
+        invite = re.fullmatch(
+            r"SALA AO VIVO · AVALIAÇÃO #([0-9]+) · "
+            r"(https://meet\.jit\.si/SIMPLE-Eval-[a-f0-9]{48})",
+            body,
+        )
+        if invite is not None:
+            available = max((width if width is not None else self.width) - 8, 12)
+            inner_width = min(available, 72)
+            slot_id, url = invite.groups()
+            rows = [
+                (line, "live_room")
+                for line in wrap_text(
+                    f"SALA DA AVALIAÇÃO · SLOT #{slot_id}", inner_width
+                )
+            ]
+            rows.append(("┌" + "─" * inner_width + "┐", "live_room"))
+            for link_line in wrap_text(url, inner_width):
+                padding = " " * max(0, inner_width - display_width(link_line))
+                rows.append((f"│{link_line}{padding}│", "live_room"))
+            rows.append(("└" + "─" * inner_width + "┘", "live_room"))
+            return rows
+
         created = local_datetime(str(message["created_at"]), self.timezone)
         username = str(message["username"])
         user_id = int(message["user_id"])
-        body = safe_text(message["body"])
         message_id = int(message["id"])
-        if body.startswith("SALA AO VIVO · AVALIAÇÃO #"):
-            author = "SALA DA AVALIAÇÃO"
-            color = "live_room"
-        elif int(message.get("mentioned", 0)):
+        if int(message.get("mentioned", 0)):
             author = f"@ você · {username}"
             color = "warning"
         elif user_id == self.user_id:
@@ -414,6 +433,11 @@ class ChatTui:
         rows: list[tuple[str, str]] = []
         last_date: str | None = None
         for message in self.messages:
+            if str(message.get("body", "")).startswith(
+                "SALA AO VIVO · AVALIAÇÃO #"
+            ):
+                rows.extend(self.message_display_rows(message, display_width))
+                continue
             created = local_datetime(str(message["created_at"]), self.timezone)
             if created.date().isoformat() != last_date:
                 last_date = created.date().isoformat()

@@ -152,9 +152,15 @@ evaluation_open_live_room() {
     room_id=$(broker_response_field "$response" room_id) || return 1
     peer=$(broker_response_field "$response" peer) || return 1
     channel=$(broker_response_field "$response" channel) || return 1
+    if [[ -z "$channel" || -z "$peer" ]]; then
+      ui_error "O Broker ainda não aplicou a integração da DM. Reinicie simple-broker.service e simple-proxy.service."
+      ui_pause
+      return 1
+    fi
     if [[ ! "$room_id" =~ ^[a-f0-9]{48}$ ||
-      ! "$channel" =~ ^dm:[0-9]+:[0-9]+$ || -z "$peer" ]]; then
+      ! "$channel" =~ ^dm:[0-9]+:[0-9]+$ ]]; then
       ui_error "O Broker retornou dados inválidos para a sala da avaliação."
+      ui_pause
       return 1
     fi
     # shellcheck disable=SC2034 # Consumed by chat_menu.

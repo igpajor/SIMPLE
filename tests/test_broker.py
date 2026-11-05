@@ -3266,12 +3266,19 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual(0, accepted.returncode, accepted.stderr)
         self.assertIn("Pedido aceito", accepted.stdout)
         self.assertIn("MINHAS ENTREGAS", accepted.stdout)
-        accepted_room = re.search(
-            r"https://meet\.jit\.si/SIMPLE-Eval-[a-f0-9]{48}",
-            re.sub(r"\s+", "", accepted.stdout),
-        )
+
+        def find_room_link(output: str) -> re.Match[str] | None:
+            card_content = "".join(
+                line.strip()
+                for line in re.findall(r"^\s*│(.*?)│\s*$", output, re.MULTILINE)
+            )
+            return re.search(
+                r"https://meet\.jit\.si/SIMPLE-Eval-[a-f0-9]{48}", card_content
+            )
+
+        accepted_room = find_room_link(accepted.stdout)
         self.assertIsNotNone(accepted_room, accepted.stdout)
-        self.assertIn("SALA AO VIVO", accepted.stdout)
+        self.assertIn("SALA DA AVALIAÇÃO", accepted.stdout)
         self.assertIn("DM · tui-reviewer", accepted.stdout)
         self.assertIn("Resolva o exercício", accepted.stdout)
         self.assertIn("AVALIAÇÃO", accepted.stdout)
@@ -3293,7 +3300,12 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual(0, reviewer_room.returncode, reviewer_room.stderr)
         self.assertIn(
             accepted_room.group(0),
-            re.sub(r"\s+", "", reviewer_room.stdout),
+            "".join(
+                line.strip()
+                for line in re.findall(
+                    r"^\s*│(.*?)│\s*$", reviewer_room.stdout, re.MULTILINE
+                )
+            ),
         )
 
         reviewer_progress = subprocess.run(
