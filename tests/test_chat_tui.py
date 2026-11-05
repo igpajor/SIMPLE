@@ -95,7 +95,7 @@ class ChatTuiTests(unittest.TestCase):
     def test_evaluation_room_link_is_highlighted_in_direct_message(self) -> None:
         tui = self.make_tui()
         tui.width = 100
-        url = "https://meet.jit.si/SIMPLE-Eval-" + "0" * 48
+        url = "https://meet.jit.si/SIMPLE-Eval-" + "0" * 32
         invite = self.message(
             43,
             f"SALA AO VIVO · AVALIAÇÃO #8 · {url}",
@@ -104,25 +104,63 @@ class ChatTuiTests(unittest.TestCase):
         rendered = [text for text, _ in rows]
         self.assertIn("SALA DA AVALIAÇÃO · SLOT #8", rendered[0])
         self.assertNotIn("[#43", "\n".join(rendered))
-        self.assertIn("┌", rendered[1])
-        self.assertIn("└", rendered[-1])
-        self.assertEqual(url, "".join(line[1:-1].strip() for line in rendered[2:-1]))
+        self.assertEqual([url], rendered[1:])
+        self.assertNotIn("│", "\n".join(rendered))
         self.assertTrue(all(color == "live_room" for _, color in rows))
 
     def test_evaluation_room_card_fits_narrow_terminal_without_date_row(self) -> None:
         tui = self.make_tui()
         tui.width = 48
-        url = "https://meet.jit.si/SIMPLE-Eval-" + "a" * 48
+        url = "https://meet.jit.si/SIMPLE-Eval-" + "a" * 32
         tui.messages = [
             self.message(44, f"SALA AO VIVO · AVALIAÇÃO #12 · {url}")
         ]
         rows = tui.all_display_rows(width=48)
         rendered = [text for text, _ in rows]
         self.assertFalse(any(text == "2026-11-05" for text in rendered))
-        self.assertTrue(all(len(text) <= 42 for text in rendered))
+        self.assertEqual(url, rendered[1])
+        self.assertEqual(64, len(rendered[1]))
+        self.assertEqual(2, len(rendered))
+
+    def test_existing_long_evaluation_room_link_stays_on_one_unframed_line(self) -> None:
+        tui = self.make_tui()
+        url = "https://meet.jit.si/SIMPLE-Eval-" + "b" * 48
+        rows = tui.message_display_rows(
+            self.message(45, f"SALA AO VIVO · AVALIAÇÃO #13 · {url}")
+        )
         self.assertEqual(
-            url,
-            "".join(line[1:-1].strip() for line in rendered[2:-1]),
+            [
+                ("SALA DA AVALIAÇÃO · SLOT #13", "live_room"),
+                (url, "live_room"),
+            ],
+            rows,
+        )
+
+    def test_dm_room_link_uses_full_terminal_width_without_wrapping(self) -> None:
+        tui = self.make_tui()
+        tui.width, tui.height = 80, 24
+        url = "https://meet.jit.si/SIMPLE-Eval-" + "b" * 48
+        tui.messages = [
+            self.message(46, f"SALA AO VIVO · AVALIAÇÃO #14 · {url}")
+        ]
+        screen = Mock()
+        screen.getmaxyx.return_value = (24, 80)
+
+        with patch.multiple(
+            curses,
+            ACS_ULCORNER="+",
+            ACS_URCORNER="+",
+            ACS_LLCORNER="+",
+            ACS_LRCORNER="+",
+            ACS_HLINE="-",
+            ACS_VLINE="|",
+            create=True,
+        ):
+            tui._draw_dm_window(screen)
+
+        self.assertIn(
+            (url, 0),
+            [(call.args[2], call.args[1]) for call in screen.addstr.call_args_list],
         )
 
     def test_display_rows_are_cached_until_message_content_changes(self) -> None:

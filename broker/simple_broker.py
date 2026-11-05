@@ -2480,7 +2480,7 @@ class Broker:
                     )
                 room_id = authorized["live_room"]
                 if room_id is None:
-                    room_id = secrets.token_hex(24)
+                    room_id = secrets.token_hex(16)
                     connection.execute(
                         """
                         UPDATE evaluation_slots SET live_room = ?

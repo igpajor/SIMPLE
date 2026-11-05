@@ -24,25 +24,10 @@ chat_local_time() {
 chat_render_evaluation_room_card() {
   local slot_id="$1"
   local url="$2"
-  local inner_width
-  local rule
-  local link_line
-  local padding
 
-  inner_width=$(($(ui_width) - 8))
-  ((inner_width < 12)) && inner_width=12
-  ((inner_width > 72)) && inner_width=72
-  printf -v rule '%*s' "$inner_width" ''
-  rule="${rule// /─}"
   ui_color_success
   ui_wrap_text "SALA DA AVALIAÇÃO · SLOT #$slot_id" "$(ui_width)" 2
-  printf '  ┌%s┐\n' "$rule"
-  while IFS= read -r link_line; do
-    padding=$((inner_width - ${#link_line}))
-    ((padding < 0)) && padding=0
-    printf '  │%s%*s│\n' "$link_line" "$padding" ''
-  done < <(printf '%s\n' "$url" | fold -w "$inner_width")
-  printf '  └%s┘\n' "$rule"
+  printf '%s\n' "$url"
   ui_color_reset
 }
 
@@ -86,7 +71,7 @@ chat_render_message_row() {
   reactions=$(db_hex_decode "$reactions_hex") || return 1
   mentioned=$(db_hex_decode "$mentioned_hex") || return 1
   [[ "$message_id" =~ ^[0-9]+$ && "$user_id" =~ ^[0-9]+$ ]] || return 1
-  if [[ "$body" =~ ^SALA\ AO\ VIVO\ ·\ AVALIAÇÃO\ \#([0-9]+)\ ·\ (https://meet\.jit\.si/SIMPLE-Eval-[a-f0-9]{48})$ ]]; then
+  if [[ "$body" =~ ^SALA\ AO\ VIVO\ ·\ AVALIAÇÃO\ \#([0-9]+)\ ·\ (https://meet\.jit\.si/SIMPLE-Eval-([a-f0-9]{32}|[a-f0-9]{48}))$ ]]; then
     chat_render_evaluation_room_card "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
     CHAT_LAST_AUTHOR=""
     return 0

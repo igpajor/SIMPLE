@@ -85,7 +85,7 @@ evaluation_live_room_id() {
 
   [[ "$slot_id" =~ ^[0-9]+$ ]] || return 2
   local generated_room
-  generated_room=$(openssl rand -hex 24) || {
+  generated_room=$(openssl rand -hex 16) || {
     printf '  Não foi possível criar uma sala segura para a avaliação.\n' >&2
     return 1
   }
@@ -125,7 +125,7 @@ evaluation_live_room_id() {
       );
     COMMIT;
   ") || return 1
-  if [[ ! "$room_id" =~ ^[a-f0-9]{48}$ ]]; then
+  if [[ ! "$room_id" =~ ^([a-f0-9]{32}|[a-f0-9]{48})$ ]]; then
     printf '  A sala não está disponível para esta conta ou avaliação.\n' >&2
     return 1
   fi
@@ -157,7 +157,7 @@ evaluation_open_live_room() {
       ui_pause
       return 1
     fi
-    if [[ ! "$room_id" =~ ^[a-f0-9]{48}$ ||
+    if [[ ! "$room_id" =~ ^([a-f0-9]{32}|[a-f0-9]{48})$ ||
       ! "$channel" =~ ^dm:[0-9]+:[0-9]+$ ]]; then
       ui_error "O Broker retornou dados inválidos para a sala da avaliação."
       ui_pause

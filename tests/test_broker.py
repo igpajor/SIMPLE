@@ -2462,7 +2462,7 @@ class BrokerTests(unittest.TestCase):
                 "slot_id": str(submission["slot_id"]),
             }
         )
-        self.assertRegex(owner_room["room_id"], r"^[a-f0-9]{48}$")
+        self.assertRegex(owner_room["room_id"], r"^[a-f0-9]{32}$")
         self.assertEqual(owner_room["room_id"], reviewer_room["room_id"])
         self.assertEqual(f"dm:{owner['user_id']}:{reviewer['user_id']}", owner_room["channel"])
         self.assertEqual(owner_room["channel"], reviewer_room["channel"])
@@ -3268,12 +3268,9 @@ class BrokerTests(unittest.TestCase):
         self.assertIn("MINHAS ENTREGAS", accepted.stdout)
 
         def find_room_link(output: str) -> re.Match[str] | None:
-            card_content = "".join(
-                line.strip()
-                for line in re.findall(r"^\s*│(.*?)│\s*$", output, re.MULTILINE)
-            )
             return re.search(
-                r"https://meet\.jit\.si/SIMPLE-Eval-[a-f0-9]{48}", card_content
+                r"(?m)^https://meet\.jit\.si/SIMPLE-Eval-[a-f0-9]{32}$",
+                output,
             )
 
         accepted_room = find_room_link(accepted.stdout)
@@ -3300,12 +3297,7 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual(0, reviewer_room.returncode, reviewer_room.stderr)
         self.assertIn(
             accepted_room.group(0),
-            "".join(
-                line.strip()
-                for line in re.findall(
-                    r"^\s*│(.*?)│\s*$", reviewer_room.stdout, re.MULTILINE
-                )
-            ),
+            reviewer_room.stdout,
         )
 
         reviewer_progress = subprocess.run(

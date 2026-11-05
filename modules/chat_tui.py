@@ -371,25 +371,16 @@ class ChatTui:
         body = safe_text(message["body"])
         invite = re.fullmatch(
             r"SALA AO VIVO · AVALIAÇÃO #([0-9]+) · "
-            r"(https://meet\.jit\.si/SIMPLE-Eval-[a-f0-9]{48})",
+            r"(https://meet\.jit\.si/SIMPLE-Eval-[a-f0-9]{32}|"
+            r"https://meet\.jit\.si/SIMPLE-Eval-[a-f0-9]{48})",
             body,
         )
         if invite is not None:
-            available = max((width if width is not None else self.width) - 8, 12)
-            inner_width = min(available, 72)
             slot_id, url = invite.groups()
-            rows = [
-                (line, "live_room")
-                for line in wrap_text(
-                    f"SALA DA AVALIAÇÃO · SLOT #{slot_id}", inner_width
-                )
+            return [
+                (f"SALA DA AVALIAÇÃO · SLOT #{slot_id}", "live_room"),
+                (url, "live_room"),
             ]
-            rows.append(("┌" + "─" * inner_width + "┐", "live_room"))
-            for link_line in wrap_text(url, inner_width):
-                padding = " " * max(0, inner_width - display_width(link_line))
-                rows.append((f"│{link_line}{padding}│", "live_room"))
-            rows.append(("└" + "─" * inner_width + "┘", "live_room"))
-            return rows
 
         created = local_datetime(str(message["created_at"]), self.timezone)
         username = str(message["username"])
@@ -694,6 +685,16 @@ class ChatTui:
         start = max(0, end - pane_height)
         visible = message_rows[start:end]
         for index, (text, color) in enumerate(visible):
+            if color == "live_room":
+                self.draw_text(
+                    screen,
+                    pane_top + index,
+                    0,
+                    text,
+                    color,
+                    self.width,
+                )
+                continue
             self.draw_text(
                 screen,
                 pane_top + index,
@@ -806,6 +807,16 @@ class ChatTui:
         end = len(message_rows) - self.scroll_offset
         start = max(0, end - pane_height)
         for index, (text, color) in enumerate(message_rows[start:end]):
+            if color == "live_room":
+                self.draw_text(
+                    screen,
+                    top + pane_top + index,
+                    0,
+                    text,
+                    color,
+                    self.width,
+                )
+                continue
             self.draw_text(
                 screen,
                 top + pane_top + index,

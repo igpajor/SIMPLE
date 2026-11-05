@@ -582,7 +582,7 @@ CURRENT_USER_ID="$bob_id"
 bob_room=$(evaluation_live_room_id "$alice_first_slot")
 assert_equals "$alice_room" "$bob_room" \
   "as duas pessoas recebem a mesma sala privada de avaliação"
-if [[ ! "$alice_room" =~ ^[a-f0-9]{48}$ ]]; then
+if [[ ! "$alice_room" =~ ^[a-f0-9]{32}$ ]]; then
   fail "sala de avaliação usa identificador aleatório seguro"
 fi
 CURRENT_USER_ID="$carol_id"
