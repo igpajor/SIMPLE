@@ -578,6 +578,68 @@ chat_tty_restore() {
   return 1
 }
 
+chat_tty_enter_raw() {
+  if [[ ! -t 0 ]] || ! CHAT_TTY_STATE=$(stty -g 2>/dev/null); then
+    CHAT_TTY_STATE=""
+    return 2
+  fi
+  if ! stty -icanon -echo -isig -ixon min 1 time 0 2>/dev/null; then
+    chat_tty_restore
+    return 2
+  fi
+}
+
+chat_render_new_messages() {
+  local rows
+  local row
+
+  rows=$(broker_response_rows "$CHAT_SYNC_RESPONSE" --separator \
+    "$CHAT_ROW_SEPARATOR" messages) || return 1
+  [[ -n "$rows" ]] || return 0
+  ui_color_warning
+  ui_wrap_text "MENSAGENS NOVAS" "$(ui_width)" 2
+  ui_color_reset
+  while IFS= read -r row; do
+    [[ -n "$row" ]] || continue
+    chat_render_message_row "$row" || return 1
+  done <<<"$rows"
+}
+
+chat_refresh_during_input() {
+  local draft="$1"
+  local show_empty="$2"
+  local has_new_messages=0
+  local sync_succeeded=0
+
+  chat_tty_restore || return 1
+  if chat_sync; then
+    sync_succeeded=1
+    if ((CHAT_NEW_MESSAGE_COUNT > 0)); then
+      has_new_messages=1
+    fi
+  else
+    CHAT_TYPING_WARNING=1
+  fi
+
+  if ((sync_succeeded && !has_new_messages && !show_empty)); then
+    chat_tty_enter_raw
+    return $?
+  fi
+
+  printf '\033[u\033[J\n'
+  if ((has_new_messages)); then
+    chat_render_new_messages || return 1
+  elif ((show_empty)); then
+    ui_color_dim
+    ui_wrap_text "Nenhuma mensagem nova." "$(ui_width)" 2
+    ui_color_reset
+  else
+    ui_warn "Não foi possível atualizar as mensagens."
+  fi
+  printf '\033[s  MENSAGEM > %s' "$draft"
+  chat_tty_enter_raw
+}
+
 chat_auto_refresh_enabled() {
   case "${CHAT_AUTO_REFRESH:-0}" in
     1) return 0 ;;
@@ -591,6 +653,7 @@ chat_auto_refresh_enabled() {
 
 chat_read_message() {
   local refresh_seconds="$1"
+  local auto_refresh_active="$2"
   local key=""
   local draft=""
   local read_status
@@ -598,25 +661,22 @@ chat_read_message() {
 
   CHAT_INPUT_LINE=""
   CHAT_READER_TYPING_ACTIVE=0
-  if [[ ! -t 0 ]] || ! CHAT_TTY_STATE=$(stty -g 2>/dev/null); then
-    CHAT_TTY_STATE=""
-    return 2
-  fi
-  if ! stty -icanon -echo -isig -ixon min 1 time 0 2>/dev/null; then
-    chat_tty_restore
-    return 2
-  fi
+  chat_tty_enter_raw || return $?
 
-  printf '  MENSAGEM > '
+  printf '\033[s  MENSAGEM > '
   while true; do
-    if [[ -z "$draft" ]] && ((SECONDS - last_refresh >= refresh_seconds)); then
-      chat_tty_restore || return 1
-      printf '\n'
-      return 124
+    if ((auto_refresh_active)) && ((SECONDS - last_refresh >= refresh_seconds)); then
+      chat_refresh_during_input "$draft" 0 || return $?
+      last_refresh=$SECONDS
     fi
     if IFS= read -r -N 1 -t 0.25 key; then
       case "$key" in
         $'\n'|$'\r')
+          if [[ -z "$draft" ]]; then
+            chat_refresh_during_input "" 1 || return $?
+            last_refresh=$SECONDS
+            continue
+          fi
           chat_tty_restore || return 1
           printf '\n'
           CHAT_INPUT_LINE="$draft"
@@ -691,7 +751,7 @@ chat_read_message() {
 chat_menu_loop() {
   local message=""
   local read_status
-  local refresh_seconds="${CHAT_REFRESH_SECONDS:-4}"
+  local refresh_seconds="${CHAT_REFRESH_SECONDS:-2}"
   local command
   local argument
   local rest
@@ -714,8 +774,8 @@ chat_menu_loop() {
   if chat_auto_refresh_enabled; then
     auto_refresh_active=1
     if [[ ! "$refresh_seconds" =~ ^[0-9]+$ ]] ||
-      ((refresh_seconds < 2 || refresh_seconds > 60)); then
-      ui_error "CHAT_REFRESH_SECONDS deve estar entre 2 e 60."
+      ((refresh_seconds < 1 || refresh_seconds > 60)); then
+      ui_error "CHAT_REFRESH_SECONDS deve estar entre 1 e 60."
       return 1
     fi
   else
@@ -786,10 +846,10 @@ chat_menu_loop() {
     printf '\n'
     ui_color_dim
     if ((auto_refresh_active)); then
-      ui_wrap_text "Autoatualiza ${refresh_seconds}s quando vazio · Enter envia · /ajuda" \
+      ui_wrap_text "Atualiza a cada ${refresh_seconds}s sem limpar a tela · Enter envia · /ajuda" \
         "$(ui_width)" 2
     else
-      ui_wrap_text "Atualização automática desativada · Enter vazio atualiza · Enter envia · /ajuda" \
+      ui_wrap_text "Autoatualização desativada · Enter vazio atualiza · Enter envia · /ajuda" \
         "$(ui_width)" 2
     fi
     ui_wrap_text "Limite: 500 caracteres · /historico carrega mensagens anteriores" \
@@ -801,51 +861,44 @@ chat_menu_loop() {
     fi
 
     message=""
-    if ui_can_interact && ((auto_refresh_active)); then
-      if chat_read_message "$refresh_seconds"; then
+    if ui_can_interact; then
+      if chat_read_message "$refresh_seconds" "$auto_refresh_active"; then
         message="$CHAT_INPUT_LINE"
       else
         read_status=$?
         typing_active="$CHAT_READER_TYPING_ACTIVE"
-        if ((read_status == 124 || read_status == 130)); then
-          if ((typing_active)); then
-            if chat_mark_typing 0; then
-              CHAT_READER_TYPING_ACTIVE=0
-            else
+        case "$read_status" in
+          130)
+            if ((typing_active)) && ! chat_mark_typing 0; then
               CHAT_TYPING_WARNING=1
             fi
-          fi
-          continue
-        fi
-        if ((read_status == 131)); then
-          if ((typing_active)) && ! chat_mark_typing 0; then
-            CHAT_TYPING_WARNING=1
-          fi
-          break
-        fi
-        if ((read_status == 2)); then
+            continue
+            ;;
+          131)
+            if ((typing_active)) && ! chat_mark_typing 0; then
+              CHAT_TYPING_WARNING=1
+            fi
+            break
+            ;;
+          2)
           if ! ui_read_line message "  MENSAGEM > "; then
             nav_pop
             return 0
           fi
-        elif ((read_status == 1)); then
-          if ((typing_active)) && ! chat_mark_typing 0; then
-            CHAT_TYPING_WARNING=1
-          fi
-          nav_pop
-          return 0
-        else
-          nav_pop
-          return 1
-        fi
+            ;;
+          1)
+            nav_pop
+            return 0
+            ;;
+          *)
+            nav_pop
+            return 1
+            ;;
+        esac
       fi
       typing_active="$CHAT_READER_TYPING_ACTIVE"
-      if ((typing_active)); then
-        if chat_mark_typing 0; then
-          CHAT_READER_TYPING_ACTIVE=0
-        else
-          CHAT_TYPING_WARNING=1
-        fi
+      if ((typing_active)) && ! chat_mark_typing 0; then
+        CHAT_TYPING_WARNING=1
       fi
     else
       if ! ui_read_line message "  MENSAGEM > "; then

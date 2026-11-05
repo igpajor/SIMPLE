@@ -3,6 +3,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck disable=SC2034 # Consumed by core/database.sh.
 SCRIPT_DIR="$ROOT_DIR"
 TEST_DIR="$(mktemp -d)"
 TEST_BIN="$TEST_DIR/bin"
@@ -39,6 +40,8 @@ unset CHAT_AUTO_REFRESH
 if chat_auto_refresh_enabled; then
   fail "atualização automática do chat deve vir desativada por padrão"
 fi
+[[ "${CHAT_REFRESH_SECONDS:-2}" == "2" ]] ||
+  fail "polling automático usa intervalo padrão curto de 2 segundos"
 CHAT_AUTO_REFRESH=1
 chat_auto_refresh_enabled ||
   fail "atualização automática pode ser habilitada explicitamente"

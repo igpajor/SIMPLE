@@ -676,7 +676,7 @@ class BrokerTests(unittest.TestCase):
         last_chat_screen = process.stdout.rfind("CHAT GLOBAL")
         self.assertIn("mensagem anterior", process.stdout[last_chat_screen:])
         self.assertIn("Hello everyone", process.stdout[last_chat_screen:])
-        self.assertIn("Atualização automática desativada", process.stdout)
+        self.assertIn("Autoatualização desativada", process.stdout)
         self.assertIn(
             "Nenhuma mensagem nova; exibindo o histórico recente.",
             process.stdout[last_chat_screen:],
@@ -695,12 +695,27 @@ class BrokerTests(unittest.TestCase):
         fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
         original_terminal = termios.tcgetattr(slave_fd)
         reader_script = (
-            'SCRIPT_DIR="$1"; source "$SCRIPT_DIR/modules/chat.sh"; '
+            'SCRIPT_DIR="$1"; source "$SCRIPT_DIR/core/database.sh"; '
+            'source "$SCRIPT_DIR/core/broker_client.sh"; '
+            'source "$SCRIPT_DIR/core/ui.sh"; '
+            'source "$SCRIPT_DIR/modules/chat.sh"; '
+            "CURRENT_USER_ID=42; CURRENT_USERNAME='me'; "
             "chat_mark_typing() { return 0; }; "
+            "poll_count=0; "
+            "chat_sync() { ((poll_count += 1)); "
+            "if ((poll_count == 1)); then "
+            "CHAT_NEW_MESSAGE_COUNT=1; "
+            "CHAT_SYNC_RESPONSE='{\"messages\":[{\"id\":9,"
+            "\"username\":\"peer\",\"user_id\":7,"
+            "\"body\":\"Mensagem instantanea\","
+            "\"created_at\":\"2026-11-04 23:00:00\","
+            "\"pinned_at\":null,\"reactions\":\"\","
+            "\"mentioned\":0}]}'; "
+            "else CHAT_NEW_MESSAGE_COUNT=0; "
+            "CHAT_SYNC_RESPONSE='{\"messages\":[]}'; fi; }; "
             "while true; do "
-            "chat_read_message 2; status=$?; "
-            'if ((status == 124)); then printf "REFRESH\\n"; '
-            "elif ((status == 0)); then "
+            "chat_read_message 1 1; status=$?; "
+            "if ((status == 0)); then "
             'printf "LINE:%s\\n" "$CHAT_INPUT_LINE"; exit 0; '
             "else exit \"$status\"; fi; done"
         )
@@ -738,9 +753,9 @@ class BrokerTests(unittest.TestCase):
                     except OSError:
                         break
 
-        def read_until_prompt_count(count: int, timeout: float = 6.0) -> None:
+        def read_until_count(needle: bytes, count: int, timeout: float = 6.0) -> None:
             deadline = time.monotonic() + timeout
-            while output.count(b"MENSAGEM > ") < count and time.monotonic() < deadline:
+            while output.count(needle) < count and time.monotonic() < deadline:
                 ready, _, _ = select.select([master_fd], [], [], 0.2)
                 if ready:
                     try:
@@ -750,23 +765,18 @@ class BrokerTests(unittest.TestCase):
                 if process.poll() is not None:
                     break
             self.assertGreaterEqual(
-                output.count(b"MENSAGEM > "),
+                output.count(needle),
                 count,
                 output.decode("utf-8", errors="replace"),
             )
 
         try:
             read_until(b"MENSAGEM > ")
-            first_prompt_count = output.count(b"MENSAGEM > ")
-            read_until_prompt_count(first_prompt_count + 1)
+            clear_count_before_poll = output.count(b"\x1b[2J")
             os.write(master_fd, b"ab")
-            drain_for(2.5)
-            prompt_count_during_draft = output.count(b"MENSAGEM > ")
-            self.assertEqual(
-                first_prompt_count + 1,
-                prompt_count_during_draft,
-                output.decode("utf-8", errors="replace"),
-            )
+            read_until(b"Mensagem instantanea")
+            read_until_count(b"MENSAGEM > ab", 2)
+            self.assertEqual(clear_count_before_poll, output.count(b"\x1b[2J"))
             os.write(master_fd, b"cd\r")
             read_until(b"LINE:abcd", timeout=5.0)
             process.wait(timeout=10)
