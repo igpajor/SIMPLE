@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import curses
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from zoneinfo import ZoneInfo
 
 from modules.chat_tui import ChatError, ChatTui, safe_text, wrap_text
@@ -140,6 +140,61 @@ class ChatTuiTests(unittest.TestCase):
             "Nova DM de bob: olá · F2 ou /dm bob",
             tui.notification_hint(),
         )
+
+    def test_sync_notifies_new_incoming_dm_message(self) -> None:
+        tui = self.make_tui()
+        tui.channel = "dm:7:8"
+        tui.last_id = 4
+        response = {
+            "ok": True,
+            "messages": [self.message(5, "mensagem recebida")],
+            "window": [],
+            "last_id": 5,
+            "online_users": [],
+            "typing_users": [],
+            "pinned": [],
+            "unread_rooms": [],
+        }
+        response["messages"][0]["user_id"] = 8
+        response["messages"][0]["username"] = "bob"
+
+        with patch.object(tui, "request", return_value=response):
+            self.assertEqual(1, tui.sync())
+
+        self.assertIn("Nova mensagem de bob: mensagem recebida", tui.status)
+
+    def test_dm_window_covers_underlying_text(self) -> None:
+        tui = self.make_tui()
+        tui.height = 24
+        tui.width = 80
+        tui.channel = "dm:7:8"
+        tui.room_name = "DM · bob"
+        screen = Mock()
+
+        with patch.multiple(
+            "modules.chat_tui.curses",
+            create=True,
+            ACS_ULCORNER=0,
+            ACS_URCORNER=0,
+            ACS_LLCORNER=0,
+            ACS_LRCORNER=0,
+            ACS_HLINE=0,
+            ACS_VLINE=0,
+        ):
+            tui._draw_dm_window(screen)
+
+        panel_height = max(10, int(tui.height * 0.78))
+        panel_width = max(40, int(tui.width * 0.76))
+        top = (tui.height - panel_height) // 2
+        left = (tui.width - panel_width) // 2
+        blank_rows = {
+            call.args[0]
+            for call in screen.addstr.call_args_list
+            if len(call.args) >= 3
+            and call.args[1] == left + 1
+            and call.args[2] == " " * (panel_width - 2)
+        }
+        self.assertEqual(set(range(top + 1, top + panel_height - 1)), blank_rows)
 
     def test_f2_opens_unread_dm_without_replacing_the_draft(self) -> None:
         tui = self.make_tui()

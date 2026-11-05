@@ -167,6 +167,7 @@ class ChatTui:
         self.status_until = time.monotonic() + seconds
 
     def sync(self) -> int:
+        previous_last_id = self.last_id
         response = self.request(
             "chat.sync", channel=self.channel, after_id=str(self.last_id)
         )
@@ -213,6 +214,20 @@ class ChatTui:
         if not isinstance(unread_rooms, list):
             raise ChatError("O Broker retornou notificações inválidas.")
         self.unread_rooms = unread_rooms
+        if self.channel.startswith("dm:") and previous_last_id > 0:
+            incoming = next(
+                (
+                    message
+                    for message in reversed(new_messages)
+                    if int(message.get("user_id", self.user_id)) != self.user_id
+                ),
+                None,
+            )
+            if incoming is not None:
+                self.set_status(
+                    f"Nova mensagem de {safe_text(incoming.get('username', 'usuário'))}: "
+                    f"{safe_text(incoming.get('body', ''))}"
+                )
         return len(new_messages)
 
     def capture_room_state(self) -> dict[str, Any]:
@@ -519,6 +534,11 @@ class ChatTui:
         panel_width = min(panel_width, self.width - 2)
         top = (self.height - panel_height) // 2
         left = (self.width - panel_width) // 2
+        for row in range(top + 1, top + panel_height - 1):
+            try:
+                screen.addstr(row, left + 1, " " * (panel_width - 2))
+            except curses.error:
+                pass
         try:
             screen.addch(top, left, curses.ACS_ULCORNER)
             screen.addch(top, left + panel_width - 1, curses.ACS_URCORNER)
