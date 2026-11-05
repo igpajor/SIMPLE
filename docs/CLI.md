@@ -9,9 +9,9 @@
 - `pypdf` para leitura paginada de PDFs no catálogo de exercícios
 - Gum 2.0+ é opcional para entradas, textos multilinha e confirmações
 
-Para habilitar o leitor de PDF, instale `python3 -m pip install -r requirements.txt`.
-O link original permanece disponível no detalhe do exercício; a extração de
-texto não preserva layout ou imagens.
+No Ubuntu, habilite o leitor com `sudo apt install python3-pypdf`, usando o
+Python do sistema que executa o SIMPLE. O link original permanece disponível
+no detalhe do exercício; a extração de texto não preserva layout ou imagens.
 
 Os menus usam opções numeradas como navegação principal; digite a chave exibida e pressione Enter. A tela inicial apresenta boas-vindas, resumo de pontos/progresso (empilhado em terminais estreitos) e ações disponíveis com numeração contínua, incluindo a opção administrativa somente para administradores. Uma linha de status identifica o SIMPLE, a pessoa conectada, o modo e a área atual. Gum pode aprimorar entradas, textos multilinha e confirmações, mas não altera a navegação dos menus. Sem Gum ou sem TTY, a interface usa leitura de linha. Pausas sem TTY não consomem entrada automatizada, senhas permanecem mascaradas e entradas multilinha aceitam o fluxo de texto não interativo.
 
@@ -144,7 +144,7 @@ O SIMPLE roda inteiramente no terminal, sem dependência de interface gráfica. 
 
 - **Login em terminal interativo com Python `curses`**: tela responsiva para entrar ou criar conta, com navegação pelo teclado e senhas mascaradas. As regras de autenticação permanecem no Bash.
 - **Tela inicial interativa**: em TTYs com `curses`, a home é centralizada e responsiva, cresce com a janela até 110 colunas por 32 linhas como o chat, e distribui as opções pelo espaço vertical disponível. Exibe resumo e notificações, aceita navegação por setas/Enter e mantém os atalhos numéricos. As ações seguem os fluxos Bash existentes.
-- **Catálogo de exercícios interativo**: em TTYs com `curses`, permite navegar com setas/Enter e seleção contornada, sem atalhos numéricos limitados a nove itens; filtra por situação e busca por código ou nome. Os detalhes exibem a URL HTTPS do PDF original e oferecem leitura paginada do texto extraído (`↑/↓` rola o texto, `PgUp/PgDn` rola mais e `←/→` troca de página). Downloads têm timeout de 15 segundos, limite de 20 MB e 500 páginas; PDFs protegidos por senha ou sem texto são informados. A extração não preserva imagens ou diagramação. Os detalhes mantêm entrega e chat disponíveis conforme o estado do exercício. O formulário de entrega separa link do commit, diretório e confirmação, e a tela preserva filtro e busca ao voltar dessas ações.
+- **Catálogo de exercícios interativo**: em TTYs com `curses`, permite navegar com setas/Enter e seleção contornada, sem atalhos numéricos limitados a nove itens; filtra por situação e busca por código ou nome. Os detalhes exibem a URL HTTPS do PDF original e oferecem leitura paginada do texto extraído (`↑/↓` rola o texto, `PgUp/PgDn` rola mais e `←/→` troca de página). Links compartilhados do Google Drive são convertidos para download e aceitam a confirmação automática do Drive, desde que o arquivo esteja acessível a qualquer pessoa com o link. Downloads têm timeout de 15 segundos, limite de 20 MB e 500 páginas; PDFs protegidos por senha ou sem texto são informados. A extração não preserva imagens ou diagramação. Os detalhes mantêm entrega e chat disponíveis conforme o estado do exercício. O formulário de entrega separa link do commit, diretório e confirmação, e a tela preserva filtro e busca ao voltar dessas ações.
 - **Sem TTY, sem suporte a `curses` ou com `TERM=dumb`**: login e home usam os fluxos Bash existentes; isso também preserva a entrada via stdin para testes e automação.
 - **Chat interativo**: usa Python `curses` quando disponível, com layout centralizado e responsivo, identificação da conta, resumo do servidor e notificações sem prévias de mensagens. `F2` abre a DM ou sala da citação não lida mais recente; as demais telas continuam em Bash.
 - **Navegação principal**: as telas `curses` aceitam setas e Enter, ou seleção direta pelo número; menus Bash exibem opções numeradas e confirmam a escolha com Enter.

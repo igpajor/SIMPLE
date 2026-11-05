@@ -191,6 +191,9 @@ items = response.get("exercises")
 points = response.get("points")
 if not isinstance(items, list) or type(points) is not int or points < 0:
     raise SystemExit("Resposta do catálogo inválida")
+for item in items:
+    if isinstance(item, dict):
+        item.setdefault("pdf_url", "")
 required = (
     "code", "name", "description", "statement", "example",
     "delivery_directory", "delivery_files", "allowed_functions",

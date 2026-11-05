@@ -17,7 +17,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from modules.exercise_catalog_tui import ExerciseCatalogTui
+from modules.exercise_catalog_tui import ExerciseCatalogTui, load_config
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -81,13 +81,21 @@ class ExerciseCatalogTuiTests(unittest.TestCase):
         )
         tui.open_detail(tui.items[0])
         self.assertEqual(
-            ["submit", "chat", "back"],
+            ["submit", "pdf", "chat", "back"],
             [action for action, _label in tui.actions()],
         )
         tui.open_detail(tui.items[1])
         self.assertEqual(
-            ["chat", "back"],
+            ["pdf", "chat", "back"],
             [action for action, _label in tui.actions()],
+        )
+        self.assertIn(
+            "PDF não cadastrado.",
+            "\n".join(line for line, _color in tui.detail_lines),
+        )
+        self.assertEqual(
+            "PDF original indisponível",
+            tui.actions()[0][1],
         )
 
     def test_pdf_url_is_shown_and_reader_action_is_available(self) -> None:
@@ -123,7 +131,10 @@ class ExerciseCatalogTuiTests(unittest.TestCase):
         response.headers = {}
         response.read.side_effect = [b"%PDF-1.7 sample", b""]
         with (
-            patch("modules.exercise_catalog_tui.urlopen", return_value=response),
+            patch(
+                "modules.exercise_catalog_tui.build_opener",
+                return_value=Mock(open=Mock(return_value=response)),
+            ),
             patch.dict(
                 sys.modules,
                 {"pypdf": pypdf_module, "pypdf.errors": errors_module},
@@ -136,9 +147,79 @@ class ExerciseCatalogTuiTests(unittest.TestCase):
                 ),
             )
 
+    def test_google_drive_share_link_downloads_pdf_after_confirmation(self) -> None:
+        class FakeReader:
+            is_encrypted = False
+            pages = [types.SimpleNamespace(extract_text=lambda: "PDF do Drive")]
+
+            def __init__(self, _file: io.BytesIO, strict: bool) -> None:
+                self.asserted_strict = strict
+
+        pypdf_module = types.ModuleType("pypdf")
+        pypdf_module.__path__ = []
+        pypdf_module.PdfReader = FakeReader
+        errors_module = types.ModuleType("pypdf.errors")
+        errors_module.PyPdfError = type("PyPdfError", (Exception,), {})
+        confirmation = Mock()
+        confirmation.__enter__ = Mock(return_value=confirmation)
+        confirmation.__exit__ = Mock(return_value=False)
+        confirmation.geturl.return_value = "https://drive.google.com/uc?export=download&id=1TmHY5cXXz78pbdzOanDy47_P_pqXrVwz"
+        confirmation.headers = {}
+        confirmation.read.side_effect = [
+            b'<form action="https://drive.usercontent.google.com/download">'
+            b'<input type="hidden" name="id" value="1TmHY5cXXz78pbdzOanDy47_P_pqXrVwz">'
+            b'<input type="hidden" name="export" value="download">'
+            b'<input type="hidden" name="confirm" value="t">'
+            b"</form>",
+            b"",
+        ]
+        pdf_response = Mock()
+        pdf_response.__enter__ = Mock(return_value=pdf_response)
+        pdf_response.__exit__ = Mock(return_value=False)
+        pdf_response.geturl.return_value = (
+            "https://drive.usercontent.google.com/download?id="
+            "1TmHY5cXXz78pbdzOanDy47_P_pqXrVwz&export=download&confirm=t"
+        )
+        pdf_response.headers = {}
+        pdf_response.read.side_effect = [b"%PDF-1.7 sample", b""]
+        opener = Mock()
+        opener.open.side_effect = [confirmation, pdf_response]
+        with (
+            patch("modules.exercise_catalog_tui.build_opener", return_value=opener),
+            patch.dict(
+                sys.modules,
+                {"pypdf": pypdf_module, "pypdf.errors": errors_module},
+            ),
+        ):
+            pages = ExerciseCatalogTui.fetch_pdf_pages(
+                "https://drive.google.com/file/d/"
+                "1TmHY5cXXz78pbdzOanDy47_P_pqXrVwz/view?usp=drive_link"
+            )
+
+        self.assertEqual(["PDF do Drive"], pages)
+        self.assertIn(
+            "https://drive.google.com/uc?export=download&id="
+            "1TmHY5cXXz78pbdzOanDy47_P_pqXrVwz",
+            opener.open.call_args_list[0].args[0].full_url,
+        )
+        self.assertIn("confirm=t", opener.open.call_args_list[1].args[0].full_url)
+
     def test_pdf_reader_rejects_non_https_urls(self) -> None:
         with self.assertRaisesRegex(ValueError, "HTTPS"):
             ExerciseCatalogTui.fetch_pdf_pages("http://example.org/exercise.pdf")
+
+    def test_catalog_accepts_broker_response_without_pdf_url(self) -> None:
+        config = {
+            "username": "student",
+            "points": 1,
+            "items": [catalog_item("EX-01", "Legado", "available")],
+        }
+        with patch.dict(
+            os.environ,
+            {"EXERCISE_CATALOG_CONFIG": json.dumps(config)},
+        ):
+            loaded = load_config()
+        self.assertEqual("", loaded["items"][0]["pdf_url"])
 
     def test_catalog_entries_stay_inside_the_inner_frame(self) -> None:
         tui = ExerciseCatalogTui(

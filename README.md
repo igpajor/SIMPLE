@@ -69,10 +69,12 @@ Unix.
 - `pypdf` para leitura de texto dos PDFs no catálogo de exercícios
 - Gum 2.0+ opcional, para entradas e confirmações aprimoradas
 
-Instale a dependência do leitor de PDF com:
+No Ubuntu, instale a dependência do leitor de PDF no mesmo Python usado pelo
+SIMPLE:
 
 ```bash
-python3 -m pip install -r requirements.txt
+sudo apt update
+sudo apt install -y python3-pypdf
 ```
 
 O catálogo também mantém visível o link do PDF original; a leitura no terminal
