@@ -48,6 +48,7 @@ class LoginTui:
             ("label", curses.COLOR_WHITE, curses.A_NORMAL),
             ("hint", curses.COLOR_CYAN, curses.A_DIM),
             ("error", curses.COLOR_YELLOW, curses.A_BOLD),
+            ("placeholder", curses.COLOR_BLUE, curses.A_DIM),
         ]
         for index, (name, foreground, attributes) in enumerate(palette, start=1):
             try:
@@ -140,13 +141,14 @@ class LoginTui:
             )
         return top, left, panel_width, panel_height
 
-    def draw_menu(self, screen: Any) -> None:
+    def draw_menu(self, screen: Any, refresh: bool = True) -> None:
         self.height, self.width = screen.getmaxyx()
         screen.erase()
         if self.height < 8 or self.width < 32:
             self.draw_text(screen, 0, 0, "Aumente o terminal para continuar.", "error")
             self.draw_text(screen, self.height - 1, 0, "Esc sai", "hint")
-            screen.refresh()
+            if refresh:
+                screen.refresh()
             return
 
         y = max(0, (self.height - 25) // 2) + 1
@@ -267,70 +269,147 @@ class LoginTui:
                 "error",
                 self.width,
             )
-        screen.refresh()
+        if refresh:
+            screen.refresh()
 
     def form_fields(self) -> list[tuple[str, str]]:
-        fields = [("Nome de usuário >", self.username), ("Senha >", self.password)]
+        fields = [("Login", self.username), ("Senha", self.password)]
         if self.action == "register":
-            fields.append(("Confirme a senha >", self.confirmation))
+            fields.append(("Confirmar senha", self.confirmation))
         return fields
 
     def draw_form(self, screen: Any) -> None:
+        self.draw_menu(screen, refresh=False)
         fields = self.form_fields()
-        body = ["Preencha seus dados. Use Tab para trocar de campo.", ""]
-        body.extend(
-            f"  {label} {('*' * min(len(value), 32)) if index else value}"
-            for index, (label, value) in enumerate(fields)
-        )
-        body.extend(["", "Enter avançar/enviar · Esc voltar"])
-        top, left, panel_width, _ = self.draw_frame(
-            screen,
-            "CRIAR CONTA" if self.action == "register" else "ENTRAR",
-            body,
-        )
-        if not panel_width:
+        if self.height < 8 or self.width < 32:
             screen.refresh()
             return
-        label_y = top + 5 + self.focus
-        self.draw_text(
-            screen,
-            label_y,
-            left + 2,
-            "›",
-            "selected",
-            2,
-        )
-        value = fields[self.focus][1]
-        shown = value if self.focus == 0 else "*" * min(len(value), 32)
-        label = fields[self.focus][0]
-        x = left + 4 + len(label) + 1
-        self.draw_text(
-            screen,
-            label_y,
-            x,
-            shown[-max(1, panel_width - (x - left) - 4) :],
-            "selected",
-            panel_width - (x - left) - 4,
-        )
+
+        modal_width = min(48, self.width - 4)
+        modal_height = 12 + (len(fields) - 2) * 4
+        top = max(0, (self.height - modal_height) // 2)
+        left = max(0, (self.width - modal_width) // 2)
+        modal_attr = self.colors.get("label", curses.A_NORMAL)
+        for row in range(modal_height):
+            try:
+                screen.addnstr(
+                    top + row,
+                    left,
+                    " " * modal_width,
+                    modal_width,
+                    modal_attr,
+                )
+            except curses.error:
+                pass
+
         try:
-            screen.move(
-                label_y,
-                min(
-                    left + panel_width - 3,
-                    x + max(0, len(shown)),
-                ),
+            screen.addch(top, left, curses.ACS_ULCORNER, modal_attr)
+            screen.addch(top, left + modal_width - 1, curses.ACS_URCORNER, modal_attr)
+            screen.addch(top + modal_height - 1, left, curses.ACS_LLCORNER, modal_attr)
+            screen.addch(
+                top + modal_height - 1,
+                left + modal_width - 1,
+                curses.ACS_LRCORNER,
+                modal_attr,
+            )
+            screen.hline(top, left + 1, curses.ACS_HLINE, modal_width - 2, modal_attr)
+            screen.hline(
+                top + modal_height - 1,
+                left + 1,
+                curses.ACS_HLINE,
+                modal_width - 2,
+                modal_attr,
+            )
+            screen.vline(
+                top + 1, left, curses.ACS_VLINE, modal_height - 2, modal_attr
+            )
+            screen.vline(
+                top + 1,
+                left + modal_width - 1,
+                curses.ACS_VLINE,
+                modal_height - 2,
+                modal_attr,
             )
         except curses.error:
             pass
+
+        title = "CRIAR CONTA" if self.action == "register" else "ENTRAR"
+        self.draw_text(
+            screen,
+            top + 1,
+            left + max(2, (modal_width - len(title)) // 2),
+            title,
+            "title",
+            modal_width - 4,
+        )
+        field_width = modal_width - 8
+        field_left = left + 4
+        field_inner_width = field_width - 2
+        for index, (placeholder, value) in enumerate(fields):
+            field_top = top + 3 + index * 4
+            focused = index == self.focus
+            field_color = "selected" if focused else "label"
+            field_attr = self.colors.get(field_color, curses.A_NORMAL)
+            self.draw_text(
+                screen,
+                field_top,
+                field_left,
+                f"┌{'─' * (field_width - 2)}┐",
+                field_color,
+                field_width,
+            )
+            try:
+                screen.addch(field_top + 1, field_left, "│", field_attr)
+                screen.addch(
+                    field_top + 1,
+                    field_left + field_width - 1,
+                    "│",
+                    field_attr,
+                )
+            except curses.error:
+                pass
+            if value:
+                shown = value if index == 0 else "*" * min(len(value), field_inner_width)
+                text_color = "label"
+            else:
+                shown = placeholder
+                text_color = "placeholder"
+            shown = shown[-field_inner_width:]
+            self.draw_text(
+                screen,
+                field_top + 1,
+                field_left + 1,
+                f" {shown:<{field_inner_width - 2}} ",
+                text_color,
+                field_inner_width,
+            )
+            self.draw_text(
+                screen,
+                field_top + 2,
+                field_left,
+                f"└{'─' * (field_width - 2)}┘",
+                field_color,
+                field_width,
+            )
         if self.error:
             self.draw_text(
                 screen,
-                top + min(10, self.height - top - 2),
+                top + modal_height - 2,
                 left + 2,
                 self.error,
                 "error",
-                panel_width - 4,
+                modal_width - 4,
             )
+
+        field_top = top + 3 + self.focus * 4
+        cursor_x = field_left + 2 + self.cursor
+        if self.current_value():
+            max_cursor_x = field_left + field_width - 2
+            cursor_x = min(cursor_x, max_cursor_x)
+        try:
+            screen.move(field_top + 1, cursor_x)
+        except curses.error:
+            pass
         screen.refresh()
 
     def current_value(self) -> str:
