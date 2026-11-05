@@ -75,7 +75,10 @@ evaluation_live_room_id() {
     local response
     response=$(printf '%s\0%s\0' "$CURRENT_SESSION_TOKEN" "$slot_id" |
       broker_request evaluations.room.get token slot_id) || return 1
-    broker_check_response "$response" || return 1
+    if ! broker_check_response "$response"; then
+      broker_response_error "$response" >&2
+      return 1
+    fi
     broker_response_field "$response" room_id
     return $?
   fi
