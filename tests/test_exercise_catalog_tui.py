@@ -2,17 +2,14 @@ from __future__ import annotations
 
 import curses
 import fcntl
-import io
 import json
 import os
 import pty
 import select
 import struct
 import subprocess
-import sys
 import termios
 import time
-import types
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -20,8 +17,6 @@ from unittest.mock import Mock, patch
 from modules.exercise_catalog_tui import (
     ExerciseCatalogTui,
     load_config,
-    extract_pdf_layout,
-    PdfTextSpan,
 )
 
 
@@ -46,39 +41,6 @@ def catalog_item(
         "pdf_url": "",
         "status": status,
     }
-
-
-def pdf_page_with_text() -> Any:
-    page = types.SimpleNamespace(
-        mediabox=types.SimpleNamespace(left=0, right=612, bottom=0, top=792)
-    )
-
-    def extract_text(visitor_text: Any) -> str:
-        visitor_text(
-            "Capítulo III",
-            None,
-            [1, 0, 0, 1, 50, 750],
-            {"/BaseFont": "/Example-Bold"},
-            20,
-        )
-        visitor_text(
-            "Exercício 00 : Z",
-            None,
-            [1, 0, 0, 1, 50, 700],
-            {"/BaseFont": "/Example-Bold"},
-            18,
-        )
-        visitor_text(
-            "Crie um arquivo z que, ao executar um cat nele, exiba Z.",
-            None,
-            [1, 0, 0, 1, 100, 250],
-            {"/BaseFont": "/Example-Regular"},
-            10,
-        )
-        return ""
-
-    page.extract_text = extract_text
-    return page
 
 
 class ExerciseCatalogTuiTests(unittest.TestCase):
@@ -149,23 +111,7 @@ class ExerciseCatalogTuiTests(unittest.TestCase):
             tui.detail_lines,
         )
 
-    def test_pdf_layout_preserves_text_positions_and_heading_emphasis(self) -> None:
-        spans = extract_pdf_layout(pdf_page_with_text())
-        self.assertEqual(
-            [
-                PdfTextSpan(row=4, column=7, text="Capítulo III", emphasis=True),
-                PdfTextSpan(row=8, column=7, text="Exercício 00 : Z", emphasis=True),
-                PdfTextSpan(
-                    row=49,
-                    column=14,
-                    text="Crie um arquivo z que, ao executar um cat nele, exiba Z.",
-                    emphasis=False,
-                ),
-            ],
-            spans,
-        )
-
-    def test_pdf_reader_displays_original_link(self) -> None:
+    def test_pdf_action_opens_original_url_in_default_browser(self) -> None:
         url = "https://drive.google.com/file/d/1TmHY5cXXz78pbdzOanDy47_P_pqXrVwz/view"
         item = catalog_item("EX-01", "Com PDF", "available")
         item["pdf_url"] = url
@@ -174,128 +120,46 @@ class ExerciseCatalogTuiTests(unittest.TestCase):
         )
         tui.open_detail(item)
         screen = Mock()
-        screen.getmaxyx.return_value = (32, 100)
 
-        with patch.multiple(
-            "modules.exercise_catalog_tui.curses",
-            create=True,
-            ACS_ULCORNER=0,
-            ACS_URCORNER=0,
-            ACS_LLCORNER=0,
-            ACS_LRCORNER=0,
-            ACS_HLINE=0,
-            ACS_VLINE=0,
+        with (
+            patch(
+                "modules.exercise_catalog_tui.webbrowser.open", return_value=True
+            ) as open_browser,
+            patch("modules.exercise_catalog_tui.curses.def_prog_mode"),
+            patch("modules.exercise_catalog_tui.curses.endwin"),
+            patch("modules.exercise_catalog_tui.curses.reset_prog_mode"),
         ):
-            tui.draw_pdf_page(
-                screen,
-                [[PdfTextSpan(5, 3, "Conteúdo formatado")]],
-            )
+            tui.open_pdf_original(screen)
 
+        open_browser.assert_called_once_with(url, new=2)
+        screen.refresh.assert_called_once()
+
+    def test_pdf_action_reports_when_no_browser_is_available(self) -> None:
+        item = catalog_item("EX-01", "Com PDF", "available")
+        item["pdf_url"] = "https://example.org/exercise.pdf"
+        tui = ExerciseCatalogTui(
+            {"username": "student", "points": 1, "items": [item]}
+        )
+        tui.open_detail(item)
+        screen = Mock()
+        screen.getmaxyx.return_value = (24, 80)
+
+        with (
+            patch("modules.exercise_catalog_tui.webbrowser.open", return_value=False),
+            patch("modules.exercise_catalog_tui.curses.def_prog_mode"),
+            patch("modules.exercise_catalog_tui.curses.endwin"),
+            patch("modules.exercise_catalog_tui.curses.reset_prog_mode"),
+        ):
+            tui.open_pdf_original(screen)
+
+        screen.get_wch.assert_called_once()
         rendered_text = "\n".join(
             call.args[2]
             for call in screen.addstr.call_args_list
             if len(call.args) > 2
         )
-        self.assertIn("PDF:", rendered_text)
-        self.assertIn("drive.google.com/file/d/", rendered_text)
-        self.assertIn("Conteúdo formatado", rendered_text)
-
-    def test_pdf_reader_extracts_text_from_https_pdf(self) -> None:
-        class FakeReader:
-            is_encrypted = False
-            pages = [pdf_page_with_text()]
-
-            def __init__(self, _file: io.BytesIO, strict: bool) -> None:
-                self.asserted_strict = strict
-
-        pypdf_module = types.ModuleType("pypdf")
-        pypdf_module.__path__ = []
-        pypdf_module.PdfReader = FakeReader
-        errors_module = types.ModuleType("pypdf.errors")
-        errors_module.PyPdfError = type("PyPdfError", (Exception,), {})
-        response = Mock()
-        response.__enter__ = Mock(return_value=response)
-        response.__exit__ = Mock(return_value=False)
-        response.geturl.return_value = "https://example.org/exercise.pdf"
-        response.headers = {}
-        response.read.side_effect = [b"%PDF-1.7 sample", b""]
-        with (
-            patch(
-                "modules.exercise_catalog_tui.build_opener",
-                return_value=Mock(open=Mock(return_value=response)),
-            ),
-            patch.dict(
-                sys.modules,
-                {"pypdf": pypdf_module, "pypdf.errors": errors_module},
-            ),
-        ):
-            self.assertEqual(
-                [extract_pdf_layout(pdf_page_with_text())],
-                ExerciseCatalogTui.fetch_pdf_pages(
-                    "https://example.org/exercise.pdf"
-                ),
-            )
-
-    def test_google_drive_share_link_downloads_pdf_after_confirmation(self) -> None:
-        class FakeReader:
-            is_encrypted = False
-            pages = [pdf_page_with_text()]
-
-            def __init__(self, _file: io.BytesIO, strict: bool) -> None:
-                self.asserted_strict = strict
-
-        pypdf_module = types.ModuleType("pypdf")
-        pypdf_module.__path__ = []
-        pypdf_module.PdfReader = FakeReader
-        errors_module = types.ModuleType("pypdf.errors")
-        errors_module.PyPdfError = type("PyPdfError", (Exception,), {})
-        confirmation = Mock()
-        confirmation.__enter__ = Mock(return_value=confirmation)
-        confirmation.__exit__ = Mock(return_value=False)
-        confirmation.geturl.return_value = "https://drive.google.com/uc?export=download&id=1TmHY5cXXz78pbdzOanDy47_P_pqXrVwz"
-        confirmation.headers = {}
-        confirmation.read.side_effect = [
-            b'<form action="https://drive.usercontent.google.com/download">'
-            b'<input type="hidden" name="id" value="1TmHY5cXXz78pbdzOanDy47_P_pqXrVwz">'
-            b'<input type="hidden" name="export" value="download">'
-            b'<input type="hidden" name="confirm" value="t">'
-            b"</form>",
-            b"",
-        ]
-        pdf_response = Mock()
-        pdf_response.__enter__ = Mock(return_value=pdf_response)
-        pdf_response.__exit__ = Mock(return_value=False)
-        pdf_response.geturl.return_value = (
-            "https://drive.usercontent.google.com/download?id="
-            "1TmHY5cXXz78pbdzOanDy47_P_pqXrVwz&export=download&confirm=t"
-        )
-        pdf_response.headers = {}
-        pdf_response.read.side_effect = [b"%PDF-1.7 sample", b""]
-        opener = Mock()
-        opener.open.side_effect = [confirmation, pdf_response]
-        with (
-            patch("modules.exercise_catalog_tui.build_opener", return_value=opener),
-            patch.dict(
-                sys.modules,
-                {"pypdf": pypdf_module, "pypdf.errors": errors_module},
-            ),
-        ):
-            pages = ExerciseCatalogTui.fetch_pdf_pages(
-                "https://drive.google.com/file/d/"
-                "1TmHY5cXXz78pbdzOanDy47_P_pqXrVwz/view?usp=drive_link"
-            )
-
-        self.assertEqual([extract_pdf_layout(pdf_page_with_text())], pages)
-        self.assertIn(
-            "https://drive.google.com/uc?export=download&id="
-            "1TmHY5cXXz78pbdzOanDy47_P_pqXrVwz",
-            opener.open.call_args_list[0].args[0].full_url,
-        )
-        self.assertIn("confirm=t", opener.open.call_args_list[1].args[0].full_url)
-
-    def test_pdf_reader_rejects_non_https_urls(self) -> None:
-        with self.assertRaisesRegex(ValueError, "HTTPS"):
-            ExerciseCatalogTui.fetch_pdf_pages("http://example.org/exercise.pdf")
+        self.assertIn("Não foi possível abrir o PDF original.", rendered_text)
+        self.assertIn("nos detalhes do exercício.", rendered_text)
 
     def test_catalog_accepts_broker_response_without_pdf_url(self) -> None:
         config = {

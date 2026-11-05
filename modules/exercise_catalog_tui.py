@@ -4,21 +4,13 @@
 from __future__ import annotations
 
 import curses
-import http.cookiejar
-import html.parser
-import io
 import json
-import logging
 import os
-import re
 import sys
 import unicodedata
-from dataclasses import dataclass
-from http.client import HTTPException
+import webbrowser
 from typing import Any
-from urllib.error import URLError
-from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
-from urllib.request import HTTPCookieProcessor, Request, build_opener
+from urllib.parse import urlsplit
 
 
 FILTERS = {
@@ -27,12 +19,6 @@ FILTERS = {
     "pending": "E Em avaliação",
     "approved": "C Aprovados",
 }
-PDF_MAX_BYTES = 20 * 1024 * 1024
-PDF_MAX_PAGES = 500
-PDF_DOWNLOAD_TIMEOUT_SECONDS = 15
-DRIVE_FILE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{10,256}$")
-PDF_LAYOUT_COLUMNS = 88
-PDF_LAYOUT_ROWS = 72
 STATUS_LABELS = {
     "available": "Disponível",
     "pending": "Em avaliação",
@@ -41,85 +27,6 @@ STATUS_LABELS = {
 }
 
 
-class _DriveConfirmationParser(html.parser.HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self.forms: list[tuple[str, str, dict[str, str]]] = []
-        self._form: tuple[str, str, dict[str, str]] | None = None
-
-    def handle_starttag(
-        self, tag: str, attrs: list[tuple[str, str | None]]
-    ) -> None:
-        attributes = dict(attrs)
-        if tag == "form":
-            self._form = (
-                attributes.get("action", ""),
-                attributes.get("method", "get").lower(),
-                {},
-            )
-        elif tag == "input" and self._form is not None:
-            if attributes.get("type", "").lower() == "hidden":
-                name = attributes.get("name")
-                if name:
-                    self._form[2][name] = attributes.get("value", "") or ""
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag == "form" and self._form is not None:
-            self.forms.append(self._form)
-            self._form = None
-
-
-def _is_google_download_host(hostname: str | None) -> bool:
-    if not hostname:
-        return False
-    host = hostname.lower().rstrip(".")
-    return (
-        host == "google.com"
-        or host.endswith(".google.com")
-        or host.endswith(".googleusercontent.com")
-    )
-
-
-def _drive_download_url(url: str) -> str | None:
-    parsed = urlsplit(url)
-    if parsed.hostname != "drive.google.com":
-        return None
-
-    match = re.search(r"/file/d/([A-Za-z0-9_-]+)", parsed.path)
-    file_id = match.group(1) if match else dict(parse_qsl(parsed.query)).get("id", "")
-    if not DRIVE_FILE_ID_PATTERN.fullmatch(file_id):
-        return None
-    return "https://drive.google.com/uc?" + urlencode(
-        {"export": "download", "id": file_id}
-    )
-
-
-def _drive_confirmation_request(
-    html_content: bytes, response_url: str
-) -> Request | None:
-    parser = _DriveConfirmationParser()
-    parser.feed(html_content.decode("utf-8", errors="replace"))
-    for action, method, fields in parser.forms:
-        target = urljoin(response_url, action)
-        parsed = urlsplit(target)
-        if parsed.scheme != "https" or not _is_google_download_host(parsed.hostname):
-            continue
-        if method == "post":
-            return Request(
-                target,
-                data=urlencode(fields).encode("ascii"),
-                headers={
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "User-Agent": "SIMPLE PDF reader",
-                },
-            )
-        query = parse_qsl(parsed.query, keep_blank_values=True)
-        query.extend(fields.items())
-        target = urlunsplit(
-            (parsed.scheme, parsed.netloc, parsed.path, urlencode(query), "")
-        )
-        return Request(target, headers={"User-Agent": "SIMPLE PDF reader"})
-    return None
 DETAIL_FIELDS = (
     ("DESCRIÇÃO", "description"),
     ("MISSÃO", "statement"),
@@ -131,14 +38,6 @@ DETAIL_FIELDS = (
     ("DICAS", "hints"),
     ("PDF ORIGINAL", "pdf_url"),
 )
-
-
-@dataclass(frozen=True)
-class PdfTextSpan:
-    row: int
-    column: int
-    text: str
-    emphasis: bool = False
 
 
 def safe_text(value: Any) -> str:
@@ -174,69 +73,6 @@ def wrap_text(text: str, width: int) -> list[str]:
             used += size
         lines.append(line)
     return lines
-
-
-def extract_pdf_layout(page: Any) -> list[PdfTextSpan]:
-    box = page.mediabox
-    left = float(box.left)
-    right = float(box.right)
-    bottom = float(box.bottom)
-    top = float(box.top)
-    page_width = max(1.0, right - left)
-    page_height = max(1.0, top - bottom)
-    extracted: list[tuple[float, float, float, str, bool]] = []
-
-    def collect(
-        text: str,
-        _current_matrix: Any,
-        text_matrix: Any,
-        font_dictionary: Any,
-        font_size: float,
-    ) -> None:
-        normalized = re.sub(r"\s+", " ", text).strip()
-        if not normalized:
-            return
-        x = float(text_matrix[4])
-        y = float(text_matrix[5])
-        font_name = str(font_dictionary.get("/BaseFont", "")) if font_dictionary else ""
-        extracted.append((y, x, float(font_size), normalized, "bold" in font_name.lower()))
-
-    page.extract_text(visitor_text=collect)
-    if not extracted:
-        return []
-
-    font_sizes = sorted(size for _y, _x, size, _text, _bold in extracted if size > 0)
-    typical_size = font_sizes[len(font_sizes) // 2] if font_sizes else 10.0
-    baselines: list[tuple[float, list[tuple[float, float, str, bool]]]] = []
-    for y, x, size, text, bold in sorted(extracted, key=lambda span: -span[0]):
-        tolerance = max(1.5, min(3.0, size * 0.18))
-        target = next(
-            (line for line in baselines if abs(line[0] - y) <= tolerance),
-            None,
-        )
-        if target is None:
-            target = (y, [])
-            baselines.append(target)
-        target[1].append((x, size, text, bold))
-
-    spans: list[PdfTextSpan] = []
-    for baseline, fragments in baselines:
-        row = round((top - baseline) / page_height * (PDF_LAYOUT_ROWS - 1))
-        for x, size, text, bold in sorted(fragments, key=lambda fragment: fragment[0]):
-            column = round((x - left) / page_width * (PDF_LAYOUT_COLUMNS - 1))
-            column = max(0, min(PDF_LAYOUT_COLUMNS - 1, column))
-            for line_offset, line in enumerate(
-                wrap_text(text, PDF_LAYOUT_COLUMNS - column)
-            ):
-                spans.append(
-                    PdfTextSpan(
-                        row=max(0, min(PDF_LAYOUT_ROWS - 1, row + line_offset)),
-                        column=column,
-                        text=line,
-                        emphasis=bold or size >= typical_size * 1.25,
-                    )
-                )
-    return spans
 
 
 class ExerciseCatalogTui:
@@ -434,280 +270,67 @@ class ExerciseCatalogTui:
         actions.extend((("chat", "Chat do exercício"), ("back", "Voltar ao catálogo")))
         return actions
 
-    @staticmethod
-    def fetch_pdf_pages(url: str) -> list[list[PdfTextSpan]]:
+    def open_pdf_original(self, screen: Any) -> None:
+        assert self.detail is not None
+        url = self.detail.get("pdf_url", "")
+        error = ""
         try:
             parsed = urlsplit(url)
-            parsed.port
-        except ValueError as error:
-            raise ValueError("O link do PDF não é uma URL HTTPS válida.") from error
-        if (
-            len(url) > 2048
-            or parsed.scheme != "https"
-            or not parsed.hostname
-            or parsed.username is not None
-            or parsed.password is not None
-            or any(char.isspace() for char in url)
-        ):
-            raise ValueError("O link do PDF não é uma URL HTTPS válida.")
-
-        drive_url = _drive_download_url(url)
-        request_url = drive_url or url
-        opener = build_opener(HTTPCookieProcessor(http.cookiejar.CookieJar()))
-        request = Request(request_url, headers={"User-Agent": "SIMPLE PDF reader"})
-        with opener.open(request, timeout=PDF_DOWNLOAD_TIMEOUT_SECONDS) as response:
-            try:
-                final_url = urlsplit(response.geturl())
-                final_url.port
-            except ValueError as error:
-                raise ValueError(
-                    "O servidor redirecionou para um endereço inseguro."
-                ) from error
+            _ = parsed.port
             if (
-                final_url.scheme != "https"
-                or not final_url.hostname
-                or final_url.username is not None
-                or final_url.password is not None
-                or len(response.geturl()) > 2048
-                or any(char.isspace() for char in response.geturl())
+                len(url) > 2048
+                or parsed.scheme != "https"
+                or not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+                or any(char.isspace() for char in url)
             ):
-                raise ValueError("O servidor redirecionou para um endereço inseguro.")
-            if drive_url and not _is_google_download_host(final_url.hostname):
-                raise ValueError("O Google Drive redirecionou para um endereço inesperado.")
-            data = ExerciseCatalogTui._read_pdf_response(response)
-
-        if b"%PDF-" not in data[:1024] and drive_url:
-            confirmation_request = _drive_confirmation_request(data, response.geturl())
-            if confirmation_request is None:
-                raise ValueError(
-                    "O Google Drive não entregou o PDF. Verifique se o arquivo "
-                    "está compartilhado com acesso para qualquer pessoa com o link."
-                )
-            with opener.open(
-                confirmation_request, timeout=PDF_DOWNLOAD_TIMEOUT_SECONDS
-            ) as response:
-                try:
-                    final_url = urlsplit(response.geturl())
-                    final_url.port
-                except ValueError as error:
-                    raise ValueError(
-                        "O servidor redirecionou para um endereço inseguro."
-                    ) from error
-                if (
-                    final_url.scheme != "https"
-                    or not _is_google_download_host(final_url.hostname)
-                    or final_url.username is not None
-                    or final_url.password is not None
-                ):
-                    raise ValueError(
-                        "O servidor redirecionou para um endereço inseguro."
-                    )
-                data = ExerciseCatalogTui._read_pdf_response(response)
-
-        if b"%PDF-" not in data[:1024]:
-            if drive_url:
-                raise ValueError(
-                    "O Google Drive não entregou um PDF. Verifique as permissões "
-                    "de compartilhamento e se o arquivo não exige login."
-                )
-            raise ValueError("O endereço não retornou um arquivo PDF válido.")
-
-        try:
-            from pypdf import PdfReader
-            from pypdf.errors import PyPdfError
-        except ImportError as error:
-            raise RuntimeError(
-                "O leitor PDF requer a dependência pypdf. Instale os requisitos do projeto."
-            ) from error
-
-        previous_log_disable = logging.root.manager.disable
-        logging.disable(logging.WARNING)
-        try:
+                raise ValueError("O link do PDF não é uma URL HTTPS válida.")
+            curses.def_prog_mode()
+            curses.endwin()
             try:
-                reader = PdfReader(io.BytesIO(data), strict=False)
-                if reader.is_encrypted:
-                    raise ValueError("Este PDF é protegido por senha e não pode ser lido.")
-                if len(reader.pages) > PDF_MAX_PAGES:
-                    raise ValueError("O PDF excede o limite de 500 páginas.")
-                pages = [extract_pdf_layout(page) for page in reader.pages]
-            except PyPdfError as error:
-                raise ValueError(f"Não foi possível ler o PDF: {error}") from error
-            if not pages:
-                raise ValueError("O PDF não contém páginas.")
-            return pages
-        finally:
-            logging.disable(previous_log_disable)
+                opened = webbrowser.open(url, new=2)
+            finally:
+                curses.reset_prog_mode()
+                screen.refresh()
+            if not opened:
+                error = (
+                    "Não foi possível iniciar um navegador neste ambiente. "
+                    "O link original continua disponível nos detalhes do exercício."
+                )
+        except (OSError, ValueError, webbrowser.Error) as exception:
+            error = str(exception)
 
-    @staticmethod
-    def _read_pdf_response(response: Any) -> bytes:
-        content_length = response.headers.get("Content-Length")
-        if content_length:
-            try:
-                content_length_bytes = int(content_length)
-            except ValueError as error:
-                raise ValueError(
-                    "O servidor retornou um tamanho de arquivo inválido."
-                ) from error
-            if content_length_bytes > PDF_MAX_BYTES:
-                raise ValueError("O PDF excede o limite de 20 MB.")
-        data = bytearray()
-        while True:
-            chunk = response.read(min(65536, PDF_MAX_BYTES + 1 - len(data)))
-            if not chunk:
-                break
-            data.extend(chunk)
-            if len(data) > PDF_MAX_BYTES:
-                raise ValueError("O PDF excede o limite de 20 MB.")
-        return bytes(data)
-
-    def draw_pdf_page(
-        self,
-        screen: Any,
-        pages: list[list[PdfTextSpan]] | None = None,
-        page_index: int = 0,
-        scroll: int = 0,
-        error: str = "",
-    ) -> int:
-        self.height, self.width = screen.getmaxyx()
-        screen.erase()
-        panel_width = min(110, self.width - 2)
-        panel_height = min(30, self.height - 2)
-        if panel_width < 4 or panel_height < 5:
-            self.draw_text(screen, 0, 0, "Aumente o tamanho do terminal.", "warning")
-            screen.refresh()
-            return 0
-
-        left = (self.width - panel_width) // 2
-        top = (self.height - panel_height) // 2
-        page_count = len(pages or [])
-        title = (
-            f"PDF ORIGINAL · PÁGINA {page_index + 1}/{page_count}"
-            if pages
-            else "LEITOR DE PDF"
-        )
-        self.draw_frame(screen, top, left, panel_width, panel_height, title, "title")
-        body_width = panel_width - 4
-        body_height = panel_height - 4
         if error:
-            lines = wrap_text(error, body_width)
-            content_top = top + 2
-            content_height = body_height
-        else:
-            original_url = self.detail.get("pdf_url", "") if self.detail else ""
-            link_lines = wrap_text(f"PDF: {original_url}", body_width)
-            link_height = min(len(link_lines), max(1, body_height // 3))
-            for offset, line in enumerate(link_lines[:link_height]):
-                self.draw_text(
-                    screen, top + 1 + offset, left + 2, line, "selected", body_width
-                )
-            separator_y = top + 1 + link_height
-            try:
-                screen.hline(separator_y, left + 2, curses.ACS_HLINE, body_width)
-            except curses.error:
-                pass
-            if len(link_lines) > link_height:
-                self.draw_text(
-                    screen,
-                    separator_y,
-                    left + 2,
-                    "Link completo disponível nos detalhes do exercício.",
-                    "muted",
-                    body_width,
-                )
-                separator_y += 1
-            content_top = separator_y + 1
-            content_height = max(1, top + panel_height - 2 - content_top)
-            page_spans = (pages or [[]])[page_index]
-            if not page_spans:
-                page_spans = [
-                    PdfTextSpan(0, 0, "Esta página não contém texto extraível.")
-                ]
-            for span in page_spans:
-                visible_row = span.row - scroll
-                if 0 <= visible_row < content_height:
-                    self.draw_text(
-                        screen,
-                        content_top + visible_row,
-                        left + 2 + span.column,
-                        span.text,
-                        "title" if span.emphasis else "text",
-                        max(1, body_width - span.column),
-                    )
-            max_scroll = max(
-                0,
-                max(span.row for span in page_spans) - content_height + 1,
-            )
-            footer = (
-                "↑/↓ rolar · PgUp/PgDn rolar mais · ←/→ página anterior/próxima · Esc voltar"
-            )
+            self.height, self.width = screen.getmaxyx()
+            screen.erase()
             self.draw_text(
                 screen,
-                top + panel_height - 2,
-                left + 2,
-                footer,
+                max(0, self.height // 2 - 2),
+                2,
+                "Não foi possível abrir o PDF original.",
+                "warning",
+                self.width - 4,
+            )
+            for index, line in enumerate(wrap_text(error, max(1, self.width - 4))):
+                self.draw_text(
+                    screen,
+                    max(0, self.height // 2 - 1 + index),
+                    2,
+                    line,
+                    "text",
+                    self.width - 4,
+                )
+            self.draw_text(
+                screen,
+                self.height - 2,
+                2,
+                "Pressione qualquer tecla para voltar",
                 "muted",
-                body_width,
+                self.width - 4,
             )
             screen.refresh()
-            return max_scroll
-        max_scroll = max(0, len(lines) - content_height)
-        scroll = min(max(0, scroll), max_scroll)
-        for offset, line in enumerate(lines[scroll : scroll + content_height]):
-            self.draw_text(screen, content_top + offset, left + 2, line, "text", body_width)
-        footer = (
-            "Pressione qualquer tecla para voltar"
-            if error
-            else "↑/↓ rolar · PgUp/PgDn rolar mais · ←/→ página anterior/próxima · Esc voltar"
-        )
-        self.draw_text(screen, top + panel_height - 2, left + 2, footer, "muted", body_width)
-        screen.refresh()
-        return max_scroll
-
-    def read_pdf(self, screen: Any) -> None:
-        assert self.detail is not None
-        if not self.detail.get("pdf_url"):
-            self.draw_pdf_page(
-                screen,
-                error=(
-                    "Este exercício ainda não tem PDF cadastrado. "
-                    "Peça a um administrador para adicionar a URL HTTPS em "
-                    "Administração > Exercícios > Gerenciar exercício > "
-                    "PDF original."
-                ),
-            )
             screen.get_wch()
-            return
-        screen.erase()
-        self.draw_text(screen, 1, 2, "Baixando e preparando o PDF...", "muted")
-        screen.refresh()
-        try:
-            pages = self.fetch_pdf_pages(self.detail["pdf_url"])
-        except (HTTPException, OSError, RuntimeError, ValueError, URLError) as error:
-            self.draw_pdf_page(screen, error=str(error))
-            screen.get_wch()
-            return
-
-        page_index = 0
-        scroll = 0
-        while True:
-            max_scroll = self.draw_pdf_page(screen, pages, page_index, scroll)
-            key = screen.get_wch()
-            if key in ("\x1b", 27):
-                return
-            if key in (curses.KEY_UP,):
-                scroll = max(0, scroll - 1)
-            elif key in (curses.KEY_DOWN,):
-                scroll = min(max_scroll, scroll + 1)
-            elif key == curses.KEY_PPAGE:
-                scroll = max(0, scroll - max(1, (self.height - 6) // 2))
-            elif key == curses.KEY_NPAGE:
-                scroll = min(max_scroll, scroll + max(1, (self.height - 6) // 2))
-            elif key in (curses.KEY_LEFT,):
-                page_index = max(0, page_index - 1)
-                scroll = 0
-            elif key in (curses.KEY_RIGHT, "\n", "\r", curses.KEY_ENTER):
-                page_index = min(len(pages) - 1, page_index + 1)
-                scroll = 0
 
     def draw_header(self, screen: Any, top: int, left: int, width: int) -> None:
         self.draw_text(
@@ -1292,7 +915,7 @@ class ExerciseCatalogTui:
                         self.form_error = ""
                         self.form_open = True
                     elif action == "pdf":
-                        self.read_pdf(screen)
+                        self.open_pdf_original(screen)
                     else:
                         self.choose(action)
                         return

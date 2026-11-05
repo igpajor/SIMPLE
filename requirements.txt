@@ -1,2 +1,0 @@
-pypdf>=4.0,<7.0
-fonttools>=4.0

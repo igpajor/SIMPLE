@@ -66,20 +66,11 @@ Unix.
 - Bash
 - SQLite (`sqlite3`) e OpenSSL (`openssl`)
 - Python 3.9+ para os modos Broker e Proxy
-- `pypdf` para leitura de texto dos PDFs no catálogo de exercícios
 - Gum 2.0+ opcional, para entradas e confirmações aprimoradas
 
-No Ubuntu, instale as dependências no mesmo Python usado pelo SIMPLE. `fonttools`
-ajuda o `pypdf` a interpretar corretamente fontes incorporadas em alguns PDFs:
-
-```bash
-sudo apt update
-sudo apt install -y python3-pip python3-fonttools
-sudo /usr/bin/python3 -m pip install -r /opt/simple/requirements.txt
-```
-
-O catálogo também mantém visível o link do PDF original; a leitura no terminal
-extrai texto e não preserva diagramação nem imagens.
+No catálogo, a ação **Ler PDF original** abre o link HTTPS no navegador padrão
+do ambiente em que o SIMPLE está sendo executado. Em ambientes remotos sem
+navegador gráfico, o link continua visível nos detalhes do exercício.
 
 ### Executar
 
