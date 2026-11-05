@@ -111,6 +111,7 @@ METHOD_FIELDS = {
     "profile.get": ("token",),
     "profile.update": ("token", "display_name", "github_username", "bio"),
     "catalog.list": ("token",),
+    "catalog.dashboard": ("token",),
     "catalog.get": ("token", "exercise_code"),
     "submissions.requirements": ("token", "exercise_code"),
     "submissions.create": ("token", "exercise_code", "commit_url", "delivery_directory"),
@@ -2139,6 +2140,40 @@ class Broker:
                     """
                 ).fetchall()
                 return {"ok": True, "exercises": [dict(item) for item in exercises]}
+
+            if method == "catalog.dashboard":
+                points = self._point_balance(connection, user_id)
+                exercises = connection.execute(
+                    """
+                    SELECT e.code, e.name, e.description, e.statement, e.example,
+                           COALESCE(e.delivery_directory, '') AS delivery_directory,
+                           COALESCE(e.delivery_files, '') AS delivery_files,
+                           COALESCE(e.allowed_functions, '') AS allowed_functions,
+                           e.terminal_model, e.hints,
+                           COALESCE((
+                               SELECT s.status
+                               FROM submissions s
+                               WHERE s.user_id = ? AND s.exercise_id = e.id
+                               ORDER BY s.id DESC
+                               LIMIT 1
+                           ), '') AS submission_status
+                    FROM exercises e
+                    WHERE e.status = 'available'
+                    ORDER BY e.code
+                    """,
+                    (user_id,),
+                ).fetchall()
+                items = []
+                for row in exercises:
+                    exercise = dict(row)
+                    submission_status = exercise.pop("submission_status")
+                    exercise["status"] = (
+                        submission_status
+                        if submission_status in {"pending", "approved"}
+                        else "available" if points > 0 else "no_points"
+                    )
+                    items.append(exercise)
+                return {"ok": True, "points": points, "exercises": items}
 
             if method == "catalog.get":
                 code = self._text(request["exercise_code"], "Código", 64, False)

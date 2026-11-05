@@ -143,11 +143,164 @@ exercise_render_structured() {
   fi
 }
 
+exercise_catalog_tui() {
+  local filter="all"
+  local query=""
+  local selected_code=""
+  local response
+  local rows
+  local points
+  local config
+  local result
+  local status
+  local action
+  local code
+  local returned_filter
+  local returned_query
+  local returned_code
+  local tui_path
+
+  tui_path="$SCRIPT_DIR/modules/exercise_catalog_tui.py"
+  while true; do
+    if [[ "${BROKER_MODE:-0}" == "1" ]]; then
+      response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
+        broker_request catalog.dashboard token) || return 1
+      if ! broker_check_response "$response"; then
+        ui_pause
+        return 1
+      fi
+      config=$(printf '%s' "$response" | python3 -c '
+import json
+import sys
+
+response = json.load(sys.stdin)
+items = response.get("exercises")
+points = response.get("points")
+if not isinstance(items, list) or type(points) is not int or points < 0:
+    raise SystemExit("Resposta do catálogo inválida")
+required = (
+    "code", "name", "description", "statement", "example",
+    "delivery_directory", "delivery_files", "allowed_functions",
+    "terminal_model", "hints", "status",
+)
+for item in items:
+    if not isinstance(item, dict) or any(
+        not isinstance(item.get(field), str) for field in required
+    ):
+        raise SystemExit("Dados de exercício inválidos")
+print(json.dumps({
+    "username": sys.argv[1],
+    "points": points,
+    "items": items,
+    "filter": sys.argv[2],
+    "query": sys.argv[3],
+    "selected_code": sys.argv[4],
+}, ensure_ascii=False))
+' "$CURRENT_USERNAME" "$filter" "$query" "$selected_code") || return 1
+    else
+      points=$(points_balance "$CURRENT_USER_ID") || return 1
+      rows=$(db_query "
+        SELECT hex(e.code) || '|' || hex(e.name) || '|' ||
+               hex(e.description) || '|' || hex(COALESCE(e.statement, '')) || '|' ||
+               hex(COALESCE(e.example, '')) || '|' ||
+               hex(COALESCE(e.delivery_directory, '')) || '|' ||
+               hex(COALESCE(e.delivery_files, '')) || '|' ||
+               hex(COALESCE(e.allowed_functions, '')) || '|' ||
+               hex(COALESCE(e.terminal_model, '')) || '|' ||
+               hex(COALESCE(e.hints, '')) || '|' ||
+               COALESCE((
+                 SELECT s.status FROM submissions s
+                 WHERE s.user_id = $CURRENT_USER_ID AND s.exercise_id = e.id
+                 ORDER BY s.id DESC LIMIT 1
+               ), '')
+        FROM exercises e
+        WHERE e.status = 'available'
+        ORDER BY e.code;
+      ") || return 1
+      config=$(printf '%s' "$rows" | python3 -c '
+import json
+import sys
+
+username, points, filter_name, query, selected_code = sys.argv[1:]
+items = []
+for line in sys.stdin:
+    fields = line.rstrip("\n").split("|")
+    if len(fields) != 11:
+        raise SystemExit("Registro do catálogo inválido")
+    values = [bytes.fromhex(value).decode("utf-8") for value in fields[:10]]
+    submission_status = fields[10]
+    status = (
+        submission_status
+        if submission_status in {"pending", "approved"}
+        else "available" if int(points) > 0 else "no_points"
+    )
+    items.append(dict(zip((
+        "code", "name", "description", "statement", "example",
+        "delivery_directory", "delivery_files", "allowed_functions",
+        "terminal_model", "hints",
+    ), values), status=status))
+print(json.dumps({
+    "username": username,
+    "points": int(points),
+    "items": items,
+    "filter": filter_name,
+    "query": query,
+    "selected_code": selected_code,
+}, ensure_ascii=False))
+' "$CURRENT_USERNAME" "$points" "$filter" "$query" "$selected_code") || return 1
+    fi
+
+    exec 4>&1
+    if result=$(
+      EXERCISE_CATALOG_CONFIG="$config" \
+        EXERCISE_CATALOG_RESULT_FD=3 \
+        python3 "$tui_path" 3>&1 1>&4
+    ); then
+      exec 4>&-
+    else
+      status=$?
+      exec 4>&-
+      return "$status"
+    fi
+    IFS=$'\t' read -r action code returned_filter returned_query returned_code <<<"$result"
+    [[ -n "$returned_filter" ]] && filter="$returned_filter"
+    query="$returned_query"
+    [[ -n "$returned_code" ]] && selected_code="$returned_code"
+
+    case "$action" in
+    back)
+      return 0
+      ;;
+    submit)
+      [[ -n "$code" ]] || return 1
+      exercise_submit_prompt "$code" || return 1
+      ;;
+    chat)
+      [[ -n "$code" ]] || return 1
+      # shellcheck disable=SC2034 # Consumed by chat_menu in the sourced chat module.
+      CHAT_INITIAL_CHANNEL="exercise:$code"
+      # shellcheck disable=SC2034
+      CHAT_INITIAL_ROOM_NAME="SALA · $code"
+      chat_menu || ui_error "Não foi possível acessar a sala deste exercício."
+      ;;
+    *)
+      ui_error "A tela do catálogo retornou uma ação inválida."
+      return 1
+      ;;
+    esac
+  done
+}
+
 exercises_menu() {
   local escolha
   local exercises
   local -a exercise_list
   local -a menu_options
+
+  if ui_home_tui_available; then
+    exercise_catalog_tui
+    return $?
+  fi
 
   if [[ "${BROKER_MODE:-0}" == "1" ]]; then
     broker_catalog_menu

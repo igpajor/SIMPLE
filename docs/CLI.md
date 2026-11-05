@@ -138,6 +138,7 @@ O SIMPLE roda inteiramente no terminal, sem dependência de interface gráfica. 
 
 - **Login em terminal interativo com Python `curses`**: tela responsiva para entrar ou criar conta, com navegação pelo teclado e senhas mascaradas. As regras de autenticação permanecem no Bash.
 - **Tela inicial interativa**: em TTYs com `curses`, a home é centralizada e responsiva, cresce com a janela até 110 colunas por 32 linhas como o chat, e distribui as opções pelo espaço vertical disponível. Exibe resumo e notificações, aceita navegação por setas/Enter e mantém os atalhos numéricos. As ações seguem os fluxos Bash existentes.
+- **Catálogo de exercícios interativo**: em TTYs com `curses`, permite navegar com setas/Enter, filtrar por situação e buscar por código ou nome. Os detalhes mantêm a entrega e o chat disponíveis conforme o estado do exercício, e a tela preserva o filtro e a busca ao voltar dessas ações.
 - **Sem TTY, sem suporte a `curses` ou com `TERM=dumb`**: login e home usam os fluxos Bash existentes; isso também preserva a entrada via stdin para testes e automação.
 - **Chat interativo**: usa Python `curses` quando disponível, com layout centralizado e responsivo, identificação da conta, resumo do servidor e notificações sem prévias de mensagens. `F2` abre a DM ou sala da citação não lida mais recente; as demais telas continuam em Bash.
 - **Navegação principal**: as telas `curses` aceitam setas e Enter, ou seleção direta pelo número; menus Bash exibem opções numeradas e confirmam a escolha com Enter.

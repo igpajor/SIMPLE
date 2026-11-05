@@ -190,6 +190,62 @@ class BrokerTests(unittest.TestCase):
         self.assertIn("Crie todos esses arquivos e diretórios", exercise["exercise"]["statement"])
         self.assertEqual("ex02/", exercise["exercise"]["delivery_directory"])
 
+    def test_catalog_dashboard_returns_details_and_authenticated_progress(self) -> None:
+        user = self.create_user("catalog-dashboard")
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            exercise = connection.execute(
+                """
+                INSERT INTO exercises (
+                    code, name, description, statement, example,
+                    delivery_directory, delivery_files, allowed_functions,
+                    terminal_model, hints
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "CAT-01",
+                    "Exercício de catálogo",
+                    "Descrição completa",
+                    "Missão completa",
+                    "Exemplo",
+                    "ex00",
+                    "main.sh",
+                    "echo",
+                    "$ ./main.sh",
+                    "Dica",
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO submissions (user_id, exercise_id, content)
+                VALUES (?, ?, ?)
+                """,
+                (user["user_id"], exercise.lastrowid, "referência de teste"),
+            )
+
+        dashboard = self.call(
+            {"method": "catalog.dashboard", "token": user["token"]}
+        )
+        self.assertTrue(dashboard["ok"], dashboard)
+        item = next(
+            exercise
+            for exercise in dashboard["exercises"]
+            if exercise["code"] == "CAT-01"
+        )
+        self.assertEqual("pending", item["status"])
+        self.assertEqual("Descrição completa", item["description"])
+        self.assertEqual("Missão completa", item["statement"])
+        self.assertEqual("Dica", item["hints"])
+        self.assertEqual(0, dashboard["points"])
+        self.assertFalse(
+            self.call(
+                {
+                    "method": "catalog.dashboard",
+                    "token": user["token"],
+                    "user_id": 1,
+                }
+            )["ok"]
+        )
+
     def test_chat_validation_history_rate_limit_and_presence(self) -> None:
         first_user = self.create_user("chat-first")
         second_user = self.create_user("chat-second")

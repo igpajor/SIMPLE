@@ -105,6 +105,12 @@ class ProxyTests(unittest.TestCase):
         )
         self.assertTrue(login["ok"], login)
 
+        catalog = self.proxy_call(
+            {"method": "catalog.dashboard", "token": login["token"]}
+        )
+        self.assertTrue(catalog["ok"], catalog)
+        self.assertGreater(len(catalog["exercises"]), 0)
+
         dashboard = self.proxy_call(
             {"method": "chat.dashboard", "token": login["token"]}
         )
