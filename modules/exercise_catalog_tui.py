@@ -91,6 +91,7 @@ class ExerciseCatalogTui:
         self.form_focus = 0
         self.commit_url = ""
         self.delivery_directory = ""
+        self.form_cursor = 0
         self.form_error = ""
         self.width = 80
         self.height = 24
@@ -157,18 +158,20 @@ class ExerciseCatalogTui:
         width: int,
         height: int,
         title: str = "",
+        color: str = "text",
     ) -> None:
         right = left + width - 1
         bottom = top + height - 1
+        attr = self.colors.get(color, curses.A_NORMAL)
         try:
-            screen.addch(top, left, curses.ACS_ULCORNER)
-            screen.addch(top, right, curses.ACS_URCORNER)
-            screen.addch(bottom, left, curses.ACS_LLCORNER)
-            screen.addch(bottom, right, curses.ACS_LRCORNER)
-            screen.hline(top, left + 1, curses.ACS_HLINE, width - 2)
-            screen.hline(bottom, left + 1, curses.ACS_HLINE, width - 2)
-            screen.vline(top + 1, left, curses.ACS_VLINE, height - 2)
-            screen.vline(top + 1, right, curses.ACS_VLINE, height - 2)
+            screen.addch(top, left, curses.ACS_ULCORNER, attr)
+            screen.addch(top, right, curses.ACS_URCORNER, attr)
+            screen.addch(bottom, left, curses.ACS_LLCORNER, attr)
+            screen.addch(bottom, right, curses.ACS_LRCORNER, attr)
+            screen.hline(top, left + 1, curses.ACS_HLINE, width - 2, attr)
+            screen.hline(bottom, left + 1, curses.ACS_HLINE, width - 2, attr)
+            screen.vline(top + 1, left, curses.ACS_VLINE, height - 2, attr)
+            screen.vline(top + 1, right, curses.ACS_VLINE, height - 2, attr)
         except curses.error:
             pass
         if title:
@@ -218,7 +221,7 @@ class ExerciseCatalogTui:
 
     def catalog_visible_height(self) -> int:
         panel_height = min(32, self.height - 2)
-        return max(1, (panel_height - 12) // 3)
+        return max(1, panel_height - 14)
 
     def open_detail(self, item: dict[str, Any]) -> None:
         self.detail = item
@@ -371,7 +374,7 @@ class ExerciseCatalogTui:
             width - 4,
         )
         body_top = top + 5
-        body_bottom = bottom - 5
+        body_bottom = bottom - 10
         body_height = body_bottom - body_top + 1
         body_left = left + 2
         body_width = width - 4
@@ -481,14 +484,35 @@ class ExerciseCatalogTui:
             inner_width,
             4,
             "LINK DO COMMIT GITHUB",
+            "selected" if self.form_focus == 0 else "text",
         )
         url_attr = "selected" if self.form_focus == 0 else "text"
+        url_max_chars = max(1, inner_width - 4)
+        url_start = (
+            max(0, self.form_cursor - url_max_chars + 1)
+            if self.form_focus == 0
+            else max(0, len(self.commit_url) - url_max_chars)
+        )
+        visible_url = self.commit_url[url_start : url_start + url_max_chars]
         self.draw_text(
             screen,
             url_top + 1,
             inner_left + 2,
-            self.commit_url or "https://github.com/usuario/repositorio/commit/SHA",
+            visible_url
+            or (
+                ""
+                if self.form_focus == 0
+                else "https://github.com/usuario/repositorio/commit/SHA"
+            ),
             url_attr if self.commit_url else "muted",
+            inner_width - 4,
+        )
+        self.draw_text(
+            screen,
+            url_top + 2,
+            inner_left + 2,
+            "Digite ou cole o link direto do commit.",
+            "muted",
             inner_width - 4,
         )
         directory_top = url_top + 5
@@ -499,14 +523,37 @@ class ExerciseCatalogTui:
             inner_width,
             4,
             "DIRETÓRIO DA ENTREGA",
+            "selected" if self.form_focus == 1 else "text",
         )
         directory_attr = "selected" if self.form_focus == 1 else "text"
+        directory_max_chars = max(1, inner_width - 4)
+        directory_start = (
+            max(0, self.form_cursor - directory_max_chars + 1)
+            if self.form_focus == 1
+            else max(0, len(self.delivery_directory) - directory_max_chars)
+        )
+        visible_directory = self.delivery_directory[
+            directory_start : directory_start + directory_max_chars
+        ]
         self.draw_text(
             screen,
             directory_top + 1,
             inner_left + 2,
-            self.delivery_directory or "ex00 (ou . se estiver na raiz)",
+            visible_directory
+            or (
+                ""
+                if self.form_focus == 1
+                else "ex00 (ou . se estiver na raiz)"
+            ),
             directory_attr if self.delivery_directory else "muted",
+            inner_width - 4,
+        )
+        self.draw_text(
+            screen,
+            directory_top + 2,
+            inner_left + 2,
+            "Informe a pasta dos arquivos; use . para a raiz.",
+            "muted",
             inner_width - 4,
         )
         self.draw_text(
@@ -572,22 +619,84 @@ class ExerciseCatalogTui:
                 "warning",
                 width - 4,
             )
+        if self.form_focus < 2:
+            field_value = (
+                self.commit_url
+                if self.form_focus == 0
+                else self.delivery_directory
+            )
+            field_x = inner_left + 2
+            field_y = url_top + 1 if self.form_focus == 0 else directory_top + 1
+            max_chars = max(1, inner_width - 4)
+            cursor = min(self.form_cursor, len(field_value))
+            visible_start = max(0, cursor - max_chars + 1)
+            visible_text = field_value[visible_start : visible_start + max_chars]
+            cursor_x = field_x + sum(
+                char_width(char) for char in visible_text[: cursor - visible_start]
+            )
+            cursor_x = min(inner_left + inner_width - 2, cursor_x)
+            try:
+                curses.curs_set(1)
+                screen.move(field_y, cursor_x)
+            except curses.error:
+                pass
 
     def edit_form_field(self, key: Any) -> None:
         field_name = "commit_url" if self.form_focus == 0 else "delivery_directory"
         current = getattr(self, field_name)
         if key in (curses.KEY_BACKSPACE, "\x7f", "\b"):
-            setattr(self, field_name, current[:-1])
+            if self.form_cursor:
+                setattr(
+                    self,
+                    field_name,
+                    current[: self.form_cursor - 1] + current[self.form_cursor :],
+                )
+                self.form_cursor -= 1
         elif key == curses.KEY_DC:
+            setattr(
+                self,
+                field_name,
+                current[: self.form_cursor] + current[self.form_cursor + 1 :],
+            )
+        elif key == curses.KEY_LEFT:
+            self.form_cursor = max(0, self.form_cursor - 1)
+        elif key == curses.KEY_RIGHT:
+            self.form_cursor = min(len(current), self.form_cursor + 1)
+        elif key == curses.KEY_HOME:
+            self.form_cursor = 0
+        elif key == curses.KEY_END:
+            self.form_cursor = len(current)
+        elif key == "\x15":
             setattr(self, field_name, "")
+            self.form_cursor = 0
         elif isinstance(key, str) and key.isprintable() and key not in "\t\r\n":
-            setattr(self, field_name, current + key)
+            max_length = 2048 if field_name == "commit_url" else 256
+            if len(current) >= max_length:
+                self.form_error = "O campo atingiu o limite de caracteres."
+                return
+            setattr(
+                self,
+                field_name,
+                current[: self.form_cursor] + key + current[self.form_cursor :],
+            )
+            self.form_cursor += len(key)
+
+    def move_form_focus(self, step: int) -> None:
+        self.form_focus = (self.form_focus + step) % 3
+        if self.form_focus == 0:
+            self.form_cursor = len(self.commit_url)
+        elif self.form_focus == 1:
+            self.form_cursor = len(self.delivery_directory)
 
     def draw(self, screen: Any) -> None:
         self.height, self.width = screen.getmaxyx()
         screen.erase()
         minimum_height = 27 if self.detail is not None else 18
         if self.width < 40 or self.height < minimum_height:
+            try:
+                curses.curs_set(0)
+            except curses.error:
+                pass
             self.draw_text(screen, 0, 0, "Aumente a janela para abrir o catálogo.", "warning")
             self.draw_text(screen, self.height - 1, 0, "Esc voltar", "muted")
             screen.refresh()
@@ -600,8 +709,16 @@ class ExerciseCatalogTui:
         if self.form_open:
             self.draw_form(screen, top, left, panel_width, panel_height)
         elif self.detail is None:
+            try:
+                curses.curs_set(0)
+            except curses.error:
+                pass
             self.draw_catalog(screen, top, left, panel_width, panel_height)
         else:
+            try:
+                curses.curs_set(0)
+            except curses.error:
+                pass
             self.draw_detail(screen, top, left, panel_width, panel_height)
         screen.refresh()
 
@@ -639,11 +756,12 @@ class ExerciseCatalogTui:
                     self.form_open = False
                     self.form_error = ""
                 elif key in ("\t", curses.KEY_DOWN, curses.KEY_UP):
-                    self.form_focus = (self.form_focus + 1) % 3
+                    step = -1 if key == curses.KEY_UP else 1
+                    self.move_form_focus(step)
                     self.form_error = ""
                 elif key in ("\n", "\r", curses.KEY_ENTER):
                     if self.form_focus < 2:
-                        self.form_focus += 1
+                        self.move_form_focus(1)
                     elif self.commit_url and self.delivery_directory:
                         self.choose("submit")
                         return

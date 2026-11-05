@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import curses
 import fcntl
 import json
 import os
@@ -11,6 +12,7 @@ import termios
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from modules.exercise_catalog_tui import ExerciseCatalogTui
 
@@ -84,6 +86,103 @@ class ExerciseCatalogTuiTests(unittest.TestCase):
             [action for action, _label in tui.actions()],
         )
 
+    def test_catalog_entries_stay_inside_the_inner_frame(self) -> None:
+        tui = ExerciseCatalogTui(
+            {
+                "username": "student",
+                "points": 1,
+                "items": [
+                    catalog_item(f"EX-{index:02}", f"Exercício {index}", "available")
+                    for index in range(50)
+                ],
+            }
+        )
+        tui.selection = len(tui.items) - 1
+        tui.selected_code = tui.items[-1]["code"]
+        screen = Mock()
+        screen.getmaxyx.return_value = (40, 140)
+
+        with patch.multiple(
+            "modules.exercise_catalog_tui.curses",
+            create=True,
+            ACS_ULCORNER=0,
+            ACS_URCORNER=0,
+            ACS_LLCORNER=0,
+            ACS_LRCORNER=0,
+            ACS_HLINE=0,
+            ACS_VLINE=0,
+        ):
+            tui.draw(screen)
+
+        frame_top = next(
+            call.args[0]
+            for call in screen.hline.call_args_list
+            if call.args[3] == 104
+        )
+        list_top = frame_top
+        list_bottom = frame_top + 21
+        exercise_rows = [
+            call.args[0]
+            for call in screen.addstr.call_args_list
+            if len(call.args) > 2 and "EX-" in call.args[2]
+        ]
+        self.assertTrue(exercise_rows)
+        self.assertGreaterEqual(min(exercise_rows), list_top + 1)
+        self.assertLessEqual(max(exercise_rows), list_bottom - 1)
+
+    def test_detail_actions_are_below_the_details_frame(self) -> None:
+        tui = ExerciseCatalogTui(
+            {
+                "username": "student",
+                "points": 1,
+                "items": [catalog_item("EX-01", "Exercício", "available", "Missão")],
+            }
+        )
+        tui.open_detail(tui.items[0])
+        screen = Mock()
+
+        with patch.multiple(
+            "modules.exercise_catalog_tui.curses",
+            create=True,
+            ACS_ULCORNER=0,
+            ACS_URCORNER=0,
+            ACS_LLCORNER=0,
+            ACS_LRCORNER=0,
+            ACS_HLINE=0,
+            ACS_VLINE=0,
+        ):
+            tui.height = 32
+            tui.width = 100
+            tui.draw_detail(screen, 0, 0, 100, 32)
+
+        actions_row = next(
+            call.args[0]
+            for call in screen.addstr.call_args_list
+            if len(call.args) > 2 and "AÇÕES" in call.args[2]
+        )
+        detail_bottom = max(
+            call.args[0]
+            for call in screen.hline.call_args_list
+            if call.args[3] == 94
+        )
+        self.assertGreater(actions_row, detail_bottom)
+
+    def test_delivery_fields_accept_text_and_cycle_focus(self) -> None:
+        tui = ExerciseCatalogTui({"username": "student", "points": 1, "items": []})
+        for character in "https://github.com/user/repo/commit/abcdef0":
+            tui.edit_form_field(character)
+        tui.move_form_focus(1)
+        for character in "ex00":
+            tui.edit_form_field(character)
+        self.assertEqual("ex00", tui.delivery_directory)
+        tui.move_form_focus(-1)
+        tui.edit_form_field(curses.KEY_END)
+        tui.edit_form_field(curses.KEY_BACKSPACE)
+        self.assertEqual("https://github.com/user/repo/commit/abcdef", tui.commit_url)
+        tui.move_form_focus(1)
+        tui.move_form_focus(1)
+        self.assertEqual(2, tui.form_focus)
+
     def test_enter_on_catalog_then_details_returns_submit_action(self) -> None:
         master_fd, slave_fd = pty.openpty()
         fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
@@ -153,6 +252,7 @@ class ExerciseCatalogTuiTests(unittest.TestCase):
             self.assertNotIn(b"1-9 abrir", output)
             os.write(master_fd, b"\r")
             read_until(b"DETALHES")
+            drain_output()
             self.assertIn("Descrição do exercício".encode("utf-8"), output)
             os.write(master_fd, b"\r")
             read_until(b"REGISTRAR ENTREGA")
