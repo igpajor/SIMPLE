@@ -48,7 +48,7 @@ class LoginTui:
             ("label", curses.COLOR_WHITE, curses.A_NORMAL),
             ("hint", curses.COLOR_CYAN, curses.A_DIM),
             ("error", curses.COLOR_YELLOW, curses.A_BOLD),
-            ("placeholder", curses.COLOR_BLUE, curses.A_DIM),
+            ("placeholder", curses.COLOR_WHITE, curses.A_DIM),
         ]
         for index, (name, foreground, attributes) in enumerate(palette, start=1):
             try:
