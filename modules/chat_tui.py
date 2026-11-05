@@ -404,19 +404,29 @@ class ChatTui:
     def notification_hint(self) -> str:
         if not self.unread_rooms:
             return ""
+        if self.channel == "global":
+            room = next(
+                (
+                    unread
+                    for unread in self.unread_rooms
+                    if unread.get("kind") == "direct"
+                ),
+                None,
+            )
+            if room is not None and room.get("peer_username"):
+                username = safe_text(room["peer_username"])
+                count = room.get("unread_count", 1)
+                return f"+{count} DM [{username}] · F2 ou /dm {username}"
         room = next(
             (
                 unread
                 for unread in self.unread_rooms
-                if unread.get("kind") == "direct"
+                if unread.get("kind") != "direct"
             ),
-            self.unread_rooms[0],
+            None,
         )
-        preview = room.get("preview", {})
-        body = safe_text(preview.get("body", ""))
-        if room.get("kind") == "direct" and room.get("peer_username"):
-            username = safe_text(room["peer_username"])
-            return f"Nova DM de {username}: {body} · F2 ou /dm {username}"
+        if room is None:
+            return ""
         channel = safe_text(room.get("channel", "global"))
         count = room.get("unread_count", 0)
         return f"{count} nova(s) em {room.get('name', channel)} · /sala {channel}"

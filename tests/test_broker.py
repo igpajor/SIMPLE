@@ -940,11 +940,18 @@ class BrokerTests(unittest.TestCase):
             read_until(b"Senha > ")
             os.write(master_fd, b"secure-pass-123\r")
             read_until(b"[6] Chat global")
+            self.assertIn(b"[6] Chat global (2 online \xc2\xb7 +1 DM)", output)
+            self.assertNotIn("mensagem privada de teste".encode("utf-8"), output)
             read_until(b"OP\xc3\x87\xc3\x83O > ", after=b"[6] Chat global")
             os.write(master_fd, b"6\r")
             global_title = "SIMPLE · Chat global".encode("utf-8")
             read_until(global_title)
-            read_until(b"/dm chat-dm-peer", after=global_title)
+            dm_notification = "+1 DM [chat-dm-peer]".encode("utf-8")
+            read_until(dm_notification, after=global_title)
+            self.assertNotIn(
+                "mensagem privada de teste".encode("utf-8"),
+                output[output.find(global_title) :],
+            )
             os.write(master_fd, b"/dm chat-dm-peer\r")
             dm_title = "DM · chat-dm-peer".encode("utf-8")
             read_until(dm_title)

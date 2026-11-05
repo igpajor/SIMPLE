@@ -129,12 +129,13 @@ disponível no sistema (em algumas distribuições, pelo pacote `python3-curses`
 
 Por padrão, a atualização automática fica ativa com intervalo de dois segundos;
 use `CHAT_AUTO_REFRESH=0` para desativá-la ou `CHAT_REFRESH_SECONDS` para ajustar
-o intervalo. Mensagens não lidas em outras salas aparecem com um atalho; DMs
-mostram o remetente, F2 e o comando `/dm usuario` para abrir a conversa. A DM
-abre em uma janela sobre a sala atual, preservando histórico, rolagem e rascunho
-da sala ao fundo. Esc ou `/voltar` fecha a DM e retorna à sala anterior; `/sair`
-encerra o chat. Backspace e setas editam o texto, Page Up/Page Down navegam
-no histórico e Ctrl+C retorna ao menu. Em terminais sem suporte à tela curses,
+o intervalo. No topo do chat global, DMs não lidas são sinalizadas como
+`+N DM [usuario]`, sem exibir o conteúdo da mensagem; F2 ou `/dm usuario` abre
+a conversa. A DM abre em uma janela sobre a sala atual, preservando histórico,
+rolagem e rascunho da sala ao fundo. Esc ou `/voltar` fecha a DM e retorna à
+sala anterior; `/sair` encerra o chat. Backspace e setas editam o texto,
+Page Up/Page Down navegam no histórico e Ctrl+C retorna ao menu. Em terminais
+sem suporte à tela curses,
 há um leitor de linha alternativo, com atualização automática no modo
 interativo; sem TTY, o leitor não faz polling enquanto aguarda entrada.
 A tela carrega as últimas dez mensagens por padrão, oferece `/historico` para
@@ -143,10 +144,12 @@ persistidos em UTC são convertidos ao fuso configurado no cliente. Autoria
 própria e menções recebem destaque; um indicador temporário mostra quando outra
 pessoa está digitando na mesma sala.
 
-O menu principal mostra pessoas online, quantidade de mensagens não lidas,
-menções e prévia da última mensagem pendente. A leitura é persistida por conta
-e por sala. Mensagens anteriores à criação da conta não entram na contagem de
-não lidas.
+O menu principal mostra pessoas online, quantidade de mensagens não lidas e
+menções junto à opção do chat. DMs aparecem como `+N DM` nessa opção, sem
+exposição da prévia ou do conteúdo. No chat global, o nome do remetente aparece
+sem o corpo da mensagem; o conteúdo só aparece ao abrir a conversa privada. A
+leitura é persistida por conta e por sala. Mensagens anteriores à criação da
+conta não entram na contagem de não lidas.
 
 Mensagens têm até 500 caracteres, uma linha e sem caracteres de controle.
 Menções usam `@usuario`; há reações `👍`, `❤️`, `😂` e `+1`, denúncia de

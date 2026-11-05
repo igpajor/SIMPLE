@@ -119,7 +119,7 @@ class ChatTuiTests(unittest.TestCase):
         self.assertEqual([3], [message["id"] for message in tui.messages])
         self.assertEqual("rascunho privado", tui.dm_states["dm:7:8"]["input_text"])
 
-    def test_dm_notification_includes_command_to_open_conversation(self) -> None:
+    def test_dm_notification_is_private_to_global_chat_and_hides_message_body(self) -> None:
         tui = self.make_tui()
         tui.unread_rooms = [
             {
@@ -137,9 +137,15 @@ class ChatTuiTests(unittest.TestCase):
             },
         ]
         self.assertEqual(
-            "Nova DM de bob: olá · F2 ou /dm bob",
+            "+1 DM [bob] · F2 ou /dm bob",
             tui.notification_hint(),
         )
+        tui.channel = "help"
+        self.assertEqual(
+            "1 nova(s) em Chat global · /sala global",
+            tui.notification_hint(),
+        )
+        self.assertNotIn("olá", tui.notification_hint())
 
     def test_sync_notifies_new_incoming_dm_message(self) -> None:
         tui = self.make_tui()

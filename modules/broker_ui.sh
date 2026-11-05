@@ -1565,9 +1565,9 @@ broker_mode_menu() {
   local online_count="indisponível"
   local chat_status_response
   local chat_unread_count=0
+  local chat_dm_unread_count=0
+  local chat_other_unread_count=0
   local chat_mention_count=0
-  local chat_preview=""
-  local chat_preview_user=""
   local chat_label="Chat global"
   local chat_label_open=0
   local progress_label="Meu progresso"
@@ -1583,26 +1583,50 @@ broker_mode_menu() {
         chat_unread_count=0
       chat_mention_count=$(broker_response_field "$chat_status_response" mention_count) ||
         chat_mention_count=0
-      chat_preview=$(broker_response_nested_field \
-        "$chat_status_response" --allow-null preview body) ||
-        chat_preview=""
-      chat_preview_user=$(broker_response_nested_field \
-        "$chat_status_response" --allow-null preview username) ||
-        chat_preview_user=""
+      chat_dm_unread_count=$(printf '%s' "$chat_status_response" |
+        python3 -c '
+import json
+import sys
+rooms = json.load(sys.stdin).get("unread_rooms", [])
+if not isinstance(rooms, list):
+    raise SystemExit("Lista de notificações do chat inválida")
+print(sum(
+    int(room["unread_count"])
+    for room in rooms
+    if isinstance(room, dict) and room.get("kind") == "direct"
+))
+') || chat_dm_unread_count=0
     fi
+  fi
+  if [[ "$chat_unread_count" =~ ^[0-9]+$ &&
+    "$chat_dm_unread_count" =~ ^[0-9]+$ ]] &&
+    ((chat_unread_count >= chat_dm_unread_count)); then
+    chat_other_unread_count=$((chat_unread_count - chat_dm_unread_count))
   fi
   if [[ "$online_count" =~ ^[0-9]+$ ]]; then
     chat_label+=" ($online_count online"
     chat_label_open=1
   fi
-  if [[ "$chat_unread_count" =~ ^[0-9]+$ ]] && ((chat_unread_count > 0)); then
+  if ((chat_other_unread_count > 0)); then
     if ((chat_label_open)); then
       chat_label+=" · "
     else
       chat_label+=" ("
       chat_label_open=1
     fi
-    chat_label+="$chat_unread_count novas"
+    chat_label+="$chat_other_unread_count novas"
+  fi
+  if [[ "$chat_dm_unread_count" =~ ^[0-9]+$ ]] &&
+    ((chat_dm_unread_count > 0)); then
+    if ((chat_label_open)); then
+      chat_label+=" · "
+    else
+      chat_label+=" ("
+      chat_label_open=1
+    fi
+    chat_label+="+$chat_dm_unread_count DM"
+  fi
+  if ((chat_other_unread_count > 0 || chat_dm_unread_count > 0)); then
     if [[ "$chat_mention_count" =~ ^[0-9]+$ ]] && ((chat_mention_count > 0)); then
       chat_label+=", $chat_mention_count menções"
     fi
@@ -1616,12 +1640,6 @@ broker_mode_menu() {
   ui_screen_begin "INÍCIO"
   ui_home_intro "$CURRENT_USERNAME" || return 1
   ui_labeled_value "Online agora" "$online_count" "$(ui_width)"
-  if [[ -n "$chat_preview" ]]; then
-    ui_color_content
-    ui_wrap_text "Prévia do chat · $(ui_sanitize "$chat_preview_user"): $(ui_sanitize "$chat_preview")" \
-      "$(ui_width)" 2
-    ui_color_reset
-  fi
   if ((unread_notifications > 0)); then
     ui_warn "Você tem $unread_notifications atualização(ões) pendente(s). Confira Meu progresso."
   fi
