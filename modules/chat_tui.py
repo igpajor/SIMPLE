@@ -401,35 +401,20 @@ class ChatTui:
         except curses.error:
             pass
 
-    def notification_hint(self) -> str:
-        if not self.unread_rooms:
-            return ""
-        if self.channel == "global":
-            room = next(
-                (
-                    unread
-                    for unread in self.unread_rooms
-                    if unread.get("kind") == "direct"
-                ),
-                None,
+    def notifications(self) -> list[dict[str, Any]]:
+        return [
+            room
+            for room in self.unread_rooms
+            if isinstance(room, dict)
+            and (
+                room.get("kind") == "direct"
+                or (
+                    isinstance(room.get("mention_count"), int)
+                    and not isinstance(room.get("mention_count"), bool)
+                    and room["mention_count"] > 0
+                )
             )
-            if room is not None and room.get("peer_username"):
-                username = safe_text(room["peer_username"])
-                count = room.get("unread_count", 1)
-                return f"+{count} DM [{username}] · F2 ou /dm {username}"
-        room = next(
-            (
-                unread
-                for unread in self.unread_rooms
-                if unread.get("kind") != "direct"
-            ),
-            None,
-        )
-        if room is None:
-            return ""
-        channel = safe_text(room.get("channel", "global"))
-        count = room.get("unread_count", 0)
-        return f"{count} nova(s) em {room.get('name', channel)} · /sala {channel}"
+        ]
 
     def _draw_input(
         self, window: Any, y: int, x: int, available_width: int
@@ -464,68 +449,210 @@ class ChatTui:
         except curses.error:
             pass
 
+    def _draw_frame(
+        self,
+        screen: Any,
+        top: int,
+        left: int,
+        width: int,
+        height: int,
+        title: str = "",
+    ) -> None:
+        right = left + width - 1
+        bottom = top + height - 1
+        try:
+            screen.addch(top, left, curses.ACS_ULCORNER)
+            screen.addch(top, right, curses.ACS_URCORNER)
+            screen.addch(bottom, left, curses.ACS_LLCORNER)
+            screen.addch(bottom, right, curses.ACS_LRCORNER)
+            screen.hline(top, left + 1, curses.ACS_HLINE, width - 2)
+            screen.hline(bottom, left + 1, curses.ACS_HLINE, width - 2)
+            screen.vline(top + 1, left, curses.ACS_VLINE, height - 2)
+            screen.vline(top + 1, right, curses.ACS_VLINE, height - 2)
+        except curses.error:
+            pass
+        if title:
+            self.draw_text(screen, top, left + 2, f" {title} ", "title", width - 4)
+
     def _draw_room(self, screen: Any) -> None:
-        if self.height < 6 or self.width < 30:
+        if self.height < 18 or self.width < 40:
             self.draw_text(screen, 0, 0, "Aumente o terminal para usar o chat.", "warning")
             return
-        self.draw_text(screen, 0, 1, f"SIMPLE · {self.room_name}", "title")
-        online = ", ".join(
-            "você" if name == self.username else safe_text(name)
-            for name in self.online_users
+        panel_width = min(110, self.width - 2)
+        panel_height = min(32, self.height - 2)
+        left = (self.width - panel_width) // 2
+        top = (self.height - panel_height) // 2
+        right = left + panel_width - 1
+        bottom = top + panel_height - 1
+        content_left = left + 2
+        content_width = panel_width - 4
+        self._draw_frame(screen, top, left, panel_width, panel_height)
+
+        self.draw_text(
+            screen,
+            top + 1,
+            content_left,
+            f"SIMPLE · {self.room_name}",
+            "title",
+            content_width,
         )
-        online_line = (
-            f"Online ({len(self.online_users)}): {online}"
-            if online
-            else "Ninguém online."
+        role = "administrador" if self.is_admin else "participante"
+        self.draw_text(
+            screen,
+            top + 2,
+            content_left,
+            f"Conectado como {self.username} · {role}",
+            "dim",
+            content_width,
         )
-        self.draw_text(screen, 1, 1, online_line, "success")
-        notification = self.notification_hint()
-        if notification:
-            self.draw_text(screen, 2, 1, notification, "warning")
-        elif self.typing_users:
-            typing = ", ".join(safe_text(name) for name in self.typing_users)
-            self.draw_text(screen, 2, 1, f"Digitando: {typing}", "success")
-        elif self.pinned:
-            pinned = "Fixada: " + safe_text(self.pinned[0].get("body", ""))
-            self.draw_text(screen, 2, 1, pinned, "warning")
         try:
-            screen.hline(3, 0, curses.ACS_HLINE, self.width)
+            screen.hline(top + 3, content_left, curses.ACS_HLINE, content_width)
         except curses.error:
             pass
 
+        summary_top = top + 4
+        summary_height = 4
+        gap = 1
+        box_width = (content_width - gap) // 2
+        summary_left = content_left
+        notification_left = summary_left + box_width + gap
+        self._draw_frame(
+            screen, summary_top, summary_left, box_width, summary_height, "SERVIDOR"
+        )
+        self._draw_frame(
+            screen,
+            summary_top,
+            notification_left,
+            box_width,
+            summary_height,
+            f"NOTIFICAÇÕES · {len(self.notifications())}",
+        )
+        summary_text_width = box_width - 4
+        self.draw_text(
+            screen,
+            summary_top + 1,
+            summary_left + 2,
+            f"Online agora: {len(self.online_users)}",
+            "success",
+            summary_text_width,
+        )
+        if self.typing_users:
+            typing = ", ".join(safe_text(name) for name in self.typing_users)
+            server_detail = f"Digitando: {typing}"
+        else:
+            server_detail = f"Fixadas: {len(self.pinned)}"
+        self.draw_text(
+            screen,
+            summary_top + 2,
+            summary_left + 2,
+            server_detail,
+            "dim",
+            summary_text_width,
+        )
+
+        notification_items = self.notifications()
+        if not notification_items:
+            self.draw_text(
+                screen,
+                summary_top + 1,
+                notification_left + 2,
+                "Nenhuma nova notificação",
+                "dim",
+                summary_text_width,
+            )
+        else:
+            visible_notifications = (
+                notification_items[:1]
+                if len(notification_items) > 2
+                else notification_items
+            )
+            for index, notification in enumerate(visible_notifications):
+                if notification.get("kind") == "direct":
+                    peer = notification.get("peer_username")
+                    if not isinstance(peer, str) or not peer:
+                        peer = str(notification.get("name", "DM")).removeprefix("DM · ")
+                    count = notification.get("unread_count", 1)
+                    label = f"DM · {safe_text(peer)} ({count})"
+                else:
+                    name = safe_text(notification.get("name", "Sala"))
+                    count = notification.get("mention_count", 0)
+                    label = f"@ citação · {name} ({count})"
+                self.draw_text(
+                    screen,
+                    summary_top + 1 + index,
+                    notification_left + 2,
+                    label,
+                    "warning",
+                    summary_text_width,
+                )
+            if len(notification_items) > 2:
+                self.draw_text(
+                    screen,
+                    summary_top + 2,
+                    notification_left + 2,
+                    f"+{len(notification_items) - 1} outras · F2 abrir",
+                    "dim",
+                    summary_text_width,
+                )
+
         message_rows = self.all_display_rows()
-        pane_top = 4
-        pane_bottom = self.height - 3
-        pane_height = max(0, pane_bottom - pane_top)
+        message_top = summary_top + summary_height + 1
+        message_bottom = bottom - 4
+        message_height = message_bottom - message_top + 1
+        message_left = content_left
+        self._draw_frame(
+            screen,
+            message_top,
+            message_left,
+            content_width,
+            message_height,
+            self.room_name.upper(),
+        )
+        pane_top = message_top + 1
+        pane_height = max(0, message_height - 2)
         max_offset = max(0, len(message_rows) - pane_height)
         self.scroll_offset = min(self.scroll_offset, max_offset)
         end = len(message_rows) - self.scroll_offset
         start = max(0, end - pane_height)
         visible = message_rows[start:end]
         for index, (text, color) in enumerate(visible):
-            self.draw_text(screen, pane_top + index, 2, text, color)
+            self.draw_text(
+                screen,
+                pane_top + index,
+                message_left + 2,
+                text,
+                color,
+                content_width - 4,
+            )
         if self.scroll_offset:
             self.draw_text(
                 screen,
                 pane_top,
-                max(1, self.width - 17),
+                max(message_left + 2, right - 16),
                 "↑ histórico",
                 "dim",
                 16,
             )
 
-        input_y = self.height - 1
-        status_y = self.height - 2
-        self._draw_input(screen, input_y, 1, self.width - 3)
+        separator_y = bottom - 3
+        input_y = bottom - 2
+        status_y = bottom - 1
+        try:
+            screen.hline(separator_y, content_left, curses.ACS_HLINE, content_width)
+        except curses.error:
+            pass
+        self._draw_input(screen, input_y, content_left, content_width)
         if self.status and time.monotonic() < self.status_until:
-            self.draw_text(screen, status_y, 1, self.status, "warning")
+            self.draw_text(
+                screen, status_y, content_left, self.status, "warning", content_width
+            )
         else:
             hint = (
-                f"Autoatualização {self.refresh_seconds}s · /ajuda · Esc sai"
+                f"Atualiza {self.refresh_seconds}s · F2 notificação · /ajuda · Esc sai"
                 if self.auto_refresh
-                else "Enter vazio atualiza · /ajuda · Esc sai"
+                else "Enter atualiza · F2 notificação · /ajuda · Esc sai"
             )
-            self.draw_text(screen, status_y, 1, hint, "dim")
+            self.draw_text(screen, status_y, content_left, hint, "dim", content_width)
 
     def _draw_dm_window(self, screen: Any) -> None:
         if self.height < 12 or self.width < 48:
@@ -955,20 +1082,24 @@ class ChatTui:
                 return True
             return False
         if key == curses.KEY_F2:
-            direct = next(
-                (
-                    room
-                    for room in self.unread_rooms
-                    if room.get("kind") == "direct"
-                ),
-                None,
-            )
-            if direct is None:
-                self.set_status("Não há DMs não lidas.")
+            notification_items = self.notifications()
+            if not notification_items:
+                self.set_status("Não há notificações novas.")
             else:
-                self.open_dm(
-                    str(direct["channel"]), str(direct.get("name", "DM"))
-                )
+                notification = notification_items[0]
+                channel = str(notification.get("channel", ""))
+                if notification.get("kind") == "direct":
+                    self.open_dm(
+                        channel,
+                        str(notification.get("name", "DM")),
+                    )
+                elif channel:
+                    if self.dm_parent_state is not None:
+                        self.return_to_parent()
+                    self.reset_channel(
+                        channel,
+                        str(notification.get("name", channel)),
+                    )
             return True
         if key in (curses.KEY_PPAGE,):
             self.scroll_offset = min(

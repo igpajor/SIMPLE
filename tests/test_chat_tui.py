@@ -119,7 +119,7 @@ class ChatTuiTests(unittest.TestCase):
         self.assertEqual([3], [message["id"] for message in tui.messages])
         self.assertEqual("rascunho privado", tui.dm_states["dm:7:8"]["input_text"])
 
-    def test_dm_notification_is_private_to_global_chat_and_hides_message_body(self) -> None:
+    def test_notifications_show_only_unread_dms_and_mentions(self) -> None:
         tui = self.make_tui()
         tui.unread_rooms = [
             {
@@ -127,25 +127,107 @@ class ChatTuiTests(unittest.TestCase):
                 "channel": "global",
                 "name": "Chat global",
                 "unread_count": 1,
+                "mention_count": 1,
                 "preview": {"body": "aviso público"},
             },
             {
                 "kind": "direct",
                 "channel": "dm:7:8",
                 "peer_username": "bob",
+                "unread_count": 2,
                 "preview": {"body": "olá"},
+            },
+            {
+                "kind": "room",
+                "channel": "help",
+                "name": "Ajuda",
+                "unread_count": 3,
+                "mention_count": 0,
             },
         ]
         self.assertEqual(
-            "+1 DM [bob] · F2 ou /dm bob",
-            tui.notification_hint(),
+            ["global", "dm:7:8"],
+            [room["channel"] for room in tui.notifications()],
         )
-        tui.channel = "help"
-        self.assertEqual(
-            "1 nova(s) em Chat global · /sala global",
-            tui.notification_hint(),
+
+    def test_chat_layout_frames_summary_and_notifications_without_message_preview(self) -> None:
+        tui = self.make_tui()
+        tui.height = 24
+        tui.width = 80
+        tui.online_users = ["alice", "bob"]
+        tui.unread_rooms = [
+            {
+                "kind": "direct",
+                "channel": "dm:7:8",
+                "name": "DM · bob",
+                "peer_username": "bob",
+                "unread_count": 1,
+                "preview": {"body": "mensagem privada"},
+            },
+            {
+                "kind": "room",
+                "channel": "global",
+                "name": "Chat global",
+                "mention_count": 1,
+                "preview": {"body": "conteúdo citado"},
+            },
+        ]
+        screen = Mock()
+        screen.getmaxyx.return_value = (24, 80)
+
+        with patch.multiple(
+            "modules.chat_tui.curses",
+            create=True,
+            ACS_ULCORNER=0,
+            ACS_URCORNER=0,
+            ACS_LLCORNER=0,
+            ACS_LRCORNER=0,
+            ACS_HLINE=0,
+            ACS_VLINE=0,
+        ):
+            tui._draw_room(screen)
+
+        rendered = " ".join(
+            str(call.args[2])
+            for call in screen.addstr.call_args_list
+            if len(call.args) > 2
         )
-        self.assertNotIn("olá", tui.notification_hint())
+        self.assertIn("SERVIDOR", rendered)
+        self.assertIn("NOTIFICAÇÕES", rendered)
+        self.assertIn("Conectado como alice", rendered)
+        self.assertIn("DM · bob", rendered)
+        self.assertIn("@ citação", rendered)
+        self.assertIn("F2 notificação", rendered)
+        self.assertNotIn("mensagem privada", rendered)
+        self.assertNotIn("conteúdo citado", rendered)
+
+    def test_chat_layout_fits_a_narrow_terminal(self) -> None:
+        tui = self.make_tui()
+        tui.height = 24
+        tui.width = 48
+        screen = Mock()
+        screen.getmaxyx.return_value = (24, 48)
+
+        with patch.multiple(
+            "modules.chat_tui.curses",
+            create=True,
+            ACS_ULCORNER=0,
+            ACS_URCORNER=0,
+            ACS_LLCORNER=0,
+            ACS_LRCORNER=0,
+            ACS_HLINE=0,
+            ACS_VLINE=0,
+        ):
+            tui._draw_room(screen)
+
+        rendered = " ".join(
+            str(call.args[2])
+            for call in screen.addstr.call_args_list
+            if len(call.args) > 2
+        )
+        self.assertIn("SERVIDOR", rendered)
+        self.assertIn("NOTIFICAÇÕES", rendered)
+        self.assertNotIn("Aumente o terminal", rendered)
 
     def test_sync_notifies_new_incoming_dm_message(self) -> None:
         tui = self.make_tui()
@@ -218,6 +300,26 @@ class ChatTuiTests(unittest.TestCase):
         self.assertEqual("dm:7:8", tui.channel)
         self.assertEqual("rascunho global", tui.dm_parent_state["input_text"])
         self.assertEqual("", tui.input_text)
+
+    def test_f2_opens_the_latest_mention_notification(self) -> None:
+        tui = self.make_tui()
+        tui.unread_rooms = [
+            {
+                "kind": "room",
+                "channel": "help",
+                "name": "Ajuda",
+                "mention_count": 1,
+            },
+            {
+                "kind": "direct",
+                "channel": "dm:7:8",
+                "name": "DM · bob",
+                "unread_count": 1,
+            },
+        ]
+        with patch.object(tui, "reset_channel") as reset_channel:
+            self.assertTrue(tui.handle_key(None, curses.KEY_F2))
+        reset_channel.assert_called_once_with("help", "Ajuda")
 
     def test_escape_returns_from_dm_and_exits_global_chat(self) -> None:
         tui = self.make_tui()
