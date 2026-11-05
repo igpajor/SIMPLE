@@ -1576,20 +1576,51 @@ broker_mode_menu() {
   local chat_label="Chat global"
   local chat_label_open=0
   local progress_label="Meu progresso"
+  local home_dashboard_response
+  local home_dashboard_values
+  local use_home_tui=0
   local -a menu_options
 
-  unread_notifications=$(progress_unread_notification_count) || return 1
-  summary_response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
-    broker_request progress.get token) || return 1
-  broker_check_response "$summary_response" || return 1
-  points_count=$(broker_response_field "$summary_response" points) || return 1
-  approved_count=$(broker_response_nested_field \
-    "$summary_response" submissions approved) || return 1
-  [[ -n "$approved_count" ]] || approved_count=0
-  evaluation_response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
-    broker_request evaluations.slots.list token) || return 1
-  broker_check_response "$evaluation_response" || return 1
-  open_reviews=$(printf '%s' "$evaluation_response" | python3 -c '
+  if ui_home_tui_available; then
+    use_home_tui=1
+    home_dashboard_response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
+      broker_request home.dashboard token) || return 1
+    broker_check_response "$home_dashboard_response" || return 1
+    home_dashboard_values=$(printf '%s' "$home_dashboard_response" | python3 -c '
+import json
+import sys
+dashboard = json.load(sys.stdin)
+fields = (
+    "points",
+    "approved_exercises",
+    "open_evaluations",
+    "notifications",
+    "online_count",
+    "chat_unread_count",
+    "chat_mention_count",
+    "dm_unread_count",
+)
+values = [dashboard.get(field) for field in fields]
+if any(type(value) is not int or value < 0 for value in values):
+    raise SystemExit("Resumo da tela inicial inválido")
+print("\t".join(map(str, values)))
+') || return 1
+    IFS=$'\t' read -r points_count approved_count open_reviews \
+      unread_notifications online_count chat_unread_count \
+      chat_mention_count chat_dm_unread_count <<<"$home_dashboard_values"
+  else
+    unread_notifications=$(progress_unread_notification_count) || return 1
+    summary_response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
+      broker_request progress.get token) || return 1
+    broker_check_response "$summary_response" || return 1
+    points_count=$(broker_response_field "$summary_response" points) || return 1
+    approved_count=$(broker_response_nested_field \
+      "$summary_response" submissions approved) || return 1
+    [[ -n "$approved_count" ]] || approved_count=0
+    evaluation_response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
+      broker_request evaluations.slots.list token) || return 1
+    broker_check_response "$evaluation_response" || return 1
+    open_reviews=$(printf '%s' "$evaluation_response" | python3 -c '
 import json
 import sys
 slots = json.load(sys.stdin).get("slots")
@@ -1597,17 +1628,17 @@ if not isinstance(slots, list):
     raise SystemExit("Lista de avaliações abertas inválida")
 print(len(slots))
 ') || return 1
-  if chat_status_response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
-    broker_request chat.dashboard token); then
-    if broker_check_response "$chat_status_response"; then
-      online_count=$(broker_response_field "$chat_status_response" online_count) ||
-        online_count="indisponível"
-      chat_unread_count=$(broker_response_field "$chat_status_response" unread_count) ||
-        chat_unread_count=0
-      chat_mention_count=$(broker_response_field "$chat_status_response" mention_count) ||
-        chat_mention_count=0
-      chat_dm_unread_count=$(printf '%s' "$chat_status_response" |
-        python3 -c '
+    if chat_status_response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
+      broker_request chat.dashboard token); then
+      if broker_check_response "$chat_status_response"; then
+        online_count=$(broker_response_field "$chat_status_response" online_count) ||
+          online_count="indisponível"
+        chat_unread_count=$(broker_response_field "$chat_status_response" unread_count) ||
+          chat_unread_count=0
+        chat_mention_count=$(broker_response_field "$chat_status_response" mention_count) ||
+          chat_mention_count=0
+        chat_dm_unread_count=$(printf '%s' "$chat_status_response" |
+          python3 -c '
 import json
 import sys
 rooms = json.load(sys.stdin).get("unread_rooms", [])
@@ -1619,6 +1650,7 @@ print(sum(
     if isinstance(room, dict) and room.get("kind") == "direct"
 ))
 ') || chat_dm_unread_count=0
+      fi
     fi
   fi
   if [[ "$chat_unread_count" =~ ^[0-9]+$ &&
@@ -1680,7 +1712,7 @@ print(sum(
     menu_options+=("7|Minhas entregas")
   fi
   menu_options+=("0|Sair")
-  if ui_home_tui_available; then
+  if ((use_home_tui)); then
     ui_home_tui_select \
       "$CURRENT_USERNAME" "$points_count" "$approved_count" "$open_reviews" \
       "$online_count" "$notification" \

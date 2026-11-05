@@ -65,6 +65,8 @@ No modo broker, o processo do serviço é a única camada autorizada a acessar o
 
 O fluxo do broker inclui cadastro/login e troca de senha; consulta e edição do próprio perfil; catálogo e especificações dos exercícios; submissões como referências a commits GitHub; pedidos de avaliação com aceite/recusa do autor, cancelamento e expiração após 24 horas; progresso e histórico de pontos; e administração de exercícios, usuários, senhas, estado de contas, pontos, submissões, avaliações e visão geral do sistema. O servidor deriva o usuário do token e revalida permissões administrativas em cada operação administrativa.
 
+Na home `curses`, uma única operação autenticada agrega o resumo de pontos, exercícios aprovados, avaliações abertas, notificações e atividade do chat. O usuário é sempre derivado do token; o cliente não pode solicitar dados de outra conta.
+
 O caminho do banco deve ser absoluto e ficar em um diretório preexistente, pertencente ao usuário efetivo do Broker e sem permissões para grupo/outros (modo `0700` ou mais restrito). Os diretórios ancestrais não podem permitir escrita por usuários não confiáveis; diretórios root com sticky bit, como `/tmp`, são aceitos como ancestrais. O arquivo SQLite e seus auxiliares (`-wal`, `-shm`, `-journal`) devem ser arquivos regulares do usuário do Broker com modo privado (`0600`). Uma configuração insegura causa falha; o Broker não corrige permissões automaticamente. O uso de um diretório dedicado também protege os backups da inicialização explícita.
 
 Para testar localmente, prepare o diretório e inicie o serviço em um terminal separado:

@@ -94,6 +94,51 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual("student", profile["username"])
         self.assertEqual(1, profile["points"])
 
+    def test_home_dashboard_is_authenticated_and_returns_minimal_user_summary(self) -> None:
+        alice = self.create_user("home-alice")
+        bob = self.create_user("home-bob")
+        posted = self.call(
+            {
+                "method": "chat.post",
+                "token": alice["token"],
+                "channel": "global",
+                "message": "Olá @home-bob",
+            }
+        )
+        self.assertTrue(posted["ok"], posted)
+
+        dashboard = self.call({"method": "home.dashboard", "token": bob["token"]})
+        self.assertEqual(
+            {
+                "ok",
+                "points",
+                "approved_exercises",
+                "open_evaluations",
+                "notifications",
+                "online_count",
+                "chat_unread_count",
+                "chat_mention_count",
+                "dm_unread_count",
+            },
+            set(dashboard),
+        )
+        self.assertEqual(1, dashboard["points"])
+        self.assertEqual(0, dashboard["approved_exercises"])
+        self.assertEqual(0, dashboard["open_evaluations"])
+        self.assertEqual(0, dashboard["notifications"])
+        self.assertEqual(1, dashboard["chat_unread_count"])
+        self.assertEqual(1, dashboard["chat_mention_count"])
+        self.assertEqual(0, dashboard["dm_unread_count"])
+
+        self.assertFalse(
+            self.call(
+                {"method": "home.dashboard", "token": bob["token"], "user_id": alice["user_id"]}
+            )["ok"]
+        )
+        self.assertFalse(
+            self.call({"method": "home.dashboard", "token": "invalid"})["ok"]
+        )
+
     def test_profile_validation_and_catalog_are_allowlisted(self) -> None:
         registered = self.create_user()
         token = registered["token"]

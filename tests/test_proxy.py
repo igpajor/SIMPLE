@@ -109,6 +109,12 @@ class ProxyTests(unittest.TestCase):
             {"method": "chat.dashboard", "token": login["token"]}
         )
         self.assertTrue(dashboard["ok"], dashboard)
+        home_dashboard = self.proxy_call(
+            {"method": "home.dashboard", "token": login["token"]}
+        )
+        self.assertTrue(home_dashboard["ok"], home_dashboard)
+        self.assertEqual(1, home_dashboard["points"])
+        self.assertEqual(0, home_dashboard["chat_unread_count"])
         rooms = self.proxy_call({"method": "chat.rooms", "token": login["token"]})
         self.assertIn("global", [room["channel"] for room in rooms["rooms"]])
         post = self.proxy_call(

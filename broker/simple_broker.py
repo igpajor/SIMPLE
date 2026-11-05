@@ -95,6 +95,7 @@ METHOD_FIELDS = {
     "chat.messages": ("token", "after_id"),
     "chat.send": ("token", "message"),
     "chat.dashboard": ("token",),
+    "home.dashboard": ("token",),
     "chat.rooms": ("token",),
     "chat.dm.open": ("token", "username"),
     "chat.post": ("token", "channel", "message"),
@@ -1519,6 +1520,7 @@ class Broker:
                 "evaluations.review.submit",
                 "notifications.count",
                 "progress.get",
+                "home.dashboard",
             }:
                 self._expire_evaluation_requests(connection)
             if method == "auth.change_password":
@@ -1586,6 +1588,70 @@ class Broker:
                     "mention_count": mention_count,
                     "preview": preview,
                     "unread_rooms": unread_rooms,
+                }
+
+            if method == "home.dashboard":
+                points = self._point_balance(connection, user_id)
+                approved_exercises = connection.execute(
+                    """
+                    SELECT COUNT(DISTINCT exercise_id)
+                    FROM submissions
+                    WHERE user_id = ? AND status = 'approved'
+                    """,
+                    (user_id,),
+                ).fetchone()[0]
+                open_evaluations = connection.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM evaluation_slots slot
+                    JOIN submissions s ON s.id = slot.submission_id
+                    WHERE slot.status = 'open' AND s.user_id != ?
+                      AND (slot.accepted_by IS NULL OR slot.accepted_by = ?)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM evaluation_requests declined
+                          WHERE declined.slot_id = slot.id
+                            AND declined.reviewer_id = ?
+                            AND declined.status = 'declined'
+                      )
+                    """,
+                    (user_id, user_id, user_id),
+                ).fetchone()[0]
+                notifications = connection.execute(
+                    """
+                    SELECT
+                      (SELECT COUNT(*) FROM notifications
+                       WHERE user_id = ? AND read_at IS NULL) +
+                      (SELECT COUNT(*) FROM evaluation_requests request
+                       JOIN evaluation_slots slot ON slot.id = request.slot_id
+                       JOIN submissions s ON s.id = slot.submission_id
+                       WHERE s.user_id = ? AND slot.status = 'open'
+                         AND slot.accepted_by = request.reviewer_id
+                         AND request.status = 'pending') +
+                      (SELECT COUNT(*) FROM evaluation_requests request
+                       JOIN evaluation_slots slot ON slot.id = request.slot_id
+                       WHERE request.reviewer_id = ? AND request.status = 'accepted'
+                         AND slot.status = 'open' AND slot.accepted_by = ?)
+                    """,
+                    (user_id, user_id, user_id, user_id),
+                ).fetchone()[0]
+                unread_rooms = self._chat_unread_rooms(connection, user_id)
+                unread_count, mention_count, _preview = self._chat_unread_summary(
+                    unread_rooms
+                )
+                return {
+                    "ok": True,
+                    "points": points,
+                    "approved_exercises": approved_exercises,
+                    "open_evaluations": open_evaluations,
+                    "notifications": notifications,
+                    "online_count": len(self._online_usernames(connection)),
+                    "chat_unread_count": unread_count,
+                    "chat_mention_count": mention_count,
+                    "dm_unread_count": sum(
+                        room["unread_count"]
+                        for room in unread_rooms
+                        if room["kind"] == "direct"
+                    ),
                 }
 
             if method == "chat.rooms":
