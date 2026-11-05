@@ -761,6 +761,7 @@ chat_menu_loop() {
   local last_synced_channel=""
   local last_synced_room_name=""
   local auto_refresh_active=0
+  local incremental_screen=0
 
   if [[ "${BROKER_MODE:-0}" != "1" ]]; then
     ui_error "O chat global está disponível apenas no modo Broker/Proxy."
@@ -815,46 +816,56 @@ chat_menu_loop() {
     unread_count=$(broker_response_field "$CHAT_SYNC_RESPONSE" unread_count) ||
       unread_count=0
 
-    ui_screen_begin "$CHAT_ROOM_NAME"
-    if ! chat_render_online_users "$CHAT_SYNC_RESPONSE"; then
-      nav_pop
-      return 1
-    fi
-    if ! chat_render_typing_users "$CHAT_SYNC_RESPONSE"; then
-      nav_pop
-      return 1
-    fi
-    if ! chat_render_pinned "$CHAT_SYNC_RESPONSE"; then
-      nav_pop
-      return 1
-    fi
-    if ! chat_render_buffer; then
-      nav_pop
-      return 1
-    fi
-    if ((${#CHAT_BUFFER[@]} > 0 && CHAT_NEW_MESSAGE_COUNT == 0)); then
-      ui_color_dim
-      ui_wrap_text "Nenhuma mensagem nova; exibindo o histórico recente." \
-        "$(ui_width)" 2
-      ui_color_reset
-    fi
-    if [[ "$unread_count" =~ ^[0-9]+$ ]] && ((unread_count > 0)); then
-      ui_color_warning
-      ui_wrap_text "$unread_count mensagem(ns) nova(s) em outras salas." "$(ui_width)" 2
-      ui_color_reset
-    fi
-    printf '\n'
-    ui_color_dim
-    if ((auto_refresh_active)); then
-      ui_wrap_text "Atualiza a cada ${refresh_seconds}s sem limpar a tela · Enter envia · /ajuda" \
-        "$(ui_width)" 2
+    if ((incremental_screen)); then
+      if ((CHAT_NEW_MESSAGE_COUNT > 0)); then
+        chat_render_new_messages || {
+          nav_pop
+          return 1
+        }
+      fi
+      incremental_screen=0
     else
-      ui_wrap_text "Autoatualização desativada · Enter vazio atualiza · Enter envia · /ajuda" \
+      ui_screen_begin "$CHAT_ROOM_NAME"
+      if ! chat_render_online_users "$CHAT_SYNC_RESPONSE"; then
+        nav_pop
+        return 1
+      fi
+      if ! chat_render_typing_users "$CHAT_SYNC_RESPONSE"; then
+        nav_pop
+        return 1
+      fi
+      if ! chat_render_pinned "$CHAT_SYNC_RESPONSE"; then
+        nav_pop
+        return 1
+      fi
+      if ! chat_render_buffer; then
+        nav_pop
+        return 1
+      fi
+      if ((${#CHAT_BUFFER[@]} > 0 && CHAT_NEW_MESSAGE_COUNT == 0)); then
+        ui_color_dim
+        ui_wrap_text "Nenhuma mensagem nova; exibindo o histórico recente." \
+          "$(ui_width)" 2
+        ui_color_reset
+      fi
+      if [[ "$unread_count" =~ ^[0-9]+$ ]] && ((unread_count > 0)); then
+        ui_color_warning
+        ui_wrap_text "$unread_count mensagem(ns) nova(s) em outras salas." "$(ui_width)" 2
+        ui_color_reset
+      fi
+      printf '\n'
+      ui_color_dim
+      if ((auto_refresh_active)); then
+        ui_wrap_text "Atualiza a cada ${refresh_seconds}s sem limpar a tela · Enter envia · /ajuda" \
+          "$(ui_width)" 2
+      else
+        ui_wrap_text "Autoatualização desativada · Enter vazio atualiza · Enter envia · /ajuda" \
+          "$(ui_width)" 2
+      fi
+      ui_wrap_text "Limite: 500 caracteres · /historico carrega mensagens anteriores" \
         "$(ui_width)" 2
+      ui_color_reset
     fi
-    ui_wrap_text "Limite: 500 caracteres · /historico carrega mensagens anteriores" \
-      "$(ui_width)" 2
-    ui_color_reset
     if ((CHAT_TYPING_WARNING)); then
       ui_warn "Indicador de digitação indisponível; o chat continua funcionando."
       CHAT_TYPING_WARNING=0
@@ -932,7 +943,10 @@ chat_menu_loop() {
         continue
       fi
     fi
-    [[ -n "$message" ]] || continue
+    if [[ -z "$message" ]]; then
+      incremental_screen=1
+      continue
+    fi
     send_response=$(printf '%s\0%s\0%s\0' \
       "$CURRENT_SESSION_TOKEN" "$CHAT_CHANNEL" "$message" |
       broker_request chat.post token channel message) || {
@@ -942,6 +956,8 @@ chat_menu_loop() {
     }
     if ! broker_check_response "$send_response"; then
       ui_pause
+    else
+      incremental_screen=1
     fi
   done
   nav_pop

@@ -677,11 +677,78 @@ class BrokerTests(unittest.TestCase):
         self.assertIn("mensagem anterior", process.stdout[last_chat_screen:])
         self.assertIn("Hello everyone", process.stdout[last_chat_screen:])
         self.assertIn("Autoatualização desativada", process.stdout)
-        self.assertIn(
-            "Nenhuma mensagem nova; exibindo o histórico recente.",
-            process.stdout[last_chat_screen:],
-        )
+        self.assertEqual(1, process.stdout.count("CHAT GLOBAL"))
         self.assertNotIn("Operação não suportada", process.stdout)
+
+    def test_chat_send_appends_message_without_clearing_terminal(self) -> None:
+        self.create_user("chat-no-clear")
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "SIMPLE_MODE": "broker",
+                "BROKER_SOCKET": str(self.socket_path),
+                "NO_COLOR": "1",
+                "COLUMNS": "80",
+            }
+        )
+        master_fd, slave_fd = pty.openpty()
+        fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+        process = subprocess.Popen(
+            ["bash", str(ROOT_DIR / "simple.sh")],
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            cwd=ROOT_DIR,
+            env=environment,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        output = bytearray()
+
+        def read_until(
+            needle: bytes,
+            timeout: float = 12.0,
+            after: bytes | None = None,
+        ) -> None:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                start = output.find(after) + len(after) if after is not None else 0
+                if output.find(needle, start) >= 0:
+                    return
+                ready, _, _ = select.select([master_fd], [], [], 0.2)
+                if ready:
+                    try:
+                        output.extend(os.read(master_fd, 8192))
+                    except OSError:
+                        break
+                if process.poll() is not None:
+                    break
+            start = output.find(after) + len(after) if after is not None else 0
+            self.assertGreaterEqual(
+                output.find(needle, start), 0, output.decode("utf-8", errors="replace")
+            )
+
+        try:
+            read_until(b"OP\xc3\x87\xc3\x83O > ")
+            os.write(master_fd, b"2\r")
+            read_until(b"Nome de usu\xc3\xa1rio > ")
+            os.write(master_fd, b"chat-no-clear\r")
+            read_until(b"Senha > ")
+            os.write(master_fd, b"secure-pass-123\r")
+            read_until(b"[6] Chat global")
+            read_until(b"OP\xc3\x87\xc3\x83O > ", after=b"[6] Chat global")
+            os.write(master_fd, b"6\r")
+            read_until(b"MENSAGEM > ")
+            clear_count_before_send = output.count(b"\x1b[2J")
+            os.write(master_fd, b"Mensagem sem piscar\r")
+            sent_message = "você: Mensagem sem piscar".encode("utf-8")
+            read_until(sent_message)
+            self.assertEqual(clear_count_before_send, output.count(b"\x1b[2J"))
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
+            os.close(master_fd)
 
     def test_broker_tui_chat_preserves_draft_across_idle_refreshes(self) -> None:
         environment = os.environ.copy()
