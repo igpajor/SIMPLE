@@ -689,10 +689,10 @@ class ChatTui:
                 self.draw_text(
                     screen,
                     pane_top + index,
-                    0,
+                    message_left + 2,
                     text,
                     color,
-                    self.width,
+                    content_width - 4,
                 )
                 continue
             self.draw_text(
@@ -745,7 +745,16 @@ class ChatTui:
             )
             return
         panel_height = max(10, int(self.height * 0.78))
-        panel_width = max(40, int(self.width * 0.76))
+        message_rows = self.all_display_rows()
+        room_link_width = max(
+            (
+                display_width(text)
+                for text, color in message_rows
+                if color == "live_room"
+            ),
+            default=0,
+        )
+        panel_width = max(40, int(self.width * 0.76), room_link_width + 4)
         panel_height = min(panel_height, self.height - 2)
         panel_width = min(panel_width, self.width - 2)
         top = (self.height - panel_height) // 2
@@ -811,10 +820,10 @@ class ChatTui:
                 self.draw_text(
                     screen,
                     top + pane_top + index,
-                    0,
+                    left + 2,
                     text,
                     color,
-                    self.width,
+                    panel_width - 4,
                 )
                 continue
             self.draw_text(

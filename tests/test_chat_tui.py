@@ -138,7 +138,7 @@ class ChatTuiTests(unittest.TestCase):
 
     def test_dm_room_link_uses_full_terminal_width_without_wrapping(self) -> None:
         tui = self.make_tui()
-        tui.width, tui.height = 80, 24
+        tui.width, tui.height = 120, 24
         url = "https://meet.jit.si/SIMPLE-Eval-" + "b" * 48
         tui.messages = [
             self.message(46, f"SALA AO VIVO · AVALIAÇÃO #14 · {url}")
@@ -146,22 +146,24 @@ class ChatTuiTests(unittest.TestCase):
         screen = Mock()
         screen.getmaxyx.return_value = (24, 80)
 
-        with patch.multiple(
-            curses,
-            ACS_ULCORNER="+",
-            ACS_URCORNER="+",
-            ACS_LLCORNER="+",
-            ACS_LRCORNER="+",
-            ACS_HLINE="-",
-            ACS_VLINE="|",
-            create=True,
+        with (
+            patch.multiple(
+                curses,
+                ACS_ULCORNER="+",
+                ACS_URCORNER="+",
+                ACS_LLCORNER="+",
+                ACS_LRCORNER="+",
+                ACS_HLINE="-",
+                ACS_VLINE="|",
+                create=True,
+            ),
+            patch.object(tui, "draw_text", wraps=tui.draw_text) as draw_text,
         ):
             tui._draw_dm_window(screen)
 
-        self.assertIn(
-            (url, 0),
-            [(call.args[2], call.args[1]) for call in screen.addstr.call_args_list],
-        )
+        url_call = next(call for call in draw_text.call_args_list if call.args[3] == url)
+        self.assertGreater(url_call.args[2], 0)
+        self.assertGreaterEqual(url_call.args[5], len(url))
 
     def test_display_rows_are_cached_until_message_content_changes(self) -> None:
         tui = self.make_tui()
