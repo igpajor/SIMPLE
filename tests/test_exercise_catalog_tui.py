@@ -17,7 +17,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from modules.exercise_catalog_tui import ExerciseCatalogTui, load_config
+from modules.exercise_catalog_tui import (
+    ExerciseCatalogTui,
+    format_pdf_text,
+    load_config,
+)
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -110,6 +114,44 @@ class ExerciseCatalogTuiTests(unittest.TestCase):
             ("https://example.org/exercise.pdf", "text"),
             tui.detail_lines,
         )
+
+    def test_pdf_reader_formats_extracted_text(self) -> None:
+        self.assertEqual(
+            "Título\nUma linha com espaços\n\nOutro parágrafo",
+            format_pdf_text("  Título   \nUma   linha\tcom espaços \n\n\nOutro parágrafo  \n"),
+        )
+
+    def test_pdf_reader_displays_original_link(self) -> None:
+        url = "https://drive.google.com/file/d/1TmHY5cXXz78pbdzOanDy47_P_pqXrVwz/view"
+        item = catalog_item("EX-01", "Com PDF", "available")
+        item["pdf_url"] = url
+        tui = ExerciseCatalogTui(
+            {"username": "student", "points": 1, "items": [item]}
+        )
+        tui.open_detail(item)
+        screen = Mock()
+        screen.getmaxyx.return_value = (32, 100)
+
+        with patch.multiple(
+            "modules.exercise_catalog_tui.curses",
+            create=True,
+            ACS_ULCORNER=0,
+            ACS_URCORNER=0,
+            ACS_LLCORNER=0,
+            ACS_LRCORNER=0,
+            ACS_HLINE=0,
+            ACS_VLINE=0,
+        ):
+            tui.draw_pdf_page(screen, ["Conteúdo formatado"])
+
+        rendered_text = "\n".join(
+            call.args[2]
+            for call in screen.addstr.call_args_list
+            if len(call.args) > 2
+        )
+        self.assertIn("PDF:", rendered_text)
+        self.assertIn("drive.google.com/file/d/", rendered_text)
+        self.assertIn("Conteúdo formatado", rendered_text)
 
     def test_pdf_reader_extracts_text_from_https_pdf(self) -> None:
         class FakeReader:

@@ -165,6 +165,23 @@ def wrap_text(text: str, width: int) -> list[str]:
     return lines
 
 
+def format_pdf_text(text: str) -> str:
+    lines: list[str] = []
+    previous_blank = True
+    for source in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = re.sub(r"[ \t]+", " ", source).strip()
+        if not line:
+            if not previous_blank:
+                lines.append("")
+            previous_blank = True
+            continue
+        lines.append(line)
+        previous_blank = False
+    while lines and not lines[-1]:
+        lines.pop()
+    return "\n".join(lines)
+
+
 class ExerciseCatalogTui:
     def __init__(self, config: dict[str, Any]) -> None:
         self.username = safe_text(config["username"])
@@ -377,14 +394,6 @@ class ExerciseCatalogTui:
         ):
             raise ValueError("O link do PDF não é uma URL HTTPS válida.")
 
-        try:
-            from pypdf import PdfReader
-            from pypdf.errors import PyPdfError
-        except ImportError as error:
-            raise RuntimeError(
-                "O leitor PDF requer a dependência pypdf. Instale os requisitos do projeto."
-            ) from error
-
         drive_url = _drive_download_url(url)
         request_url = drive_url or url
         opener = build_opener(HTTPCookieProcessor(http.cookiejar.CookieJar()))
@@ -446,9 +455,22 @@ class ExerciseCatalogTui:
                 )
             raise ValueError("O endereço não retornou um arquivo PDF válido.")
 
+        previous_log_disable = logging.root.manager.disable
+        logging.disable(logging.WARNING)
         try:
-            previous_log_disable = logging.root.manager.disable
-            logging.disable(logging.WARNING)
+            try:
+                from pypdf import PdfReader
+                from pypdf.errors import PyPdfError
+            except ImportError as error:
+                raise RuntimeError(
+                    "O leitor PDF requer a dependência pypdf. Instale os requisitos do projeto."
+                ) from error
+        finally:
+            logging.disable(previous_log_disable)
+
+        previous_log_disable = logging.root.manager.disable
+        logging.disable(logging.WARNING)
+        try:
             try:
                 reader = PdfReader(io.BytesIO(data), strict=False)
                 if reader.is_encrypted:
@@ -456,16 +478,16 @@ class ExerciseCatalogTui:
                 if len(reader.pages) > PDF_MAX_PAGES:
                     raise ValueError("O PDF excede o limite de 500 páginas.")
                 pages = [
-                    page.extract_text(extraction_mode="layout") or ""
+                    format_pdf_text(page.extract_text(extraction_mode="layout") or "")
                     for page in reader.pages
                 ]
-            finally:
-                logging.disable(previous_log_disable)
+            except PyPdfError as error:
+                raise ValueError(f"Não foi possível ler o PDF: {error}") from error
             if not pages:
                 raise ValueError("O PDF não contém páginas.")
             return pages
-        except PyPdfError as error:
-            raise ValueError(f"Não foi possível ler o PDF: {error}") from error
+        finally:
+            logging.disable(previous_log_disable)
 
     @staticmethod
     def _read_pdf_response(response: Any) -> bytes:
@@ -519,13 +541,41 @@ class ExerciseCatalogTui:
         body_height = panel_height - 4
         if error:
             lines = wrap_text(error, body_width)
+            content_top = top + 2
+            content_height = body_height
         else:
+            original_url = self.detail.get("pdf_url", "") if self.detail else ""
+            link_lines = wrap_text(f"PDF: {original_url}", body_width)
+            link_height = min(len(link_lines), max(1, body_height // 3))
+            for offset, line in enumerate(link_lines[:link_height]):
+                self.draw_text(
+                    screen, top + 1 + offset, left + 2, line, "selected", body_width
+                )
+            separator_y = top + 1 + link_height
+            try:
+                screen.hline(separator_y, left + 2, curses.ACS_HLINE, body_width)
+            except curses.error:
+                pass
+            if len(link_lines) > link_height:
+                self.draw_text(
+                    screen,
+                    separator_y,
+                    left + 2,
+                    "Link completo disponível nos detalhes do exercício.",
+                    "muted",
+                    body_width,
+                )
+                separator_y += 1
+            content_top = separator_y + 1
+            content_height = max(1, top + panel_height - 2 - content_top)
             page_text = (pages or [""])[page_index]
-            lines = wrap_text(page_text or "Esta página não contém texto extraível.", body_width)
-        max_scroll = max(0, len(lines) - body_height)
+            lines = wrap_text(
+                page_text or "Esta página não contém texto extraível.", body_width
+            )
+        max_scroll = max(0, len(lines) - content_height)
         scroll = min(max(0, scroll), max_scroll)
-        for offset, line in enumerate(lines[scroll : scroll + body_height]):
-            self.draw_text(screen, top + 2 + offset, left + 2, line, "text", body_width)
+        for offset, line in enumerate(lines[scroll : scroll + content_height]):
+            self.draw_text(screen, content_top + offset, left + 2, line, "text", body_width)
         footer = (
             "Pressione qualquer tecla para voltar"
             if error
