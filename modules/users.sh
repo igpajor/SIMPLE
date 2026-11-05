@@ -194,7 +194,6 @@ print("\t".join(str(result.get(key, "")).encode("utf-8").hex() for key in keys))
       fi
       if auth_register "$username" "$password" >"$output_file" 2>&1; then
         rm -f -- "$output_file"
-        ui_success "Conta criada. Você recebeu 1 ponto inicial."
         return 0
       fi
       error=$(<"$output_file")
@@ -255,7 +254,11 @@ users_authenticate() {
   nav_push "ACESSO"
 
   if users_login_tui_available; then
+    ui_clear
     if users_authenticate_curses; then
+      # ui_screen_begin consumes this to avoid clearing between the TUI and home.
+      # shellcheck disable=SC2034
+      UI_SKIP_NEXT_SCREEN_CLEAR=1
       nav_pop
       return 0
     else

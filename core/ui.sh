@@ -234,7 +234,11 @@ ui_statusline() {
 ui_screen_begin() {
   local title="$1"
 
-  ui_clear
+  if [[ "${UI_SKIP_NEXT_SCREEN_CLEAR:-0}" == "1" ]]; then
+    UI_SKIP_NEXT_SCREEN_CLEAR=0
+  else
+    ui_clear
+  fi
   ui_header
   ui_statusline "$title"
   nav_show_breadcrumb

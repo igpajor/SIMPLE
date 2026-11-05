@@ -176,7 +176,10 @@ class LoginTui:
                 banner_width,
             )
             for index, line in enumerate(art, start=1):
-                padding = (68 - len(line)) // 2
+                if line == "AMBIENTE DE APRENDIZAGEM":
+                    padding = (68 - len(line)) // 2
+                else:
+                    padding = (68 - 46) // 2
                 self.draw_text(
                     screen,
                     y + index,
@@ -213,30 +216,35 @@ class LoginTui:
         button_width = min(26, self.width)
         button_left = max(0, (self.width - button_width) // 2)
         for index, option in enumerate(options):
+            border_color = "selected" if index == self.selection else "label"
+            border_attr = self.colors.get(border_color, curses.A_NORMAL)
+            border_top = f"┌{'─' * (button_width - 2)}┐"
+            border_bottom = f"└{'─' * (button_width - 2)}┘"
+            content_attr = curses.A_BOLD if index == self.selection else curses.A_NORMAL
             self.draw_text(
                 screen,
                 y,
                 button_left,
-                f"┌{'─' * (button_width - 2)}┐",
+                border_top,
+                border_color,
                 width=button_width,
             )
             content = f" {option:<{button_width - 4}} "
-            attributes = curses.A_REVERSE | curses.A_BOLD if index == self.selection else curses.A_NORMAL
             try:
-                screen.addnstr(y + 1, button_left, "│", 1, curses.A_NORMAL)
+                screen.addnstr(y + 1, button_left, "│", 1, border_attr)
                 screen.addnstr(
                     y + 1,
                     button_left + 1,
                     content,
                     button_width - 2,
-                    attributes,
+                    content_attr,
                 )
                 screen.addnstr(
                     y + 1,
                     button_left + button_width - 1,
                     "│",
                     1,
-                    curses.A_NORMAL,
+                    border_attr,
                 )
             except curses.error:
                 pass
@@ -244,7 +252,8 @@ class LoginTui:
                 screen,
                 y + 2,
                 button_left,
-                f"└{'─' * (button_width - 2)}┘",
+                border_bottom,
+                border_color,
                 width=button_width,
             )
             y += 3
