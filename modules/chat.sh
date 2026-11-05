@@ -23,6 +23,7 @@ chat_local_time() {
 
 chat_render_message_row() {
   local encoded="$1"
+  local suppress_date="${2:-0}"
   local message_id_hex
   local username_hex
   local user_id_hex
@@ -66,9 +67,11 @@ chat_render_message_row() {
   if [[ "$date_label" != "${CHAT_LAST_DATE:-}" ]]; then
     CHAT_LAST_DATE="$date_label"
     CHAT_LAST_AUTHOR=""
-    ui_color_dim
-    ui_wrap_text "$date_label" "$(ui_width)" 2
-    ui_color_reset
+    if ((!suppress_date)); then
+      ui_color_dim
+      ui_wrap_text "$date_label" "$(ui_width)" 2
+      ui_color_reset
+    fi
   fi
 
   if [[ "$mentioned" == "1" ]]; then
@@ -596,12 +599,9 @@ chat_render_new_messages() {
   rows=$(broker_response_rows "$CHAT_SYNC_RESPONSE" --separator \
     "$CHAT_ROW_SEPARATOR" messages) || return 1
   [[ -n "$rows" ]] || return 0
-  ui_color_warning
-  ui_wrap_text "MENSAGENS NOVAS" "$(ui_width)" 2
-  ui_color_reset
   while IFS= read -r row; do
     [[ -n "$row" ]] || continue
-    chat_render_message_row "$row" || return 1
+    chat_render_message_row "$row" 1 || return 1
   done <<<"$rows"
 }
 

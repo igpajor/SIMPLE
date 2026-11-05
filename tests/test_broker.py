@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import pty
+import re
 import select
 import signal
 import socket
@@ -740,10 +741,15 @@ class BrokerTests(unittest.TestCase):
             os.write(master_fd, b"6\r")
             read_until(b"MENSAGEM > ")
             clear_count_before_send = output.count(b"\x1b[2J")
+            output_before_send = len(output)
             os.write(master_fd, b"Mensagem sem piscar\r")
             sent_message = "você: Mensagem sem piscar".encode("utf-8")
             read_until(sent_message)
             self.assertEqual(clear_count_before_send, output.count(b"\x1b[2J"))
+            self.assertNotIn(b"MENSAGENS NOVAS", output)
+            self.assertIsNone(
+                re.search(rb"\b\d{4}-\d{2}-\d{2}\b", output[output_before_send:])
+            )
         finally:
             if process.poll() is None:
                 process.terminate()
