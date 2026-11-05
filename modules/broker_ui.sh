@@ -1637,11 +1637,9 @@ print(sum(
   if ((unread_notifications > 0)); then
     progress_label+=" ($unread_notifications alertas)"
   fi
-  ui_screen_begin "INÍCIO"
-  ui_home_intro "$CURRENT_USERNAME" || return 1
-  ui_labeled_value "Online agora" "$online_count" "$(ui_width)"
+  local notification=""
   if ((unread_notifications > 0)); then
-    ui_warn "Você tem $unread_notifications atualização(ões) pendente(s). Confira Meu progresso."
+    notification="Você tem $unread_notifications atualizações pendentes · Confira Meu progresso"
   fi
   menu_options=(
     "1|Catálogo de exercícios"
@@ -1659,9 +1657,22 @@ print(sum(
     menu_options+=("7|Minhas entregas")
   fi
   menu_options+=("0|Sair")
-  printf '\n'
-  if ! ui_menu_choice choice "MENU PRINCIPAL" "${menu_options[@]}"; then
-    return 1
+  if ui_home_tui_available; then
+    ui_home_tui_select \
+      "$CURRENT_USERNAME" "" "" "" "$online_count" "$notification" \
+      "${menu_options[@]}" || return 1
+    choice="$REPLY"
+  else
+    ui_screen_begin "INÍCIO"
+    ui_home_intro "$CURRENT_USERNAME" || return 1
+    ui_labeled_value "Online agora" "$online_count" "$(ui_width)"
+    if ((unread_notifications > 0)); then
+      ui_warn "Você tem $unread_notifications atualização(ões) pendente(s). Confira Meu progresso."
+    fi
+    printf '\n'
+    if ! ui_menu_choice choice "MENU PRINCIPAL" "${menu_options[@]}"; then
+      return 1
+    fi
   fi
   case "$choice" in
   1)

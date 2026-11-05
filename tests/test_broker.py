@@ -759,9 +759,11 @@ class BrokerTests(unittest.TestCase):
             clear_count_before_login = output.count(b"\x1b[2J")
             os.write(master_fd, b"\r")
             read_until(b"[6] Chat global")
-            self.assertEqual(clear_count_before_login, output.count(b"\x1b[2J"))
-            read_until(b"OP\xc3\x87\xc3\x83O > ", after=b"[6] Chat global")
-            os.write(master_fd, b"6\r")
+            self.assertEqual(
+                clear_count_before_login + 1,
+                output.count(b"\x1b[2J"),
+            )
+            os.write(master_fd, b"6")
             read_until("SIMPLE · Chat global".encode("utf-8"))
             read_until(b"MENSAGEM >")
             os.write(master_fd, b"\r")
@@ -778,7 +780,7 @@ class BrokerTests(unittest.TestCase):
                 re.search(rb"\b\d{4}-\d{2}-\d{2}\b", output[output_before_send:])
             )
             os.write(master_fd, b"/sair\r")
-            read_until(b"OP\xc3\x87\xc3\x83O > ", after=sent_message)
+            read_until(b"MENU PRINCIPAL", after=sent_message)
         finally:
             if process.poll() is None:
                 process.terminate()
@@ -841,8 +843,7 @@ class BrokerTests(unittest.TestCase):
             read_until(b"*")
             os.write(master_fd, b"\r")
             read_until(b"[6] Chat global")
-            read_until(b"OP\xc3\x87\xc3\x83O > ", after=b"[6] Chat global")
-            os.write(master_fd, b"6\r")
+            os.write(master_fd, b"6")
             read_until("SIMPLE · Chat global".encode("utf-8"))
             read_until(b"MENSAGEM >")
             os.write(master_fd, "rascunho".encode("utf-8"))
@@ -862,7 +863,7 @@ class BrokerTests(unittest.TestCase):
             self.assertNotIn(b"MENSAGENS NOVAS", output)
             os.write(master_fd, b"/sair\r")
             read_until(
-                b"OP\xc3\x87\xc3\x83O > ",
+                b"MENU PRINCIPAL",
                 after="você: rascunho preservado".encode("utf-8"),
             )
         finally:
@@ -947,8 +948,7 @@ class BrokerTests(unittest.TestCase):
             read_until(b"[6] Chat global")
             self.assertIn(b"[6] Chat global (2 online \xc2\xb7 +1 DM)", output)
             self.assertNotIn("mensagem privada de teste".encode("utf-8"), output)
-            read_until(b"OP\xc3\x87\xc3\x83O > ", after=b"[6] Chat global")
-            os.write(master_fd, b"6\r")
+            os.write(master_fd, b"6")
             global_title = "SIMPLE · Chat global".encode("utf-8")
             read_until(global_title)
             dm_notification = "+1 DM [chat-dm-peer]".encode("utf-8")
@@ -980,7 +980,7 @@ class BrokerTests(unittest.TestCase):
             )
             os.write(master_fd, b"/sair\r")
             read_until(
-                b"OP\xc3\x87\xc3\x83O > ",
+                b"MENU PRINCIPAL",
                 after="chat-dm-peer: mensagem global ao voltar".encode("utf-8"),
             )
         finally:

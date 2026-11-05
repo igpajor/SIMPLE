@@ -439,6 +439,93 @@ ui_home_metrics() {
   fi
 }
 
+ui_home_tui_available() {
+  [[ -t 0 && -t 1 && -n "${TERM:-}" && "${TERM:-dumb}" != "dumb" ]] &&
+    command -v python3 >/dev/null 2>&1 &&
+    python3 -c 'import curses' >/dev/null 2>&1
+}
+
+ui_home_tui_select() {
+  local username="$1"
+  local points="$2"
+  local completed="$3"
+  local reviews="$4"
+  local online="$5"
+  local notification="$6"
+  local config
+  local result
+  local status
+  local entry
+  local key
+  local label
+  shift 6
+  local -a options=("$@")
+  local -a sanitized_options=()
+
+  username=$(ui_tui_label "$username") || return 1
+  notification=$(ui_tui_label "$notification") || return 1
+  for entry in "${options[@]}"; do
+    key="${entry%%|*}"
+    label="${entry#*|}"
+    label=$(ui_tui_label "$label") || return 1
+    sanitized_options+=("$key|$label")
+  done
+  options=("${sanitized_options[@]}")
+
+  config=$(python3 -c '
+import json
+import sys
+
+username, points, completed, reviews, online, notification, *entries = sys.argv[1:]
+stats = [
+    {"label": label, "value": value}
+    for label, value in zip(("Pontos", "Aprovados", "Avaliar"), (points, completed, reviews))
+    if value
+]
+if online:
+    stats.append({"label": "Online", "value": online})
+options = []
+for entry in entries:
+    key, separator, label = entry.partition("|")
+    if not separator:
+        raise SystemExit("Opção de menu malformada")
+    options.append({"key": key, "label": label})
+print(json.dumps({
+    "username": username,
+    "stats": stats,
+    "notification": notification,
+    "options": options,
+}, ensure_ascii=False))
+' "$username" "$points" "$completed" "$reviews" "$online" "$notification" "${options[@]}") || {
+    ui_error "Não foi possível preparar a tela inicial."
+    return 1
+  }
+
+  local home_tui_path
+  home_tui_path="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../modules" && pwd)/home_tui.py"
+  exec 4>&1
+  if result=$(
+    HOME_TUI_CONFIG="$config" \
+      HOME_TUI_RESULT_FD=3 \
+      python3 "$home_tui_path" 3>&1 1>&4
+  ); then
+    exec 4>&-
+  else
+    status=$?
+    exec 4>&-
+    return "$status"
+  fi
+
+  for entry in "${options[@]}"; do
+    if [[ "${entry%%|*}" == "$result" ]]; then
+      REPLY="$result"
+      return 0
+    fi
+  done
+  ui_error "A tela inicial retornou uma opção inválida."
+  return 1
+}
+
 # ---------------------------------------------------------------------------
 # Menu de escolha
 # ---------------------------------------------------------------------------

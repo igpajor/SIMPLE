@@ -11,6 +11,7 @@ menu_principal() {
   local completed_count
   local open_reviews
   local unread_notifications
+  local notification=""
   local progress_label="Meu progresso"
   local -a menu_options
 
@@ -29,6 +30,7 @@ menu_principal() {
   unread_notifications=$(progress_unread_notification_count) || return 1
   if ((unread_notifications > 0)); then
     progress_label+=" ($unread_notifications novas)"
+    notification="Você tem $unread_notifications notificações novas · Confira Meu progresso"
   fi
 
   menu_options=(
@@ -44,6 +46,13 @@ menu_principal() {
     menu_options+=("5|Minhas entregas")
   fi
   menu_options+=("0|Sair")
+
+  if ui_home_tui_available; then
+    ui_home_tui_select \
+      "$CURRENT_USERNAME" "$current_points" "$completed_count" "$open_reviews" \
+      "" "$notification" "${menu_options[@]}" || return 1
+    return 0
+  fi
 
   ui_screen_begin "INÍCIO"
   ui_home_intro "$CURRENT_USERNAME" || return 1

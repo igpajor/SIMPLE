@@ -135,9 +135,10 @@ O menu de progresso mostra exercícios aprovados, saldo de pontos, avaliações 
 O SIMPLE roda inteiramente no terminal, sem dependência de interface gráfica. A apresentação se adapta ao ambiente:
 
 - **Login em terminal interativo com Python `curses`**: tela responsiva para entrar ou criar conta, com navegação pelo teclado e senhas mascaradas. As regras de autenticação permanecem no Bash.
-- **Sem TTY, sem suporte a `curses` ou com `TERM=dumb`**: o login usa o fluxo Bash existente; isso também preserva a entrada via stdin para testes e automação.
-- **Chat interativo**: usa Python `curses` quando disponível; os demais menus continuam em Bash.
-- **Navegação principal**: todos os menus exibem suas opções numeradas (`[1]`, `[2]`, `0` para voltar/sair); escolha a chave mostrada e pressione Enter.
+- **Tela inicial interativa**: em TTYs com `curses`, a home é centralizada e responsiva, com resumo, notificações e navegação por setas/Enter; os atalhos numéricos continuam disponíveis. As ações seguem os fluxos Bash existentes.
+- **Sem TTY, sem suporte a `curses` ou com `TERM=dumb`**: login e home usam os fluxos Bash existentes; isso também preserva a entrada via stdin para testes e automação.
+- **Chat interativo**: usa Python `curses` quando disponível; as demais telas continuam em Bash.
+- **Navegação principal**: as telas `curses` aceitam setas e Enter, ou seleção direta pelo número; menus Bash exibem opções numeradas e confirmam a escolha com Enter.
 - **Terminais interativos com Gum**: o Gum pode aprimorar entradas, campos multilinha e confirmações; os menus continuam numerados.
 - **Sem Gum ou em Windows/cmd.exe**: menus e entradas usam o fallback Bash com `read`; cores podem ser desativadas conforme o terminal.
 - **Sem TTY (pipes, testes, automação)**: a interface usa entrada padrão diretamente. Testes e scripts podem fornecer respostas via stdin; pausas não leem nem descartam dados.
@@ -148,8 +149,9 @@ Em qualquer menu:
 
 | Tecla | Ação |
 |-------|------|
+| Setas | Navegar nas telas interativas `curses` |
 | Número/letra exibido | Escolher a opção correspondente |
-| `Enter` | Confirmar a opção digitada |
+| `Enter` | Abrir a opção selecionada em `curses` ou confirmar a opção digitada no Bash |
 | `0` | Voltar ou sair, conforme o menu |
 
 ### Sanitização de saída
