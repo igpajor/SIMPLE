@@ -284,21 +284,31 @@ class ExerciseCatalogTui:
                 or parsed.username is not None
                 or parsed.password is not None
                 or any(char.isspace() for char in url)
+                or any(unicodedata.category(char) in {"Cc", "Cs"} for char in url)
             ):
                 raise ValueError("O link do PDF não é uma URL HTTPS válida.")
             curses.def_prog_mode()
             curses.endwin()
             try:
-                opened = webbrowser.open(url, new=2)
+                try:
+                    opened = webbrowser.open(url, new=2)
+                except (OSError, webbrowser.Error):
+                    opened = False
+                if not opened:
+                    sys.stdout.write(
+                        "\nO navegador não está disponível no servidor. "
+                        "Clique no link abaixo (ou copie-o) para abrir no navegador "
+                        "do seu computador:\n"
+                    )
+                    sys.stdout.write(f"\x1b]8;;{url}\x1b\\{url}\x1b]8;;\x1b\\\n")
+                    sys.stdout.write("\nPressione Enter para voltar ao SIMPLE...")
+                    sys.stdout.flush()
+                    sys.stdin.readline()
             finally:
                 curses.reset_prog_mode()
+                screen.clearok(True)
                 screen.refresh()
-            if not opened:
-                error = (
-                    "Não foi possível iniciar um navegador neste ambiente. "
-                    "O link original continua disponível nos detalhes do exercício."
-                )
-        except (OSError, ValueError, webbrowser.Error) as exception:
+        except ValueError as exception:
             error = str(exception)
 
         if error:

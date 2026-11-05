@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import curses
 import fcntl
+import io
 import json
 import os
 import pty
@@ -142,24 +143,26 @@ class ExerciseCatalogTuiTests(unittest.TestCase):
         )
         tui.open_detail(item)
         screen = Mock()
-        screen.getmaxyx.return_value = (24, 80)
+        output = io.StringIO()
 
         with (
             patch("modules.exercise_catalog_tui.webbrowser.open", return_value=False),
             patch("modules.exercise_catalog_tui.curses.def_prog_mode"),
             patch("modules.exercise_catalog_tui.curses.endwin"),
             patch("modules.exercise_catalog_tui.curses.reset_prog_mode"),
+            patch("modules.exercise_catalog_tui.sys.stdout", output),
+            patch(
+                "modules.exercise_catalog_tui.sys.stdin",
+                Mock(readline=Mock(return_value="\n")),
+            ),
         ):
             tui.open_pdf_original(screen)
 
-        screen.get_wch.assert_called_once()
-        rendered_text = "\n".join(
-            call.args[2]
-            for call in screen.addstr.call_args_list
-            if len(call.args) > 2
-        )
-        self.assertIn("Não foi possível abrir o PDF original.", rendered_text)
-        self.assertIn("nos detalhes do exercício.", rendered_text)
+        self.assertIn("O navegador não está disponível no servidor.", output.getvalue())
+        self.assertIn("Clique no link abaixo", output.getvalue())
+        self.assertIn("https://example.org/exercise.pdf", output.getvalue())
+        self.assertIn("\x1b]8;;https://example.org/exercise.pdf\x1b\\", output.getvalue())
+        screen.clearok.assert_called_once_with(True)
 
     def test_catalog_accepts_broker_response_without_pdf_url(self) -> None:
         config = {
