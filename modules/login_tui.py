@@ -19,7 +19,7 @@ class LoginTui:
         self.password = ""
         self.confirmation = ""
         self.action = "login"
-        self.selection = 0
+        self.selection = 1
         self.focus = 0
         self.cursor = len(self.username)
         self.width = 80
@@ -141,49 +141,122 @@ class LoginTui:
         return top, left, panel_width, panel_height
 
     def draw_menu(self, screen: Any) -> None:
-        options = ["Entrar", "Criar conta", "Sair"]
-        if self.mode == "proxy":
-            options[1] = "Criar conta (administrador)"
-        top, left, panel_width, panel_height = self.draw_frame(
-            screen,
-            "SIMPLE",
-            ["Acesse sua conta para continuar.", "", *options],
-        )
-        if panel_width:
-            selected_y = top + 3 + 2 + self.selection
-            prefix_x = left + 2
+        self.height, self.width = screen.getmaxyx()
+        screen.erase()
+        if self.height < 8 or self.width < 32:
+            self.draw_text(screen, 0, 0, "Aumente o terminal para continuar.", "error")
+            self.draw_text(screen, self.height - 1, 0, "Esc sai", "hint")
+            screen.refresh()
+            return
+
+        y = max(0, (self.height - 25) // 2) + 1
+        options = ["1 | Criar Conta", "2 | Entrar", "0 | Sair"]
+        banner_width = 70 if self.width >= 72 else 30
+        banner_left = max(0, (self.width - banner_width) // 2)
+
+        if self.width >= 72:
+            art = [
+                "",
+                "███████╗██╗███╗   ███╗██████╗ ██╗     ███████╗",
+                "██╔════╝██║████╗ ████║██╔══██╗██║     ██╔════╝",
+                "███████╗██║██╔████╔██║██████╔╝██║     █████╗",
+                "╚════██║██║██║╚██╔╝██║██╔═══╝ ██║     ██╔══╝",
+                "███████║██║██║ ╚═╝ ██║██║     ███████╗███████╗",
+                "╚══════╝╚═╝╚═╝     ╚═╝╚═╝     ╚══════╝╚══════╝",
+                "",
+                "AMBIENTE DE APRENDIZAGEM",
+                "",
+            ]
             self.draw_text(
                 screen,
-                selected_y,
-                prefix_x,
-                "›",
-                "selected",
-                2,
+                y,
+                banner_left,
+                f"┌{'─' * 68}┐",
+                "title",
+                banner_width,
             )
-            self.draw_text(
-                screen,
-                selected_y,
-                prefix_x + 2,
-                options[self.selection],
-                "selected",
-                panel_width - 6,
-            )
-            if self.error:
+            for index, line in enumerate(art, start=1):
+                padding = (68 - len(line)) // 2
                 self.draw_text(
                     screen,
-                    top + min(9, panel_height - 3),
-                    left + 2,
-                    self.error,
-                    "error",
-                    panel_width - 4,
+                    y + index,
+                    banner_left,
+                    f"│{' ' * padding}{line}{' ' * (68 - len(line) - padding)}│",
+                    "title",
+                    banner_width,
                 )
             self.draw_text(
                 screen,
-                top + panel_height - 2,
-                left + 2,
-                "↑/↓ escolher · Enter continuar · Esc sair",
-                "hint",
-                panel_width - 4,
+                y + len(art) + 1,
+                banner_left,
+                f"└{'─' * 68}┘",
+                "title",
+                banner_width,
+            )
+            y += len(art) + 2
+        else:
+            self.draw_text(screen, y, banner_left, "+----------------------------+", "title", 30)
+            for index, line in enumerate(("SIMPLE", "AMBIENTE DE APRENDIZAGEM"), start=1):
+                padding = (28 - len(line)) // 2
+                self.draw_text(
+                    screen,
+                    y + index,
+                    banner_left,
+                    f"|{' ' * padding}{line}{' ' * (28 - len(line) - padding)}|",
+                    "title",
+                    30,
+                )
+            self.draw_text(screen, y + 3, banner_left, "+----------------------------+", "title", 30)
+            y += 5
+
+        y += 1
+        button_width = min(26, self.width)
+        button_left = max(0, (self.width - button_width) // 2)
+        for index, option in enumerate(options):
+            self.draw_text(
+                screen,
+                y,
+                button_left,
+                f"┌{'─' * (button_width - 2)}┐",
+                width=button_width,
+            )
+            content = f" {option:<{button_width - 4}} "
+            attributes = curses.A_REVERSE | curses.A_BOLD if index == self.selection else curses.A_NORMAL
+            try:
+                screen.addnstr(y + 1, button_left, "│", 1, curses.A_NORMAL)
+                screen.addnstr(
+                    y + 1,
+                    button_left + 1,
+                    content,
+                    button_width - 2,
+                    attributes,
+                )
+                screen.addnstr(
+                    y + 1,
+                    button_left + button_width - 1,
+                    "│",
+                    1,
+                    curses.A_NORMAL,
+                )
+            except curses.error:
+                pass
+            self.draw_text(
+                screen,
+                y + 2,
+                button_left,
+                f"└{'─' * (button_width - 2)}┘",
+                width=button_width,
+            )
+            y += 3
+
+        if self.error:
+            self.draw_text(
+                screen,
+                min(self.height - 1, y + 1),
+                max(0, (self.width - len(self.error)) // 2),
+                self.error,
+                "error",
+                self.width,
             )
         screen.refresh()
 
@@ -292,10 +365,6 @@ class LoginTui:
                     return {"action": "quit"}
                 elif key in ("\n", "\r", curses.KEY_ENTER):
                     if self.selection == 0:
-                        self.action = "login"
-                        self.focus = 0
-                        menu = False
-                    elif self.selection == 1:
                         if self.mode == "proxy":
                             self.error = (
                                 "Solicite ao administrador a criação e vinculação "
@@ -305,10 +374,14 @@ class LoginTui:
                             self.action = "register"
                             self.focus = 0
                             menu = False
+                    elif self.selection == 1:
+                        self.action = "login"
+                        self.focus = 0
+                        menu = False
                     else:
                         return {"action": "quit"}
                 elif isinstance(key, str) and key in {"1", "2", "0"}:
-                    self.selection = {"1": 1, "2": 0, "0": 2}[key]
+                    self.selection = {"1": 0, "2": 1, "0": 2}[key]
             else:
                 if key in ("\x1b", 27):
                     menu = True
