@@ -225,7 +225,6 @@ print(json.dumps({
                hex(COALESCE(e.terminal_model, '')) || '|' ||
                hex(COALESCE(e.hints, '')) || '|' ||
                hex(COALESCE(e.pdf_url, '')) || '|' ||
-               hex(COALESCE(e.pdf_url, '')) || '|' ||
                COALESCE((
                  SELECT s.status FROM submissions s
                  WHERE s.user_id = $CURRENT_USER_ID AND s.exercise_id = e.id

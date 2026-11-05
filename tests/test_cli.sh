@@ -10,7 +10,8 @@ DB_PATH="$TEST_DIR/simple.db"
 cleanup() {
   rm -f -- "$TEST_DIR/simple.db" "$TEST_DIR/simple.db-wal" "$TEST_DIR/simple.db-shm" \
     "$TEST_DIR/legacy.db" "$TEST_DIR/legacy.db-wal" "$TEST_DIR/legacy.db-shm" \
-    "$TEST_DIR/menu-input" "$TEST_DIR/admin-input" "$TEST_DIR/exercises/NEW-EX.txt"
+    "$TEST_DIR/menu-input" "$TEST_DIR/admin-input" "$TEST_DIR/catalog-config.json" \
+    "$TEST_DIR/exercises/NEW-EX.txt"
   rm -f -- "$TEST_DIR/exercises/TEST-01.txt"
   rmdir "$TEST_DIR/exercises" 2>/dev/null || true
   rmdir "$TEST_DIR"
@@ -319,6 +320,24 @@ assert_equals "Use cat para ler o arquivo." "$(db_query "SELECT hints FROM exerc
   "dicas são persistidas"
 assert_equals "https://example.org/exercise.pdf" "$(db_query "SELECT pdf_url FROM exercises WHERE code = 'NEW-EX';")" \
   "URL HTTPS do PDF é persistida"
+(
+  ui_home_tui_available() { return 0; }
+  python3() {
+    if [[ "${1:-}" == "$SCRIPT_DIR/modules/exercise_catalog_tui.py" ]]; then
+      printf '%s\n' "$EXERCISE_CATALOG_CONFIG" >"$TEST_DIR/catalog-config.json"
+      printf 'back\tall\t\t\t\n' >&3
+    else
+      command python3 "$@"
+    fi
+  }
+  CURRENT_USER_ID="$alice_id"
+  CURRENT_USERNAME="alice"
+  exercise_catalog_tui
+) || fail "catálogo local TUI carrega dados de exercício"
+assert_equals "https://example.org/exercise.pdf" \
+  "$(python3 -c 'import json,sys; print(next(item["pdf_url"] for item in json.load(open(sys.argv[1]))["items"] if item["code"] == "NEW-EX"))' \
+    "$TEST_DIR/catalog-config.json")" \
+  "catálogo local TUI passa o link PDF sem duplicar colunas"
 assert_equals "SIMPLE > executar
 Resultado esperado" "$(db_query "SELECT example FROM exercises WHERE code = 'NEW-EX';")" \
   "exemplo de execução é um campo independente"
