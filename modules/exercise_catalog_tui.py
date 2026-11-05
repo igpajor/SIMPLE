@@ -8,6 +8,7 @@ import http.cookiejar
 import html.parser
 import io
 import json
+import logging
 import os
 import re
 import sys
@@ -446,12 +447,20 @@ class ExerciseCatalogTui:
             raise ValueError("O endereço não retornou um arquivo PDF válido.")
 
         try:
-            reader = PdfReader(io.BytesIO(data), strict=False)
-            if reader.is_encrypted:
-                raise ValueError("Este PDF é protegido por senha e não pode ser lido.")
-            if len(reader.pages) > PDF_MAX_PAGES:
-                raise ValueError("O PDF excede o limite de 500 páginas.")
-            pages = [page.extract_text() or "" for page in reader.pages]
+            previous_log_disable = logging.root.manager.disable
+            logging.disable(logging.WARNING)
+            try:
+                reader = PdfReader(io.BytesIO(data), strict=False)
+                if reader.is_encrypted:
+                    raise ValueError("Este PDF é protegido por senha e não pode ser lido.")
+                if len(reader.pages) > PDF_MAX_PAGES:
+                    raise ValueError("O PDF excede o limite de 500 páginas.")
+                pages = [
+                    page.extract_text(extraction_mode="layout") or ""
+                    for page in reader.pages
+                ]
+            finally:
+                logging.disable(previous_log_disable)
             if not pages:
                 raise ValueError("O PDF não contém páginas.")
             return pages

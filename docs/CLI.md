@@ -9,9 +9,12 @@
 - `pypdf` para leitura paginada de PDFs no catálogo de exercícios
 - Gum 2.0+ é opcional para entradas, textos multilinha e confirmações
 
-No Ubuntu, habilite o leitor com `sudo apt install python3-pypdf`, usando o
-Python do sistema que executa o SIMPLE. O link original permanece disponível
-no detalhe do exercício; a extração de texto não preserva layout ou imagens.
+No Ubuntu, instale `python3-pip` e `python3-fonttools` e depois as dependências
+no Python do sistema com
+`sudo /usr/bin/python3 -m pip install -r /opt/simple/requirements.txt`.
+`fonttools` é necessário para interpretar algumas fontes incorporadas. O link
+original permanece disponível no detalhe do exercício; a extração de texto não
+preserva imagens.
 
 Os menus usam opções numeradas como navegação principal; digite a chave exibida e pressione Enter. A tela inicial apresenta boas-vindas, resumo de pontos/progresso (empilhado em terminais estreitos) e ações disponíveis com numeração contínua, incluindo a opção administrativa somente para administradores. Uma linha de status identifica o SIMPLE, a pessoa conectada, o modo e a área atual. Gum pode aprimorar entradas, textos multilinha e confirmações, mas não altera a navegação dos menus. Sem Gum ou sem TTY, a interface usa leitura de linha. Pausas sem TTY não consomem entrada automatizada, senhas permanecem mascaradas e entradas multilinha aceitam o fluxo de texto não interativo.
 

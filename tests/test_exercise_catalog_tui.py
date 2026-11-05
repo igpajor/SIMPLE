@@ -114,7 +114,15 @@ class ExerciseCatalogTuiTests(unittest.TestCase):
     def test_pdf_reader_extracts_text_from_https_pdf(self) -> None:
         class FakeReader:
             is_encrypted = False
-            pages = [types.SimpleNamespace(extract_text=lambda: "Texto da página")]
+            pages = [
+                types.SimpleNamespace(
+                    extract_text=lambda **kwargs: (
+                        "Texto da página"
+                        if kwargs == {"extraction_mode": "layout"}
+                        else ""
+                    )
+                )
+            ]
 
             def __init__(self, _file: io.BytesIO, strict: bool) -> None:
                 self.asserted_strict = strict
@@ -150,7 +158,15 @@ class ExerciseCatalogTuiTests(unittest.TestCase):
     def test_google_drive_share_link_downloads_pdf_after_confirmation(self) -> None:
         class FakeReader:
             is_encrypted = False
-            pages = [types.SimpleNamespace(extract_text=lambda: "PDF do Drive")]
+            pages = [
+                types.SimpleNamespace(
+                    extract_text=lambda **kwargs: (
+                        "PDF do Drive"
+                        if kwargs == {"extraction_mode": "layout"}
+                        else ""
+                    )
+                )
+            ]
 
             def __init__(self, _file: io.BytesIO, strict: bool) -> None:
                 self.asserted_strict = strict
