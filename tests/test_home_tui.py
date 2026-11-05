@@ -146,6 +146,38 @@ class HomeTuiTests(unittest.TestCase):
         )
         self.assertEqual(16, outer_border.args[1])
 
+    def test_tall_terminal_expands_home_to_chat_panel_height(self) -> None:
+        tui = HomeTui(
+            {
+                "username": "student",
+                "stats": [{"label": "Pontos", "value": "12"}],
+                "options": [
+                    {"key": str(index), "label": f"Opção {index}"}
+                    for index in range(1, 8)
+                ]
+                + [{"key": "0", "label": "Sair"}],
+            }
+        )
+        screen = Mock()
+        screen.getmaxyx.return_value = (40, 100)
+
+        with patch.multiple(
+            "modules.home_tui.curses",
+            create=True,
+            ACS_ULCORNER=0,
+            ACS_URCORNER=0,
+            ACS_LLCORNER=0,
+            ACS_LRCORNER=0,
+            ACS_HLINE=0,
+            ACS_VLINE=0,
+        ):
+            tui.draw(screen)
+
+        outer_side = next(
+            call for call in screen.vline.call_args_list if call.args[3] == 30
+        )
+        self.assertEqual(5, outer_side.args[0])
+
 
 if __name__ == "__main__":
     unittest.main()

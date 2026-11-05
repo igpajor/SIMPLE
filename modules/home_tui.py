@@ -129,7 +129,7 @@ class HomeTui:
         summary_height = stats_rows + 2
         menu_title_offset = summary_top + summary_height + 1
         option_start_offset = menu_title_offset + 1
-        max_panel_height = self.height - 2
+        max_panel_height = min(32, self.height - 2)
         max_visible = max_panel_height - option_start_offset - 6
         if max_visible < 1 or self.height < 15 + stats_rows:
             self.draw_text(
@@ -145,8 +145,15 @@ class HomeTui:
         start, end = self.visible_options(max_visible)
         visible_count = end - start
         option_rows = visible_count + 2
-        panel_height = option_start_offset + option_rows + 4
-        panel_height = min(panel_height, max_panel_height)
+        panel_height = max_panel_height
+        extra_option_space = max(
+            0, panel_height - (option_start_offset + option_rows + 4)
+        )
+        option_gap, extra_gaps = divmod(extra_option_space, visible_count + 1)
+        option_gaps = [
+            option_gap + int(index < extra_gaps)
+            for index in range(visible_count + 1)
+        ]
         top = max(0, (self.height - panel_height) // 2)
         self.draw_frame(screen, top, left, panel_width, panel_height)
 
@@ -219,10 +226,10 @@ class HomeTui:
         menu_title_y = top + menu_title_offset
         self.draw_text(screen, menu_title_y, left + 3, "MENU PRINCIPAL", "title", inner_width)
 
-        option_y = top + option_start_offset
+        option_y = top + option_start_offset + option_gaps[0]
         option_width = min(inner_width, 58)
         option_left = left + (panel_width - option_width) // 2
-        for index in range(start, end):
+        for offset, index in enumerate(range(start, end)):
             key, label = self.options[index]
             option_text = f"[{key}] {label}"
             if index == self.selection:
@@ -261,6 +268,7 @@ class HomeTui:
                     option_width - 4,
                 )
                 option_y += 1
+            option_y += option_gaps[offset + 1]
 
         footer_y = top + panel_height - 2
         self.draw_text(
