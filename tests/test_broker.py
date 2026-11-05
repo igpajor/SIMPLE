@@ -2232,6 +2232,93 @@ class BrokerTests(unittest.TestCase):
         self.assertIn("MEU PERFIL", process.stdout)
         self.assertIn("Saldo de pontos: 1", process.stdout)
 
+    def test_broker_interactive_catalog_can_open_evaluation_slot(self) -> None:
+        user = self.create_user()
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            connection.execute(
+                """
+                INSERT INTO exercises (code, name, description, statement)
+                VALUES (?, ?, ?, ?)
+                """,
+                ("TUI-01", "Exercício interativo", "Descrição", "Enunciado"),
+            )
+        master_fd, slave_fd = pty.openpty()
+        fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "SIMPLE_MODE": "broker",
+                "BROKER_SOCKET": str(self.socket_path),
+                "TERM": "xterm-256color",
+            }
+        )
+        process = subprocess.Popen(
+            ["bash", str(ROOT_DIR / "simple.sh")],
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            cwd=ROOT_DIR,
+            env=environment,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        output = bytearray()
+
+        def read_until(needle: bytes, timeout: float = 10.0) -> None:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if needle in output:
+                    return
+                ready, _, _ = select.select([master_fd], [], [], 0.1)
+                if ready:
+                    try:
+                        output.extend(os.read(master_fd, 16384))
+                    except OSError:
+                        break
+                if process.poll() is not None:
+                    break
+            self.fail(
+                f"Missing {needle!r} in PTY output: "
+                f"{output.decode(errors='replace')}"
+            )
+
+        try:
+            os.write(master_fd, b"2\nstudent\nsecure-pass-123\n")
+            read_until("MENU PRINCIPAL".encode())
+            os.write(master_fd, b"1")
+            read_until("TUI-01".encode())
+            self.assertIn("TUI-01".encode(), output)
+            self.assertIn("Exercício interativo".encode(), output)
+            self.assertNotIn("Não foi possível carregar o catálogo".encode(), output)
+            os.write(master_fd, b"\r")
+            read_until(b"DETALHES")
+            os.write(master_fd, b"\r")
+            read_until(b"REGISTRAR ENTREGA")
+            for char in "https://github.com/user/repo/commit/abcdef0":
+                os.write(master_fd, char.encode("utf-8"))
+            os.write(master_fd, b"\t")
+            for char in "ex00":
+                os.write(master_fd, char.encode("utf-8"))
+            os.write(master_fd, b"\t\r")
+            read_until("Solução enviada. Slot".encode("utf-8"))
+            with closing(sqlite3.connect(self.database_path)) as connection:
+                slot_count = connection.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM evaluation_slots slot
+                    JOIN submissions submission ON submission.id = slot.submission_id
+                    WHERE submission.user_id = ?
+                    """,
+                    (user["user_id"],),
+                ).fetchone()[0]
+            self.assertEqual(1, slot_count)
+            self.assertNotIn("Não foi possível carregar o catálogo".encode(), output)
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
+            os.close(master_fd)
+
     def test_broker_submission_reservation_and_review_workflow(self) -> None:
         owner = self.create_user("exercise-owner")
         reviewer = self.create_user("exercise-reviewer")

@@ -279,7 +279,9 @@ print(json.dumps({
       exec 4>&-
       return "$status"
     fi
-    IFS=$'\t' read -r action code returned_filter returned_query returned_code \
+    result="${result//$'\t'/$'\x1f'}"
+    # Tabs are IFS whitespace in Bash, so they cannot preserve the empty query field.
+    IFS=$'\x1f' read -r action code returned_filter returned_query returned_code \
       commit_url delivery_directory <<<"$result"
     [[ -n "$returned_filter" ]] && filter="$returned_filter"
     query="$returned_query"
