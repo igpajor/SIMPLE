@@ -124,8 +124,12 @@ O protocolo continua sendo requisição/resposta JSON por socket Unix, sem
 WebSocket. No terminal interativo, a tela do chat usa Python `curses`: o
 histórico e o campo de entrada são atualizados em áreas separadas, sem limpar
 a conversa nem inserir mensagens no meio do texto digitado. O restante da
-interface SIMPLE permanece em Bash. O módulo `curses` do Python 3 precisa estar
-disponível no sistema (em algumas distribuições, pelo pacote `python3-curses`).
+interface SIMPLE permanece em Bash; o login interativo também usa uma tela
+responsiva `curses`, mantendo autenticação e validações nas funções Bash. As
+duas telas usam o módulo `curses` do Python 3, que precisa estar disponível no
+sistema (em algumas distribuições, pelo pacote `python3-curses`). Sem TTY ou
+sem suporte a `curses`, o login mantém o fluxo Bash e o chat usa seu leitor de
+linha alternativo.
 
 Por padrão, a atualização automática fica ativa com intervalo de dois segundos;
 use `CHAT_AUTO_REFRESH=0` para desativá-la ou `CHAT_REFRESH_SECONDS` para ajustar

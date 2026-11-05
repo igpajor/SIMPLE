@@ -748,8 +748,8 @@ class BrokerTests(unittest.TestCase):
             )
 
         try:
-            read_until(b"OP\xc3\x87\xc3\x83O > ")
-            os.write(master_fd, b"2\r")
+            read_until(b"Acesse sua conta")
+            os.write(master_fd, b"\r")
             read_until(b"Nome de usu\xc3\xa1rio > ")
             os.write(master_fd, b"chat-no-clear\r")
             read_until(b"Senha > ")
@@ -829,8 +829,8 @@ class BrokerTests(unittest.TestCase):
             )
 
         try:
-            read_until(b"OP\xc3\x87\xc3\x83O > ")
-            os.write(master_fd, b"2\r")
+            read_until(b"Acesse sua conta")
+            os.write(master_fd, b"\r")
             read_until(b"Nome de usu\xc3\xa1rio > ")
             os.write(master_fd, b"chat-auto-tui\r")
             read_until(b"Senha > ")
@@ -933,8 +933,8 @@ class BrokerTests(unittest.TestCase):
             )
 
         try:
-            read_until(b"OP\xc3\x87\xc3\x83O > ")
-            os.write(master_fd, b"2\r")
+            read_until(b"Acesse sua conta")
+            os.write(master_fd, b"\r")
             read_until(b"Nome de usu\xc3\xa1rio > ")
             os.write(master_fd, b"chat-dm-window\r")
             read_until(b"Senha > ")

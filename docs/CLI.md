@@ -134,6 +134,9 @@ O menu de progresso mostra exercícios aprovados, saldo de pontos, avaliações 
 
 O SIMPLE roda inteiramente no terminal, sem dependência de interface gráfica. A apresentação se adapta ao ambiente:
 
+- **Login em terminal interativo com Python `curses`**: tela responsiva para entrar ou criar conta, com navegação pelo teclado e senhas mascaradas. As regras de autenticação permanecem no Bash.
+- **Sem TTY, sem suporte a `curses` ou com `TERM=dumb`**: o login usa o fluxo Bash existente; isso também preserva a entrada via stdin para testes e automação.
+- **Chat interativo**: usa Python `curses` quando disponível; os demais menus continuam em Bash.
 - **Navegação principal**: todos os menus exibem suas opções numeradas (`[1]`, `[2]`, `0` para voltar/sair); escolha a chave mostrada e pressione Enter.
 - **Terminais interativos com Gum**: o Gum pode aprimorar entradas, campos multilinha e confirmações; os menus continuam numerados.
 - **Sem Gum ou em Windows/cmd.exe**: menus e entradas usam o fallback Bash com `read`; cores podem ser desativadas conforme o terminal.

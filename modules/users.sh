@@ -104,6 +104,137 @@ users_is_admin() {
   [[ "$(db_query "SELECT is_admin FROM users WHERE id = $user_id;")" == "1" ]]
 }
 
+users_login_tui_available() {
+  [[ -t 0 && -t 1 && -n "${TERM:-}" && "${TERM:-dumb}" != "dumb" ]] &&
+    command -v python3 >/dev/null 2>&1 &&
+    python3 -c 'import curses' >/dev/null 2>&1
+}
+
+users_authenticate_curses() {
+  local payload
+  local fields
+  local action_hex
+  local username_hex
+  local password_hex
+  local confirmation_hex
+  local action
+  local username
+  local password
+  local confirmation
+  local error=""
+  local output_file
+  local change_required
+  local auth_status
+
+  output_file=$(mktemp "${TMPDIR:-/tmp}/simple-login.XXXXXX") || {
+    ui_error "Não foi possível preparar a autenticação."
+    return 1
+  }
+
+  while true; do
+    exec 4>&1
+    if ! payload=$(
+      SIMPLE_MODE="${SIMPLE_MODE:-local}" \
+        LOGIN_TUI_ERROR="$error" \
+        LOGIN_TUI_USERNAME="${username:-}" \
+        LOGIN_TUI_RESULT_FD=3 \
+        python3 "$SCRIPT_DIR/modules/login_tui.py" 3>&1 1>&4
+    ); then
+      exec 4>&-
+      rm -f -- "$output_file"
+      return 1
+    fi
+    exec 4>&-
+    fields=$(printf '%s' "$payload" | python3 -c '
+import json
+import sys
+result = json.load(sys.stdin)
+if not isinstance(result, dict):
+    raise SystemExit("Resposta da tela de acesso inválida")
+keys = ("action", "username", "password", "confirmation")
+print("\t".join(str(result.get(key, "")).encode("utf-8").hex() for key in keys))
+') || {
+      rm -f -- "$output_file"
+      ui_error "Resposta inválida da tela de acesso."
+      return 1
+    }
+    IFS=$'\t' read -r action_hex username_hex password_hex confirmation_hex \
+      <<<"$fields"
+    action=$(db_hex_decode "$action_hex") || {
+      rm -f -- "$output_file"
+      return 1
+    }
+    username=$(db_hex_decode "$username_hex") || {
+      rm -f -- "$output_file"
+      return 1
+    }
+    password=$(db_hex_decode "$password_hex") || {
+      rm -f -- "$output_file"
+      return 1
+    }
+    confirmation=$(db_hex_decode "$confirmation_hex") || {
+      rm -f -- "$output_file"
+      return 1
+    }
+    error=""
+
+    case "$action" in
+    quit)
+      rm -f -- "$output_file"
+      return 1
+      ;;
+    register)
+      if [[ "${SIMPLE_MODE:-local}" == "proxy" ]]; then
+        error="Solicite ao administrador a criação e vinculação da sua conta SIMPLE."
+        continue
+      fi
+      if [[ "$password" != "$confirmation" ]]; then
+        error="As senhas não coincidem."
+        continue
+      fi
+      if auth_register "$username" "$password" >"$output_file" 2>&1; then
+        rm -f -- "$output_file"
+        ui_success "Conta criada. Você recebeu 1 ponto inicial."
+        return 0
+      fi
+      error=$(<"$output_file")
+      [[ -n "$error" ]] || error="Não foi possível criar a conta."
+      ;;
+    login)
+      if auth_login "$username" "$password" >"$output_file" 2>&1; then
+        rm -f -- "$output_file"
+        if [[ "${BROKER_MODE:-0}" == "1" ]]; then
+          change_required="$BROKER_MUST_CHANGE_PASSWORD"
+        else
+          change_required=$(db_query "
+            SELECT must_change_password FROM users WHERE id = $CURRENT_USER_ID;
+          ") || {
+            rm -f -- "$output_file"
+            return 1
+          }
+        fi
+        if [[ "$change_required" == "1" ]] &&
+          ! users_change_password_prompt "$CURRENT_USER_ID"; then
+          CURRENT_USER_ID=""
+          CURRENT_USERNAME=""
+          CURRENT_SESSION_TOKEN=""
+          CURRENT_USER_IS_ADMIN="0"
+          return 1
+        fi
+        return 0
+      fi
+      error=$(<"$output_file")
+      [[ -n "$error" ]] || error="Usuário ou senha inválidos."
+      ;;
+    *)
+      rm -f -- "$output_file"
+      ui_error "Ação inválida na tela de acesso."
+      return 1
+      ;;
+    esac
+  done
+}
+
 users_authenticate() {
   local choice
   local username
@@ -122,6 +253,17 @@ users_authenticate() {
 
   nav_clear
   nav_push "ACESSO"
+
+  if users_login_tui_available; then
+    if users_authenticate_curses; then
+      nav_pop
+      return 0
+    else
+      auth_status=$?
+    fi
+    nav_pop
+    return "$auth_status"
+  fi
 
   while [[ -z "$CURRENT_USER_ID" ]]; do
     width=$(ui_width)
