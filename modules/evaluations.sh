@@ -67,6 +67,92 @@ evaluation_record_review() {
   fi
 }
 
+evaluation_live_room_id() {
+  local slot_id="$1"
+  local room_id
+
+  if [[ "${BROKER_MODE:-0}" == "1" ]]; then
+    local response
+    response=$(printf '%s\0%s\0' "$CURRENT_SESSION_TOKEN" "$slot_id" |
+      broker_request evaluations.room.get token slot_id) || return 1
+    broker_check_response "$response" || return 1
+    broker_response_field "$response" room_id
+    return $?
+  fi
+
+  [[ "$slot_id" =~ ^[0-9]+$ ]] || return 2
+  local generated_room
+  generated_room=$(openssl rand -hex 24) || {
+    printf '  Não foi possível criar uma sala segura para a avaliação.\n' >&2
+    return 1
+  }
+  room_id=$(db_query "
+    BEGIN IMMEDIATE;
+    UPDATE evaluation_slots
+    SET live_room = '$generated_room'
+    WHERE id = $slot_id AND status = 'open' AND live_room IS NULL
+      AND EXISTS (
+        SELECT 1
+        FROM evaluation_requests request
+        WHERE request.slot_id = evaluation_slots.id
+          AND request.reviewer_id = evaluation_slots.accepted_by
+          AND request.status = 'accepted'
+      )
+      AND EXISTS (
+        SELECT 1 FROM submissions submission
+        WHERE submission.id = evaluation_slots.submission_id
+          AND (submission.user_id = $CURRENT_USER_ID
+               OR evaluation_slots.accepted_by = $CURRENT_USER_ID)
+      );
+    SELECT live_room
+    FROM evaluation_slots
+    WHERE id = $slot_id AND status = 'open'
+      AND EXISTS (
+        SELECT 1
+        FROM evaluation_requests request
+        WHERE request.slot_id = evaluation_slots.id
+          AND request.reviewer_id = evaluation_slots.accepted_by
+          AND request.status = 'accepted'
+      )
+      AND EXISTS (
+        SELECT 1 FROM submissions submission
+        WHERE submission.id = evaluation_slots.submission_id
+          AND (submission.user_id = $CURRENT_USER_ID
+               OR evaluation_slots.accepted_by = $CURRENT_USER_ID)
+      );
+    COMMIT;
+  ") || return 1
+  if [[ ! "$room_id" =~ ^[a-f0-9]{48}$ ]]; then
+    printf '  A sala não está disponível para esta conta ou avaliação.\n' >&2
+    return 1
+  fi
+  printf '%s\n' "$room_id"
+}
+
+evaluation_open_live_room() {
+  local slot_id="$1"
+  local room_id
+  local url
+
+  room_id=$(evaluation_live_room_id "$slot_id") || {
+    ui_error "Não foi possível acessar a sala desta avaliação."
+    ui_pause
+    return 1
+  }
+  url="https://meet.jit.si/SIMPLE-Eval-$room_id"
+  ui_screen_begin "SALA AO VIVO · AVALIAÇÃO $slot_id"
+  ui_panel "ÁUDIO, VÍDEO E COMPARTILHAMENTO"
+  ui_wrap_text \
+    "Abra este link no navegador do seu computador. A outra pessoa deve usar o mesmo link." \
+    "$(ui_width)" 2
+  printf '\n  Link da sala:\n  \033]8;;%s\033\\%s\033]8;;\033\\\n\n' "$url" "$url"
+  ui_wrap_text \
+    "Ao entrar, permita o microfone e use o compartilhamento de tela para mostrar o terminal. Qualquer pessoa com este link pode tentar entrar." \
+    "$(ui_width)" 2
+  ui_panel_end
+  ui_pause
+}
+
 evaluation_respond_to_review() {
   local review_id="$1"
   local score="$2"
@@ -140,7 +226,7 @@ evaluation_expire_pending_requests() {
     WHERE status = 'pending'
       AND requested_at <= datetime('now', '-24 hours');
     UPDATE evaluation_slots
-    SET accepted_by = NULL, accepted_at = NULL
+    SET accepted_by = NULL, accepted_at = NULL, live_room = NULL
     WHERE status = 'open'
       AND EXISTS (
         SELECT 1 FROM evaluation_requests request
@@ -174,9 +260,10 @@ evaluation_pending_requests() {
 
   evaluation_expire_pending_requests || return 1
   db_query "
-    SELECT request.id || '|' || slot.id || '|' ||
-           hex(evaluator.username) || '|' || hex(exercise.code) || '|' ||
-           hex(exercise.name) || '|' || hex(request.requested_at)
+    SELECT hex(request.id) || char(9) || hex(slot.id) || char(9) ||
+           hex(evaluator.username) || char(9) || hex(exercise.code) || char(9) ||
+           hex(exercise.name) || char(9) || hex(request.requested_at) || char(9) ||
+           hex(request.status)
     FROM evaluation_requests request
     JOIN evaluation_slots slot ON slot.id = request.slot_id
     JOIN submissions submission ON submission.id = slot.submission_id
@@ -185,7 +272,7 @@ evaluation_pending_requests() {
     WHERE submission.user_id = $CURRENT_USER_ID
       AND slot.status = 'open'
       AND slot.accepted_by = request.reviewer_id
-      AND request.status = 'pending'
+      AND request.status IN ('pending', 'accepted')
     ORDER BY request.requested_at, request.id;
   "
 }
@@ -222,7 +309,7 @@ evaluation_respond_to_request() {
       );
     SELECT changes();
     UPDATE evaluation_slots
-    SET accepted_by = NULL, accepted_at = NULL
+    SET accepted_by = NULL, accepted_at = NULL, live_room = NULL
     WHERE id = (
         SELECT slot_id FROM evaluation_requests WHERE id = $request_id
       )
@@ -313,7 +400,7 @@ evaluation_cancel_request() {
     );
     SELECT changes();
     UPDATE evaluation_slots
-    SET accepted_by = NULL, accepted_at = NULL
+    SET accepted_by = NULL, accepted_at = NULL, live_room = NULL
     WHERE id = $slot_id AND status = 'open'
       AND accepted_by = $CURRENT_USER_ID;
     COMMIT;
@@ -333,6 +420,7 @@ evaluation_handle_pending_requests() {
   local exercise_code
   local exercise_name
   local requested_at
+  local request_status
   local choice
   local decision
   local result
@@ -343,18 +431,27 @@ evaluation_handle_pending_requests() {
   mapfile -t requests <<<"$rows"
   for encoded in "${requests[@]}"; do
     IFS=$'\t' read -r request_id slot_id reviewer exercise_code \
-      exercise_name requested_at <<<"$encoded"
+      exercise_name requested_at request_status <<<"$encoded"
     request_id=$(db_hex_decode "$request_id") || return 1
     slot_id=$(db_hex_decode "$slot_id") || return 1
     reviewer=$(db_hex_decode "$reviewer") || return 1
     exercise_code=$(db_hex_decode "$exercise_code") || return 1
     exercise_name=$(db_hex_decode "$exercise_name") || return 1
     requested_at=$(db_hex_decode "$requested_at") || return 1
+    request_status=$(db_hex_decode "$request_status") || return 1
     ui_panel "PEDIDO PARA AVALIAR · $exercise_code"
     ui_wrap_text "Avaliador: $reviewer" "$(ui_width)" 2
     ui_wrap_text "Exercício: $exercise_name" "$(ui_width)" 2
     ui_wrap_text "Pedido recebido: $requested_at" "$(ui_width)" 2
     ui_panel_end
+    if [[ "$request_status" == "accepted" ]]; then
+      if ui_menu_choice choice "AVALIAÇÃO ACEITA · $exercise_code" \
+        "1|Abrir sala de áudio e vídeo" \
+        "0|Voltar"; then
+        [[ "$choice" == "1" ]] && evaluation_open_live_room "$slot_id"
+      fi
+      continue
+    fi
     if ! ui_menu_choice choice "PEDIDO $request_id" \
       "1|Aceitar avaliação" \
       "2|Recusar avaliação" \
@@ -369,6 +466,7 @@ evaluation_handle_pending_requests() {
     result=$(evaluation_respond_to_request "$request_id" "$decision") || return 1
     if [[ "$decision" == "accept" ]]; then
       ui_success "Pedido aceito. O avaliador já pode consultar a entrega."
+      evaluation_open_live_room "$slot_id" || return 1
     else
       ui_message "Pedido recusado. A entrega voltou à lista de avaliações."
     fi
@@ -692,10 +790,14 @@ evaluations_menu() {
         ;;
       accepted)
         ui_menu_choice response "SLOT $slot" \
-          "1|Avaliar submissão" "2|Cancelar meu pedido" "0|Voltar" || continue
+          "1|Abrir sala de áudio e vídeo" \
+          "2|Avaliar submissão" \
+          "3|Cancelar meu pedido" \
+          "0|Voltar" || continue
         case "$response" in
-          1) evaluation_review_prompt "$slot" ;;
-          2)
+          1) evaluation_open_live_room "$slot" ;;
+          2) evaluation_review_prompt "$slot" ;;
+          3)
             evaluation_cancel_request "$slot" &&
               ui_message "Pedido cancelado; o slot voltou à lista."
             ui_pause

@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS evaluation_slots (
     reviewer_id INTEGER REFERENCES users(id),
     accepted_by INTEGER REFERENCES users(id),
     accepted_at DATETIME,
+    live_room TEXT,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     completed_at DATETIME,
     CHECK (

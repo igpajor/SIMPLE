@@ -888,14 +888,18 @@ broker_evaluations_menu() {
     fi
     if [[ "$request_status" == "accepted" || "$accepted" == "1" ]]; then
       ui_menu_choice choice "SLOT $slot_id" \
-        "1|Avaliar submissão" \
-        "2|Liberar minha reserva" \
+        "1|Abrir sala de áudio e vídeo" \
+        "2|Avaliar submissão" \
+        "3|Liberar minha reserva" \
         "0|Voltar" || return 0
       case "$choice" in
       1)
-        broker_evaluation_review_prompt "$slot_id"
+        evaluation_open_live_room "$slot_id"
         ;;
       2)
+        broker_evaluation_review_prompt "$slot_id"
+        ;;
+      3)
         if evaluation_cancel_request "$slot_id"; then
           ui_message "Reserva liberada."
         fi

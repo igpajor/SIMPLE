@@ -98,6 +98,7 @@ MIGRATIONS = (
     ("users", "is_active", "INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1))"),
     ("evaluation_slots", "accepted_by", "INTEGER REFERENCES users(id)"),
     ("evaluation_slots", "accepted_at", "DATETIME"),
+    ("evaluation_slots", "live_room", "TEXT"),
     ("reviews", "recipient_score", "INTEGER CHECK (recipient_score IS NULL OR recipient_score BETWEEN 0 AND 5)"),
     ("reviews", "recipient_feedback", "TEXT NOT NULL DEFAULT ''"),
     ("reviews", "recipient_responded_at", "DATETIME"),
@@ -144,6 +145,7 @@ METHOD_FIELDS = {
     "evaluations.requests.list": ("token",),
     "evaluations.request.respond": ("token", "request_id", "decision"),
     "evaluations.slot.get": ("token", "slot_id"),
+    "evaluations.room.get": ("token", "slot_id"),
     "evaluations.review.get": ("token", "review_id"),
     "evaluations.accept": ("token", "slot_id"),
     "evaluations.cancel": ("token", "slot_id"),
@@ -334,7 +336,7 @@ def _validate_database_connection(
         },
         "evaluation_slots": {
             "id", "submission_id", "status", "reviewer_id", "accepted_by",
-            "accepted_at", "created_at", "completed_at",
+            "accepted_at", "live_room", "created_at", "completed_at",
         },
         "evaluation_requests": {
             "id", "slot_id", "reviewer_id", "status", "requested_at", "responded_at",
@@ -1434,7 +1436,7 @@ class Broker:
         connection.execute(
             """
             UPDATE evaluation_slots
-            SET accepted_by = NULL, accepted_at = NULL
+            SET accepted_by = NULL, accepted_at = NULL, live_room = NULL
             WHERE status = 'open'
               AND EXISTS (
                   SELECT 1 FROM evaluation_requests request
@@ -2362,7 +2364,7 @@ class Broker:
                     SELECT request.id AS request_id, slot.id AS slot_id,
                            evaluator.username AS reviewer,
                            e.code AS exercise_code, e.name AS exercise_name,
-                           request.requested_at
+                           request.requested_at, request.status
                     FROM evaluation_requests request
                     JOIN evaluation_slots slot ON slot.id = request.slot_id
                     JOIN submissions s ON s.id = slot.submission_id
@@ -2370,7 +2372,7 @@ class Broker:
                     JOIN exercises e ON e.id = s.exercise_id
                     WHERE s.user_id = ? AND slot.status = 'open'
                       AND slot.accepted_by = request.reviewer_id
-                      AND request.status = 'pending'
+                      AND request.status IN ('pending', 'accepted')
                     ORDER BY request.requested_at, request.id
                     """,
                     (user_id,),
@@ -2412,7 +2414,7 @@ class Broker:
                     connection.execute(
                         """
                         UPDATE evaluation_slots
-                        SET accepted_by = NULL, accepted_at = NULL
+                        SET accepted_by = NULL, accepted_at = NULL, live_room = NULL
                         WHERE id = ? AND status = 'open' AND accepted_by = ?
                         """,
                         (pending["slot_id"], pending["reviewer_id"]),
@@ -2449,6 +2451,44 @@ class Broker:
                 slot["description"] = exercise["description"]
                 slot["statement"] = exercise["statement"]
                 return {"ok": True, "slot": slot}
+
+            if method == "evaluations.room.get":
+                slot_id = self._integer(request["slot_id"], "Slot")
+                connection.execute("BEGIN IMMEDIATE")
+                authorized = connection.execute(
+                    """
+                    SELECT slot.live_room
+                    FROM evaluation_slots slot
+                    JOIN submissions s ON s.id = slot.submission_id
+                    JOIN evaluation_requests request
+                      ON request.slot_id = slot.id
+                     AND request.reviewer_id = slot.accepted_by
+                     AND request.status = 'accepted'
+                    WHERE slot.id = ? AND slot.status = 'open'
+                      AND (s.user_id = ? OR slot.accepted_by = ?)
+                    """,
+                    (slot_id, user_id, user_id),
+                ).fetchone()
+                if authorized is None:
+                    raise ValueError(
+                        "A sala só está disponível aos participantes da avaliação aceita."
+                    )
+                room_id = authorized["live_room"]
+                if room_id is None:
+                    room_id = secrets.token_hex(24)
+                    connection.execute(
+                        """
+                        UPDATE evaluation_slots SET live_room = ?
+                        WHERE id = ? AND live_room IS NULL AND status = 'open'
+                        """,
+                        (room_id, slot_id),
+                    )
+                room = connection.execute(
+                    "SELECT live_room FROM evaluation_slots WHERE id = ?",
+                    (slot_id,),
+                ).fetchone()
+                connection.commit()
+                return {"ok": True, "room_id": room["live_room"]}
 
             if method == "evaluations.review.get":
                 review_id = self._integer(request["review_id"], "Avaliação")
@@ -2558,7 +2598,7 @@ class Broker:
                 updated = connection.execute(
                     """
                     UPDATE evaluation_slots
-                    SET accepted_by = NULL, accepted_at = NULL
+                    SET accepted_by = NULL, accepted_at = NULL, live_room = NULL
                     WHERE id = ? AND status = 'open' AND accepted_by = ?
                     """,
                     (slot_id, user_id),

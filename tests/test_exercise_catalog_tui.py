@@ -149,6 +149,7 @@ class ExerciseCatalogTuiTests(unittest.TestCase):
             patch("modules.exercise_catalog_tui.webbrowser.open", return_value=False),
             patch("modules.exercise_catalog_tui.curses.def_prog_mode"),
             patch("modules.exercise_catalog_tui.curses.endwin"),
+            patch("modules.exercise_catalog_tui.curses.flushinp") as flush_input,
             patch("modules.exercise_catalog_tui.curses.reset_prog_mode"),
             patch("modules.exercise_catalog_tui.sys.stdout", output),
             patch(
@@ -162,6 +163,7 @@ class ExerciseCatalogTuiTests(unittest.TestCase):
         self.assertIn("Clique no link abaixo", output.getvalue())
         self.assertIn("https://example.org/exercise.pdf", output.getvalue())
         self.assertIn("\x1b]8;;https://example.org/exercise.pdf\x1b\\", output.getvalue())
+        flush_input.assert_called_once_with()
         screen.clearok.assert_called_once_with(True)
 
     def test_catalog_accepts_broker_response_without_pdf_url(self) -> None:

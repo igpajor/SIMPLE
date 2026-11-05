@@ -554,6 +554,22 @@ alice_request_id=$(db_query "
 ")
 CURRENT_USER_ID="$alice_id"
 evaluation_respond_to_request "$alice_request_id" accept
+owner_room_output=$(printf "1\n\n" | evaluation_handle_pending_requests)
+alice_room=$(evaluation_live_room_id "$alice_first_slot")
+if [[ "$owner_room_output" != *"https://meet.jit.si/SIMPLE-Eval-$alice_room"* ]]; then
+  fail "autora consegue abrir a sala após aceitar o pedido"
+fi
+CURRENT_USER_ID="$bob_id"
+bob_room=$(evaluation_live_room_id "$alice_first_slot")
+assert_equals "$alice_room" "$bob_room" \
+  "as duas pessoas recebem a mesma sala privada de avaliação"
+if [[ ! "$alice_room" =~ ^[a-f0-9]{48}$ ]]; then
+  fail "sala de avaliação usa identificador aleatório seguro"
+fi
+CURRENT_USER_ID="$carol_id"
+if evaluation_live_room_id "$alice_first_slot" >/dev/null 2>&1; then
+  fail "terceiros não conseguem obter o link da sala"
+fi
 CURRENT_USER_ID="$bob_id"
 review_output=$(printf "2\nAjustar: use ' aspas\ns\n" |
   evaluation_review_prompt "$alice_first_slot")

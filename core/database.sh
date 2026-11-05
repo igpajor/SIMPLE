@@ -80,6 +80,7 @@ users	bio	TEXT NOT NULL DEFAULT ''
 users	is_active	INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1))
 evaluation_slots	accepted_by	INTEGER REFERENCES users(id)
 evaluation_slots	accepted_at	DATETIME
+evaluation_slots	live_room	TEXT
 reviews	recipient_score	INTEGER CHECK (recipient_score IS NULL OR recipient_score BETWEEN 0 AND 5)
 reviews	recipient_feedback	TEXT NOT NULL DEFAULT ''
 reviews	recipient_responded_at	DATETIME

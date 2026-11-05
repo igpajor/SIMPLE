@@ -304,6 +304,7 @@ class ExerciseCatalogTui:
                     sys.stdout.write("\nPressione Enter para voltar ao SIMPLE...")
                     sys.stdout.flush()
                     sys.stdin.readline()
+                    curses.flushinp()
             finally:
                 curses.reset_prog_mode()
                 screen.clearok(True)

@@ -2318,11 +2318,21 @@ class BrokerTests(unittest.TestCase):
                 }
             )["ok"]
         )
+        self.assertFalse(
+            self.call(
+                {
+                    "method": "evaluations.room.get",
+                    "token": reviewer["token"],
+                    "slot_id": str(submission["slot_id"]),
+                }
+            )["ok"]
+        )
         incoming_requests = self.call(
             {"method": "evaluations.requests.list", "token": owner["token"]}
         )
         self.assertEqual(accepted["request_id"], incoming_requests["requests"][0]["request_id"])
         self.assertEqual("exercise-reviewer", incoming_requests["requests"][0]["reviewer"])
+        self.assertEqual("pending", incoming_requests["requests"][0]["status"])
         self.assertEqual(
             1,
             self.call({"method": "notifications.count", "token": owner["token"]})[
@@ -2345,6 +2355,38 @@ class BrokerTests(unittest.TestCase):
         )
         self.assertTrue(owner_accept["ok"], owner_accept)
         self.assertEqual("accepted", owner_accept["status"])
+        self.assertEqual(
+            "accepted",
+            self.call(
+                {"method": "evaluations.requests.list", "token": owner["token"]}
+            )["requests"][0]["status"],
+        )
+        owner_room = self.call(
+            {
+                "method": "evaluations.room.get",
+                "token": owner["token"],
+                "slot_id": str(submission["slot_id"]),
+            }
+        )
+        reviewer_room = self.call(
+            {
+                "method": "evaluations.room.get",
+                "token": reviewer["token"],
+                "slot_id": str(submission["slot_id"]),
+            }
+        )
+        self.assertRegex(owner_room["room_id"], r"^[a-f0-9]{48}$")
+        self.assertEqual(owner_room["room_id"], reviewer_room["room_id"])
+        outsider = self.create_user("exercise-outsider")
+        self.assertFalse(
+            self.call(
+                {
+                    "method": "evaluations.room.get",
+                    "token": outsider["token"],
+                    "slot_id": str(submission["slot_id"]),
+                }
+            )["ok"]
+        )
         self.assertEqual(
             1,
             self.call({"method": "notifications.count", "token": reviewer["token"]})[
@@ -2394,6 +2436,15 @@ class BrokerTests(unittest.TestCase):
             }
         )
         self.assertTrue(cancelled["ok"], cancelled)
+        self.assertFalse(
+            self.call(
+                {
+                    "method": "evaluations.room.get",
+                    "token": reviewer["token"],
+                    "slot_id": str(submission["slot_id"]),
+                }
+            )["ok"]
+        )
         accepted_again = self.call(
             {
                 "method": "evaluations.accept",
@@ -3091,9 +3142,30 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual(0, accepted.returncode, accepted.stderr)
         self.assertIn("Pedido aceito", accepted.stdout)
         self.assertIn("MINHAS ENTREGAS", accepted.stdout)
+        accepted_room = re.search(
+            r"https://meet\.jit\.si/SIMPLE-Eval-[a-f0-9]{48}",
+            accepted.stdout,
+        )
+        self.assertIsNotNone(accepted_room, accepted.stdout)
         self.assertIn("Resolva o exercício", accepted.stdout)
         self.assertIn("AVALIAÇÃO", accepted.stdout)
         self.assertIn("Aguardando avaliação", accepted.stdout)
+
+        reviewer_room = subprocess.run(
+            ["bash", str(ROOT_DIR / "simple.sh")],
+            input=(
+                "2\ntui-reviewer\nsecure-pass-123\n"
+                f"2\n{slot_id}\n1\n\n0\n0\n"
+            ),
+            text=True,
+            capture_output=True,
+            cwd=ROOT_DIR,
+            env=environment,
+            check=False,
+            timeout=15,
+        )
+        self.assertEqual(0, reviewer_room.returncode, reviewer_room.stderr)
+        self.assertIn(accepted_room.group(0), reviewer_room.stdout)
 
         reviewer_progress = subprocess.run(
             ["bash", str(ROOT_DIR / "simple.sh")],
@@ -3117,7 +3189,7 @@ class BrokerTests(unittest.TestCase):
             ["bash", str(ROOT_DIR / "simple.sh")],
             input=(
                 "2\ntui-reviewer\nsecure-pass-123\n"
-                f"2\n{slot_id}\n1\n5\nBoa solução.\n.fim\ns\n0\n0\n"
+                f"2\n{slot_id}\n2\n5\nBoa solução.\n.fim\ns\n0\n0\n"
             ),
             text=True,
             capture_output=True,
