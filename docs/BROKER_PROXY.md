@@ -127,17 +127,21 @@ a conversa nem inserir mensagens no meio do texto digitado. O restante da
 interface SIMPLE permanece em Bash. O módulo `curses` do Python 3 precisa estar
 disponível no sistema (em algumas distribuições, pelo pacote `python3-curses`).
 
-Por padrão, a atualização automática continua desativada: pressione Enter com
-o campo vazio para sincronizar, ou defina `CHAT_AUTO_REFRESH=1` para receber
-mensagens enquanto conversa. O intervalo padrão é dois segundos. `/sair`
-retorna ao menu; Backspace e setas editam o texto, Page Up/Page Down navegam
-no histórico e Ctrl+C retorna ao menu. Sem TTY, permanece disponível o leitor
-de linha padrão, sem atualização automática. A tela carrega as últimas dez
-mensagens por padrão, oferece `/historico` para páginas anteriores e
-`/buscar termo` para pesquisar na sala atual. Horários persistidos em UTC são
-convertidos ao fuso configurado no cliente. Autoria própria e menções recebem
-destaque; um indicador temporário mostra quando outra pessoa está digitando
-na mesma sala.
+Por padrão, a atualização automática fica ativa com intervalo de dois segundos;
+use `CHAT_AUTO_REFRESH=0` para desativá-la ou `CHAT_REFRESH_SECONDS` para ajustar
+o intervalo. Mensagens não lidas em outras salas aparecem com um atalho; DMs
+mostram o remetente, F2 e o comando `/dm usuario` para abrir a conversa. A DM
+abre em uma janela sobre a sala atual, preservando histórico, rolagem e rascunho
+da sala ao fundo. Esc ou `/voltar` fecha a DM e retorna à sala anterior; `/sair`
+encerra o chat. Backspace e setas editam o texto, Page Up/Page Down navegam
+no histórico e Ctrl+C retorna ao menu. Em terminais sem suporte à tela curses,
+há um leitor de linha alternativo, com atualização automática no modo
+interativo; sem TTY, o leitor não faz polling enquanto aguarda entrada.
+A tela carrega as últimas dez mensagens por padrão, oferece `/historico` para
+páginas anteriores e `/buscar termo` para pesquisar na sala atual. Horários
+persistidos em UTC são convertidos ao fuso configurado no cliente. Autoria
+própria e menções recebem destaque; um indicador temporário mostra quando outra
+pessoa está digitando na mesma sala.
 
 O menu principal mostra pessoas online, quantidade de mensagens não lidas,
 menções e prévia da última mensagem pendente. A leitura é persistida por conta
@@ -171,7 +175,7 @@ SSH. Valores inválidos do Broker impedem a inicialização do serviço:
 | `SIMPLE_CHAT_PAGE_SIZE` | Broker | 50 | 1–100 |
 | `SIMPLE_CHAT_ONLINE_WINDOW_SECONDS` | Broker | 300 | 30–86400 |
 | `SIMPLE_CHAT_SEND_INTERVAL_SECONDS` | Broker | 2 | 1–3600 |
-| `CHAT_AUTO_REFRESH` | Cliente | `0` (desativado) | `0` ou `1` |
+| `CHAT_AUTO_REFRESH` | Cliente | `1` (ativado) | `0` ou `1` |
 | `CHAT_REFRESH_SECONDS` | Cliente | 2 | 1–60 |
 | `CHAT_HISTORY_WINDOW` | Cliente | 10 | 1–100 |
 | `CHAT_TIMEZONE` | Cliente | `America/Sao_Paulo` | Fuso reconhecido pelo sistema |

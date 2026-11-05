@@ -937,9 +937,9 @@ class Broker:
         return other_id
 
     @staticmethod
-    def _chat_unread(
+    def _chat_unread_rooms(
         connection: sqlite3.Connection, user_id: int
-    ) -> tuple[int, int, dict[str, Any] | None]:
+    ) -> list[dict[str, Any]]:
         visible = """
             (m.channel IN ('global', 'help')
              OR m.channel IN (
@@ -955,41 +955,101 @@ class Broker:
                  )
              ))
         """
-        unread = connection.execute(
+        unread_rooms = connection.execute(
             f"""
-            SELECT COUNT(DISTINCT m.id) AS total,
-                   COUNT(DISTINCT mention.message_id) AS mentions
+            SELECT m.channel, COUNT(*) AS unread_count,
+                   SUM(CASE WHEN EXISTS (
+                       SELECT 1 FROM chat_mentions mention
+                       WHERE mention.message_id = m.id
+                         AND mention.user_id = ?
+                   ) THEN 1 ELSE 0 END) AS mention_count,
+                   MAX(m.id) AS latest_id
             FROM chat_messages m
-            LEFT JOIN chat_mentions mention
-              ON mention.message_id = m.id AND mention.user_id = ?
             LEFT JOIN chat_reads r
               ON r.user_id = ? AND r.channel = m.channel
             WHERE m.user_id != ? AND m.hidden_at IS NULL
               AND m.id > COALESCE(r.last_read_message_id, 0)
               AND {visible}
+            GROUP BY m.channel
+            ORDER BY latest_id DESC
             """,
             (user_id, user_id, user_id, user_id, user_id, user_id),
-        ).fetchone()
-        preview_row = connection.execute(
-            f"""
-            SELECT m.channel, u.username, m.body, m.created_at
-            FROM chat_messages m
-            JOIN users u ON u.id = m.user_id
-            LEFT JOIN chat_reads r
-              ON r.user_id = ? AND r.channel = m.channel
-            WHERE m.user_id != ? AND m.hidden_at IS NULL
-              AND m.id > COALESCE(r.last_read_message_id, 0)
-              AND {visible}
-            ORDER BY m.id DESC
-            LIMIT 1
-            """,
-            (user_id, user_id, user_id, user_id, user_id),
-        ).fetchone()
-        return (
-            int(unread["total"] or 0),
-            int(unread["mentions"] or 0),
-            dict(preview_row) if preview_row is not None else None,
+        ).fetchall()
+
+        rooms: list[dict[str, Any]] = []
+        for unread in unread_rooms:
+            channel = str(unread["channel"])
+            latest = connection.execute(
+                """
+                SELECT m.id, u.username, m.body, m.created_at
+                FROM chat_messages m
+                JOIN users u ON u.id = m.user_id
+                WHERE m.channel = ? AND m.id = ?
+                """,
+                (channel, unread["latest_id"]),
+            ).fetchone()
+            if channel == "global":
+                name = "Chat global"
+            elif channel == "help":
+                name = "Ajuda"
+            elif channel.startswith("exercise:"):
+                exercise = connection.execute(
+                    "SELECT name FROM exercises WHERE code = ?",
+                    (channel.removeprefix("exercise:"),),
+                ).fetchone()
+                name = (
+                    f"{channel.removeprefix('exercise:')} — {exercise['name']}"
+                    if exercise is not None
+                    else channel
+                )
+            else:
+                first_id, second_id = (
+                    int(value) for value in channel.split(":")[1:]
+                )
+                peer_id = second_id if user_id == first_id else first_id
+                peer = connection.execute(
+                    "SELECT username FROM users WHERE id = ? AND is_active = 1",
+                    (peer_id,),
+                ).fetchone()
+                name = f"DM · {peer['username']}" if peer is not None else "DM"
+
+            if latest is not None:
+                rooms.append(
+                    {
+                        "channel": channel,
+                        "name": name,
+                        "kind": "direct" if channel.startswith("dm:") else "room",
+                        "peer_username": (
+                            name.removeprefix("DM · ")
+                            if channel.startswith("dm:")
+                            else None
+                        ),
+                        "unread_count": int(unread["unread_count"]),
+                        "mention_count": int(unread["mention_count"] or 0),
+                        "preview": dict(latest),
+                    }
+                )
+        return rooms
+
+    @staticmethod
+    def _chat_unread_summary(
+        rooms: list[dict[str, Any]],
+    ) -> tuple[int, int, dict[str, Any] | None]:
+        unread_count = sum(room["unread_count"] for room in rooms)
+        mention_count = sum(room["mention_count"] for room in rooms)
+        preview = next(
+            (
+                {
+                    "channel": room["channel"],
+                    "username": room["preview"]["username"],
+                    "body": room["preview"]["body"],
+                    "created_at": room["preview"]["created_at"],
+                }
+                for room in rooms
+            ),
+            None,
         )
+        return unread_count, mention_count, preview
 
     @staticmethod
     def _chat_message_rows(
@@ -1514,8 +1574,9 @@ class Broker:
 
             if method == "chat.dashboard":
                 online_users = self._online_usernames(connection)
-                unread_count, mention_count, preview = self._chat_unread(
-                    connection, user_id
+                unread_rooms = self._chat_unread_rooms(connection, user_id)
+                unread_count, mention_count, preview = self._chat_unread_summary(
+                    unread_rooms
                 )
                 return {
                     "ok": True,
@@ -1524,6 +1585,7 @@ class Broker:
                     "unread_count": unread_count,
                     "mention_count": mention_count,
                     "preview": preview,
+                    "unread_rooms": unread_rooms,
                 }
 
             if method == "chat.rooms":
@@ -1659,8 +1721,9 @@ class Broker:
                         (user_id, channel, last_id),
                     )
                     connection.commit()
-                unread_count, mention_count, preview = self._chat_unread(
-                    connection, user_id
+                unread_rooms = self._chat_unread_rooms(connection, user_id)
+                unread_count, mention_count, preview = self._chat_unread_summary(
+                    unread_rooms
                 )
                 online_users = self._online_usernames(connection)
                 typing_users = self._chat_typing_usernames(
@@ -1688,6 +1751,7 @@ class Broker:
                     "unread_count": unread_count,
                     "mention_count": mention_count,
                     "preview": preview,
+                    "unread_rooms": unread_rooms,
                     "pinned": [dict(row) for row in pinned],
                 }
 

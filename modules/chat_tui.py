@@ -110,6 +110,7 @@ class ChatTui:
         self.online_users: list[str] = []
         self.typing_users: list[str] = []
         self.pinned: list[dict[str, Any]] = []
+        self.unread_rooms: list[dict[str, Any]] = []
         self.last_id = 0
         self.history_before: int | None = None
         self.history_has_more = False
@@ -127,6 +128,26 @@ class ChatTui:
         self.height = 24
         self.colors: dict[str, int] = {}
         self.last_typing_update = 0.0
+        self.dm_parent_state: dict[str, Any] | None = None
+        self.dm_states: dict[str, dict[str, Any]] = {}
+
+    ROOM_STATE_FIELDS = (
+        "channel",
+        "room_name",
+        "messages",
+        "online_users",
+        "typing_users",
+        "pinned",
+        "last_id",
+        "history_before",
+        "history_has_more",
+        "history_loaded",
+        "scroll_offset",
+        "input_text",
+        "cursor",
+        "typing_active",
+        "last_typing_update",
+    )
 
     def request(self, method: str, **fields: str) -> dict[str, Any]:
         try:
@@ -188,7 +209,61 @@ class ChatTui:
         self.online_users = response.get("online_users", [])
         self.typing_users = response.get("typing_users", [])
         self.pinned = response.get("pinned", [])
+        unread_rooms = response.get("unread_rooms", [])
+        if not isinstance(unread_rooms, list):
+            raise ChatError("O Broker retornou notificações inválidas.")
+        self.unread_rooms = unread_rooms
         return len(new_messages)
+
+    def capture_room_state(self) -> dict[str, Any]:
+        return {field: getattr(self, field) for field in self.ROOM_STATE_FIELDS}
+
+    def restore_room_state(self, state: dict[str, Any]) -> None:
+        for field in self.ROOM_STATE_FIELDS:
+            setattr(self, field, state[field])
+
+    def open_dm(self, channel: str, room_name: str) -> None:
+        if self.typing_active:
+            self.mark_typing(False)
+        if self.channel.startswith("dm:"):
+            self.dm_states[self.channel] = self.capture_room_state()
+        elif self.dm_parent_state is None:
+            self.dm_parent_state = self.capture_room_state()
+
+        cached = self.dm_states.get(channel)
+        if cached is not None:
+            self.restore_room_state(cached)
+            self.room_name = room_name
+            self.sync()
+        else:
+            self.channel = channel
+            self.room_name = room_name
+            self.messages = []
+            self.online_users = []
+            self.typing_users = []
+            self.pinned = []
+            self.last_id = 0
+            self.history_before = None
+            self.history_has_more = False
+            self.history_loaded = False
+            self.scroll_offset = 0
+            self.input_text = ""
+            self.cursor = 0
+            self.typing_active = False
+            self.sync()
+
+    def return_to_parent(self) -> None:
+        if self.dm_parent_state is None:
+            self.set_status("Você já está na sala principal.")
+            return
+        if self.typing_active:
+            self.mark_typing(False)
+        if self.channel.startswith("dm:"):
+            self.dm_states[self.channel] = self.capture_room_state()
+        parent_state = self.dm_parent_state
+        self.dm_parent_state = None
+        self.restore_room_state(parent_state)
+        self.sync()
 
     def reset_channel(self, channel: str, room_name: str) -> None:
         if self.typing_active:
@@ -239,7 +314,9 @@ class ChatTui:
         self.scroll_offset += max(0, len(self.all_display_rows()) - previous_row_count)
         self.set_status(f"{len(older)} mensagem(ns) anterior(es) carregada(s).")
 
-    def message_display_rows(self, message: dict[str, Any]) -> list[tuple[str, str]]:
+    def message_display_rows(
+        self, message: dict[str, Any], width: int | None = None
+    ) -> list[tuple[str, str]]:
         created = local_datetime(str(message["created_at"]), self.timezone)
         username = str(message["username"])
         user_id = int(message["user_id"])
@@ -256,7 +333,7 @@ class ChatTui:
             color = f"user{sum(map(ord, username)) % 6}"
         prefix = f"[#{message_id} {created:%H:%M}] {author}: "
         continuation = " " * min(len(prefix), 16)
-        available = max(self.width - 4, 12)
+        available = max((width if width is not None else self.width) - 4, 12)
         wrapped = wrap_text(body, max(available - len(prefix), 10))
         lines = [(prefix + wrapped[0], color)]
         lines.extend((continuation + line, color) for line in wrapped[1:])
@@ -267,7 +344,7 @@ class ChatTui:
             lines.append((f"  {reactions}", "content"))
         return lines
 
-    def all_display_rows(self) -> list[tuple[str, str]]:
+    def all_display_rows(self, width: int | None = None) -> list[tuple[str, str]]:
         rows: list[tuple[str, str]] = []
         last_date: str | None = None
         for message in self.messages:
@@ -275,7 +352,7 @@ class ChatTui:
             if created.date().isoformat() != last_date:
                 last_date = created.date().isoformat()
                 rows.append((last_date, "dim"))
-            rows.extend(self.message_display_rows(message))
+            rows.extend(self.message_display_rows(message, width))
         if self.history_has_more:
             rows.insert(0, ("Há mensagens anteriores · /historico", "dim"))
         return rows
@@ -309,12 +386,62 @@ class ChatTui:
         except curses.error:
             pass
 
-    def draw(self, screen: Any) -> None:
-        self.height, self.width = screen.getmaxyx()
-        screen.erase()
+    def notification_hint(self) -> str:
+        if not self.unread_rooms:
+            return ""
+        room = next(
+            (
+                unread
+                for unread in self.unread_rooms
+                if unread.get("kind") == "direct"
+            ),
+            self.unread_rooms[0],
+        )
+        preview = room.get("preview", {})
+        body = safe_text(preview.get("body", ""))
+        if room.get("kind") == "direct" and room.get("peer_username"):
+            username = safe_text(room["peer_username"])
+            return f"Nova DM de {username}: {body} · F2 ou /dm {username}"
+        channel = safe_text(room.get("channel", "global"))
+        count = room.get("unread_count", 0)
+        return f"{count} nova(s) em {room.get('name', channel)} · /sala {channel}"
+
+    def _draw_input(
+        self, window: Any, y: int, x: int, available_width: int
+    ) -> None:
+        prompt = "MENSAGEM > "
+        input_width = max(1, available_width - len(prompt))
+        cursor_cell = display_width(self.input_text[: self.cursor])
+        start_cell = max(0, cursor_cell - input_width + 1)
+        visible: list[str] = []
+        used = 0
+        skipped = 0
+        for char in self.input_text:
+            char_cells = char_width(char)
+            if skipped + char_cells <= start_cell:
+                skipped += char_cells
+                continue
+            if used + char_cells > input_width:
+                break
+            visible.append(char)
+            used += char_cells
+        self.draw_text(
+            window, y, x, prompt + "".join(visible), "input", available_width
+        )
+        try:
+            window.move(
+                y,
+                min(
+                    x + available_width - 1,
+                    x + len(prompt) + max(0, cursor_cell - start_cell),
+                ),
+            )
+        except curses.error:
+            pass
+
+    def _draw_room(self, screen: Any) -> None:
         if self.height < 6 or self.width < 30:
             self.draw_text(screen, 0, 0, "Aumente o terminal para usar o chat.", "warning")
-            screen.refresh()
             return
         self.draw_text(screen, 0, 1, f"SIMPLE · {self.room_name}", "title")
         online = ", ".join(
@@ -327,7 +454,10 @@ class ChatTui:
             else "Ninguém online."
         )
         self.draw_text(screen, 1, 1, online_line, "success")
-        if self.typing_users:
+        notification = self.notification_hint()
+        if notification:
+            self.draw_text(screen, 2, 1, notification, "warning")
+        elif self.typing_users:
             typing = ", ".join(safe_text(name) for name in self.typing_users)
             self.draw_text(screen, 2, 1, f"Digitando: {typing}", "success")
         elif self.pinned:
@@ -361,40 +491,124 @@ class ChatTui:
 
         input_y = self.height - 1
         status_y = self.height - 2
-        prompt = "MENSAGEM > "
-        input_width = max(1, self.width - len(prompt) - 3)
-        cursor_cell = display_width(self.input_text[: self.cursor])
-        start_cell = max(0, cursor_cell - input_width + 1)
-        visible: list[str] = []
-        used = 0
-        skipped = 0
-        for char in self.input_text:
-            char_cells = char_width(char)
-            if skipped + char_cells <= start_cell:
-                skipped += char_cells
-                continue
-            if used + char_cells > input_width:
-                break
-            visible.append(char)
-            used += char_cells
-        self.draw_text(screen, input_y, 1, prompt + "".join(visible), "input")
+        self._draw_input(screen, input_y, 1, self.width - 3)
         if self.status and time.monotonic() < self.status_until:
             self.draw_text(screen, status_y, 1, self.status, "warning")
         else:
             hint = (
-                f"Atualiza a cada {self.refresh_seconds}s · /ajuda · /sair"
+                f"Autoatualização {self.refresh_seconds}s · /ajuda · Esc sai"
                 if self.auto_refresh
-                else "Enter vazio atualiza · /ajuda · /sair"
+                else "Enter vazio atualiza · /ajuda · Esc sai"
             )
             self.draw_text(screen, status_y, 1, hint, "dim")
-        cursor_x = min(
-            self.width - 2,
-            1 + len(prompt) + max(0, cursor_cell - start_cell),
-        )
+
+    def _draw_dm_window(self, screen: Any) -> None:
+        if self.height < 12 or self.width < 48:
+            self._draw_room(screen)
+            self.draw_text(
+                screen,
+                self.height - 2,
+                1,
+                "DM aberta · Esc ou /voltar retorna à sala",
+                "warning",
+            )
+            return
+        panel_height = max(10, int(self.height * 0.78))
+        panel_width = max(40, int(self.width * 0.76))
+        panel_height = min(panel_height, self.height - 2)
+        panel_width = min(panel_width, self.width - 2)
+        top = (self.height - panel_height) // 2
+        left = (self.width - panel_width) // 2
         try:
-            screen.move(input_y, max(1, cursor_x))
+            screen.addch(top, left, curses.ACS_ULCORNER)
+            screen.addch(top, left + panel_width - 1, curses.ACS_URCORNER)
+            screen.addch(top + panel_height - 1, left, curses.ACS_LLCORNER)
+            screen.addch(
+                top + panel_height - 1,
+                left + panel_width - 1,
+                curses.ACS_LRCORNER,
+            )
+            screen.hline(top, left + 1, curses.ACS_HLINE, panel_width - 2)
+            screen.hline(
+                top + panel_height - 1,
+                left + 1,
+                curses.ACS_HLINE,
+                panel_width - 2,
+            )
+            screen.vline(top + 1, left, curses.ACS_VLINE, panel_height - 2)
+            screen.vline(
+                top + 1,
+                left + panel_width - 1,
+                curses.ACS_VLINE,
+                panel_height - 2,
+            )
         except curses.error:
             pass
+        self.draw_text(
+            screen,
+            top,
+            left + 2,
+            f" DM · {self.room_name.removeprefix('DM · ')} ",
+            "title",
+            panel_width - 4,
+        )
+        typing = ", ".join(safe_text(name) for name in self.typing_users)
+        if typing:
+            self.draw_text(
+                screen,
+                top + 1,
+                left + 2,
+                f"Digitando: {typing}",
+                "success",
+                panel_width - 4,
+            )
+
+        message_rows = self.all_display_rows(panel_width - 4)
+        pane_top = 2
+        pane_height = panel_height - 6
+        max_offset = max(0, len(message_rows) - pane_height)
+        self.scroll_offset = min(self.scroll_offset, max_offset)
+        end = len(message_rows) - self.scroll_offset
+        start = max(0, end - pane_height)
+        for index, (text, color) in enumerate(message_rows[start:end]):
+            self.draw_text(
+                screen,
+                top + pane_top + index,
+                left + 2,
+                text,
+                color,
+                panel_width - 4,
+            )
+        if self.status and time.monotonic() < self.status_until:
+            footer = self.status
+        else:
+            footer = "Esc ou /voltar: sala anterior · /sair: sair"
+        self.draw_text(
+            screen,
+            top + panel_height - 3,
+            left + 2,
+            footer,
+            "dim",
+            panel_width - 4,
+        )
+        self._draw_input(
+            screen,
+            top + panel_height - 2,
+            left + 2,
+            panel_width - 4,
+        )
+
+    def draw(self, screen: Any) -> None:
+        self.height, self.width = screen.getmaxyx()
+        screen.erase()
+        if self.dm_parent_state is None:
+            self._draw_room(screen)
+        else:
+            dm_state = self.capture_room_state()
+            self.restore_room_state(self.dm_parent_state)
+            self._draw_room(screen)
+            self.restore_room_state(dm_state)
+            self._draw_dm_window(screen)
         screen.refresh()
 
     def initialize_colors(self) -> None:
@@ -515,10 +729,14 @@ class ChatTui:
         rest = parts[2] if len(parts) > 2 else ""
         if command in {"/sair", "/quit", "/exit"}:
             return False
+        if command == "/voltar":
+            self.return_to_parent()
+            return True
         if command == "/ajuda":
             lines = [
-                "/sair · /quem · /salas",
-                "/sala global|help|exercise:CODIGO",
+                "Esc / /voltar: voltar da DM · /sair: sair",
+                "F2 abre a DM não lida mais recente",
+                "/quem · /salas · /sala global|help|exercise:CODIGO",
                 "/dm usuario · /historico · /buscar termo · /limpar",
                 "/reagir ID 👍|❤️|😂|+1 · /denunciar ID motivo",
             ]
@@ -554,6 +772,8 @@ class ChatTui:
                 self.set_status("Uso: /sala global|ajuda|exercise:CODIGO")
                 return True
             try:
+                if self.dm_parent_state is not None:
+                    self.return_to_parent()
                 self.reset_channel(channel, name)
             except ChatError as error:
                 self.set_status(str(error))
@@ -564,7 +784,9 @@ class ChatTui:
                 return True
             response = self.request("chat.dm.open", username=argument)
             channel = str(response["channel"])
-            self.reset_channel(channel, f"DM · {response.get('username', argument)}")
+            self.open_dm(
+                channel, f"DM · {response.get('username', argument)}"
+            )
             return True
         if command == "/historico":
             self.load_history()
@@ -697,6 +919,27 @@ class ChatTui:
     def handle_key(self, screen: Any, key: Any) -> bool:
         if key == curses.KEY_RESIZE:
             return True
+        if key in ("\x1b", 27):
+            if self.dm_parent_state is not None:
+                self.return_to_parent()
+                return True
+            return False
+        if key == curses.KEY_F2:
+            direct = next(
+                (
+                    room
+                    for room in self.unread_rooms
+                    if room.get("kind") == "direct"
+                ),
+                None,
+            )
+            if direct is None:
+                self.set_status("Não há DMs não lidas.")
+            else:
+                self.open_dm(
+                    str(direct["channel"]), str(direct.get("name", "DM"))
+                )
+            return True
         if key in (curses.KEY_PPAGE,):
             self.scroll_offset = min(
                 len(self.all_display_rows()), self.scroll_offset + max(3, self.height // 2)
@@ -744,8 +987,8 @@ class ChatTui:
             keep_open = self.send_message(screen, message)
             self.scroll_offset = 0
             return keep_open
-        if key in ("\x04", "\x1b"):
-            if not self.input_text or key == "\x1b":
+        if key == "\x04":
+            if not self.input_text:
                 return False
             return True
         if key in ("\x03",):
@@ -840,7 +1083,7 @@ def main() -> int:
         username = os.environ["CHAT_TUI_USERNAME"]
         is_admin = os.environ.get("CHAT_TUI_IS_ADMIN") == "True"
         socket_path = os.environ["CHAT_TUI_SOCKET"]
-        auto_refresh_value = os.environ.get("CHAT_AUTO_REFRESH", "0")
+        auto_refresh_value = os.environ.get("CHAT_AUTO_REFRESH", "1")
         if auto_refresh_value not in {"0", "1"}:
             raise ValueError("CHAT_AUTO_REFRESH deve ser 0 (manual) ou 1 (automático).")
         refresh_seconds = int(os.environ.get("CHAT_REFRESH_SECONDS", "2"))

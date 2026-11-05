@@ -641,7 +641,7 @@ chat_refresh_during_input() {
 }
 
 chat_auto_refresh_enabled() {
-  case "${CHAT_AUTO_REFRESH:-0}" in
+  case "${CHAT_AUTO_REFRESH:-1}" in
     1) return 0 ;;
     0) return 1 ;;
     *)

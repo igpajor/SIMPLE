@@ -37,9 +37,8 @@ CHAT_TIMEZONE="America/Sao_Paulo"
 [[ "$(chat_local_time "2026-11-04 19:19:00")" == "2026-11-04 16:19" ]] ||
   fail "horário UTC do chat é convertido para o fuso local configurado"
 unset CHAT_AUTO_REFRESH
-if chat_auto_refresh_enabled; then
-  fail "atualização automática do chat deve vir desativada por padrão"
-fi
+chat_auto_refresh_enabled ||
+  fail "atualização automática do chat deve vir ativada por padrão"
 [[ "${CHAT_REFRESH_SECONDS:-2}" == "2" ]] ||
   fail "polling automático usa intervalo padrão curto de 2 segundos"
 CHAT_AUTO_REFRESH=1

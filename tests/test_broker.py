@@ -347,6 +347,16 @@ class BrokerTests(unittest.TestCase):
             "Olá @chat-bob, procure esta Frase Árvore",
             dashboard["preview"]["body"],
         )
+        notifications = self.call(
+            {"method": "chat.dashboard", "token": bob["token"]}
+        )
+        self.assertEqual(
+            [("global", 1)],
+            [
+                (room["channel"], room["unread_count"])
+                for room in notifications["unread_rooms"]
+            ],
+        )
         late_user = self.create_user("chat-latejoiner")
         late_dashboard = self.call(
             {"method": "chat.dashboard", "token": late_user["token"]}
@@ -371,6 +381,14 @@ class BrokerTests(unittest.TestCase):
                 }
             )
         self.assertTrue(direct_message["ok"], direct_message)
+        notifications = self.call(
+            {"method": "chat.dashboard", "token": bob["token"]}
+        )
+        unread_by_channel = {
+            room["channel"]: room for room in notifications["unread_rooms"]
+        }
+        self.assertEqual(1, unread_by_channel[direct["channel"]]["unread_count"])
+        self.assertEqual("chat-alice", unread_by_channel[direct["channel"]]["peer_username"])
         unauthorized = self.call(
             {
                 "method": "chat.sync",
@@ -677,7 +695,7 @@ class BrokerTests(unittest.TestCase):
         last_chat_screen = process.stdout.rfind("CHAT GLOBAL")
         self.assertIn("mensagem anterior", process.stdout[last_chat_screen:])
         self.assertIn("Hello everyone", process.stdout[last_chat_screen:])
-        self.assertIn("Autoatualização desativada", process.stdout)
+        self.assertIn("Atualiza a cada 2s", process.stdout)
         self.assertEqual(1, process.stdout.count("CHAT GLOBAL"))
         self.assertNotIn("Operação não suportada", process.stdout)
 
@@ -740,7 +758,7 @@ class BrokerTests(unittest.TestCase):
             read_until(b"OP\xc3\x87\xc3\x83O > ", after=b"[6] Chat global")
             os.write(master_fd, b"6\r")
             read_until("SIMPLE · Chat global".encode("utf-8"))
-            read_until(b"MENSAGEM > ")
+            read_until(b"MENSAGEM >")
             os.write(master_fd, b"\r")
             time.sleep(0.25)
             self.assertNotIn(b"Nenhuma mensagem nova.", output)
@@ -774,10 +792,10 @@ class BrokerTests(unittest.TestCase):
                 "NO_COLOR": "1",
                 "COLUMNS": "80",
                 "TERM": "xterm-256color",
-                "CHAT_AUTO_REFRESH": "1",
                 "CHAT_REFRESH_SECONDS": "1",
             }
         )
+        environment.pop("CHAT_AUTO_REFRESH", None)
         master_fd, slave_fd = pty.openpty()
         fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
         process = subprocess.Popen(
@@ -821,9 +839,8 @@ class BrokerTests(unittest.TestCase):
             read_until(b"OP\xc3\x87\xc3\x83O > ", after=b"[6] Chat global")
             os.write(master_fd, b"6\r")
             read_until("SIMPLE · Chat global".encode("utf-8"))
-            read_until(b"MENSAGEM > ")
+            read_until(b"MENSAGEM >")
             os.write(master_fd, "rascunho".encode("utf-8"))
-            read_until("rascunho".encode("utf-8"))
             clear_count_before_poll = output.count(b"\x1b[2J")
             received = self.call(
                 {
@@ -842,6 +859,117 @@ class BrokerTests(unittest.TestCase):
             read_until(
                 b"OP\xc3\x87\xc3\x83O > ",
                 after="você: rascunho preservado".encode("utf-8"),
+            )
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
+            os.close(master_fd)
+            os.close(slave_fd)
+
+    def test_curses_dm_notification_opens_overlay_and_voltar_returns(self) -> None:
+        self.create_user("chat-dm-window")
+        peer = self.create_user("chat-dm-peer")
+        direct = self.call(
+            {
+                "method": "chat.dm.open",
+                "token": peer["token"],
+                "username": "chat-dm-window",
+            }
+        )
+        with patch.object(simple_broker, "CHAT_SEND_INTERVAL_SECONDS", 0.0):
+            sent = self.call(
+                {
+                    "method": "chat.post",
+                    "token": peer["token"],
+                    "channel": direct["channel"],
+                    "message": "mensagem privada de teste",
+                }
+            )
+        self.assertTrue(sent["ok"], sent)
+
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "SIMPLE_MODE": "broker",
+                "BROKER_SOCKET": str(self.socket_path),
+                "NO_COLOR": "1",
+                "COLUMNS": "80",
+                "TERM": "xterm-256color",
+            }
+        )
+        master_fd, slave_fd = pty.openpty()
+        fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+        process = subprocess.Popen(
+            ["bash", str(ROOT_DIR / "simple.sh")],
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            cwd=ROOT_DIR,
+            env=environment,
+            close_fds=True,
+        )
+        output = bytearray()
+
+        def read_until(
+            needle: bytes, timeout: float = 12.0, after: bytes | None = None
+        ) -> None:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                start = output.find(after) + len(after) if after is not None else 0
+                if output.find(needle, start) >= 0:
+                    return
+                ready, _, _ = select.select([master_fd], [], [], 0.2)
+                if ready:
+                    try:
+                        output.extend(os.read(master_fd, 8192))
+                    except OSError:
+                        break
+                if process.poll() is not None:
+                    break
+            start = output.find(after) + len(after) if after is not None else 0
+            self.assertGreaterEqual(
+                output.find(needle, start), 0, output.decode("utf-8", errors="replace")
+            )
+
+        try:
+            read_until(b"OP\xc3\x87\xc3\x83O > ")
+            os.write(master_fd, b"2\r")
+            read_until(b"Nome de usu\xc3\xa1rio > ")
+            os.write(master_fd, b"chat-dm-window\r")
+            read_until(b"Senha > ")
+            os.write(master_fd, b"secure-pass-123\r")
+            read_until(b"[6] Chat global")
+            read_until(b"OP\xc3\x87\xc3\x83O > ", after=b"[6] Chat global")
+            os.write(master_fd, b"6\r")
+            global_title = "SIMPLE · Chat global".encode("utf-8")
+            read_until(global_title)
+            read_until(b"/dm chat-dm-peer", after=global_title)
+            os.write(master_fd, b"/dm chat-dm-peer\r")
+            dm_title = "DM · chat-dm-peer".encode("utf-8")
+            read_until(dm_title)
+            read_until(
+                "mensagem privada de teste".encode("utf-8"), after=dm_title
+            )
+            with patch.object(simple_broker, "CHAT_SEND_INTERVAL_SECONDS", 0.0):
+                global_message = self.call(
+                    {
+                        "method": "chat.post",
+                        "token": peer["token"],
+                        "channel": "global",
+                        "message": "mensagem global ao voltar",
+                    }
+                )
+            self.assertTrue(global_message["ok"], global_message)
+            os.write(master_fd, b"/voltar\r")
+            read_until(
+                "chat-dm-peer: mensagem global ao voltar".encode("utf-8"),
+                after=dm_title,
+            )
+            os.write(master_fd, b"/sair\r")
+            read_until(
+                b"OP\xc3\x87\xc3\x83O > ",
+                after="chat-dm-peer: mensagem global ao voltar".encode("utf-8"),
             )
         finally:
             if process.poll() is None:
@@ -938,7 +1066,7 @@ class BrokerTests(unittest.TestCase):
             )
 
         try:
-            read_until(b"MENSAGEM > ")
+            read_until(b"MENSAGEM >")
             clear_count_before_poll = output.count(b"\x1b[2J")
             os.write(master_fd, b"ab")
             read_until(b"Mensagem instantanea")
