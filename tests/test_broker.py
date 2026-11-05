@@ -2464,6 +2464,33 @@ class BrokerTests(unittest.TestCase):
         )
         self.assertRegex(owner_room["room_id"], r"^[a-f0-9]{48}$")
         self.assertEqual(owner_room["room_id"], reviewer_room["room_id"])
+        self.assertEqual(f"dm:{owner['user_id']}:{reviewer['user_id']}", owner_room["channel"])
+        self.assertEqual(owner_room["channel"], reviewer_room["channel"])
+        self.assertEqual("exercise-reviewer", owner_room["peer"])
+        self.assertEqual("exercise-owner", reviewer_room["peer"])
+        owner_dm = self.call(
+            {
+                "method": "chat.sync",
+                "token": owner["token"],
+                "channel": owner_room["channel"],
+                "after_id": "0",
+            }
+        )
+        reviewer_dm = self.call(
+            {
+                "method": "chat.sync",
+                "token": reviewer["token"],
+                "channel": reviewer_room["channel"],
+                "after_id": "0",
+            }
+        )
+        expected_invite = (
+            f"SALA AO VIVO · AVALIAÇÃO #{submission['slot_id']} · "
+            f"https://meet.jit.si/SIMPLE-Eval-{owner_room['room_id']}"
+        )
+        self.assertEqual(expected_invite, owner_dm["messages"][0]["body"])
+        self.assertEqual(expected_invite, reviewer_dm["messages"][0]["body"])
+        self.assertEqual(1, len(owner_dm["messages"]))
         outsider = self.create_user("exercise-outsider")
         self.assertFalse(
             self.call(
@@ -2471,6 +2498,16 @@ class BrokerTests(unittest.TestCase):
                     "method": "evaluations.room.get",
                     "token": outsider["token"],
                     "slot_id": str(submission["slot_id"]),
+                }
+            )["ok"]
+        )
+        self.assertFalse(
+            self.call(
+                {
+                    "method": "chat.sync",
+                    "token": outsider["token"],
+                    "channel": owner_room["channel"],
+                    "after_id": "0",
                 }
             )["ok"]
         )
@@ -3231,9 +3268,11 @@ class BrokerTests(unittest.TestCase):
         self.assertIn("MINHAS ENTREGAS", accepted.stdout)
         accepted_room = re.search(
             r"https://meet\.jit\.si/SIMPLE-Eval-[a-f0-9]{48}",
-            accepted.stdout,
+            re.sub(r"\s+", "", accepted.stdout),
         )
         self.assertIsNotNone(accepted_room, accepted.stdout)
+        self.assertIn("SALA AO VIVO", accepted.stdout)
+        self.assertIn("DM · tui-reviewer", accepted.stdout)
         self.assertIn("Resolva o exercício", accepted.stdout)
         self.assertIn("AVALIAÇÃO", accepted.stdout)
         self.assertIn("Aguardando avaliação", accepted.stdout)
@@ -3252,7 +3291,10 @@ class BrokerTests(unittest.TestCase):
             timeout=15,
         )
         self.assertEqual(0, reviewer_room.returncode, reviewer_room.stderr)
-        self.assertIn(accepted_room.group(0), reviewer_room.stdout)
+        self.assertIn(
+            accepted_room.group(0),
+            re.sub(r"\s+", "", reviewer_room.stdout),
+        )
 
         reviewer_progress = subprocess.run(
             ["bash", str(ROOT_DIR / "simple.sh")],

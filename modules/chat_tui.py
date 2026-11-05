@@ -373,7 +373,10 @@ class ChatTui:
         user_id = int(message["user_id"])
         body = safe_text(message["body"])
         message_id = int(message["id"])
-        if int(message.get("mentioned", 0)):
+        if body.startswith("SALA AO VIVO · AVALIAÇÃO #"):
+            author = "SALA DA AVALIAÇÃO"
+            color = "live_room"
+        elif int(message.get("mentioned", 0)):
             author = f"@ você · {username}"
             color = "warning"
         elif user_id == self.user_id:
@@ -833,6 +836,7 @@ class ChatTui:
             ("warning", curses.COLOR_YELLOW, curses.A_NORMAL),
             ("dim", curses.COLOR_CYAN, curses.A_DIM),
             ("content", curses.COLOR_MAGENTA, curses.A_NORMAL),
+            ("live_room", curses.COLOR_GREEN, curses.A_BOLD),
             ("input", curses.COLOR_WHITE, curses.A_BOLD),
             ("user0", curses.COLOR_BLUE, curses.A_NORMAL),
             ("user1", curses.COLOR_CYAN, curses.A_NORMAL),

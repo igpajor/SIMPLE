@@ -2457,9 +2457,14 @@ class Broker:
                 connection.execute("BEGIN IMMEDIATE")
                 authorized = connection.execute(
                     """
-                    SELECT slot.live_room
+                    SELECT slot.live_room, s.user_id AS owner_id,
+                           slot.accepted_by, owner.username AS owner_username,
+                           reviewer.username AS reviewer_username
                     FROM evaluation_slots slot
                     JOIN submissions s ON s.id = slot.submission_id
+                    JOIN users owner ON owner.id = s.user_id AND owner.is_active = 1
+                    JOIN users reviewer
+                      ON reviewer.id = slot.accepted_by AND reviewer.is_active = 1
                     JOIN evaluation_requests request
                       ON request.slot_id = slot.id
                      AND request.reviewer_id = slot.accepted_by
@@ -2487,8 +2492,47 @@ class Broker:
                     "SELECT live_room FROM evaluation_slots WHERE id = ?",
                     (slot_id,),
                 ).fetchone()
+                peer_id = (
+                    authorized["accepted_by"]
+                    if user_id == authorized["owner_id"]
+                    else authorized["owner_id"]
+                )
+                peer_username = (
+                    authorized["reviewer_username"]
+                    if user_id == authorized["owner_id"]
+                    else authorized["owner_username"]
+                )
+                low_id, high_id = sorted((user_id, peer_id))
+                channel = f"dm:{low_id}:{high_id}"
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO chat_direct_rooms (user_low_id, user_high_id)
+                    VALUES (?, ?)
+                    """,
+                    (low_id, high_id),
+                )
+                invite = (
+                    f"SALA AO VIVO · AVALIAÇÃO #{slot_id} · "
+                    f"https://meet.jit.si/SIMPLE-Eval-{room['live_room']}"
+                )
+                connection.execute(
+                    """
+                    INSERT INTO chat_messages (user_id, body, channel, recipient_id)
+                    SELECT ?, ?, ?, ?
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM chat_messages
+                        WHERE channel = ? AND body = ? AND hidden_at IS NULL
+                    )
+                    """,
+                    (user_id, invite, channel, peer_id, channel, invite),
+                )
                 connection.commit()
-                return {"ok": True, "room_id": room["live_room"]}
+                return {
+                    "ok": True,
+                    "room_id": room["live_room"],
+                    "channel": channel,
+                    "peer": peer_username,
+                }
 
             if method == "evaluations.review.get":
                 review_id = self._integer(request["review_id"], "Avaliação")

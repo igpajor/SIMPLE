@@ -136,6 +136,37 @@ evaluation_open_live_room() {
   local slot_id="$1"
   local room_id
   local url
+  local response
+  local peer
+  local channel
+
+  if [[ "${BROKER_MODE:-0}" == "1" ]]; then
+    response=$(printf '%s\0%s\0' "$CURRENT_SESSION_TOKEN" "$slot_id" |
+      broker_request evaluations.room.get token slot_id) || return 1
+    if ! broker_check_response "$response"; then
+      broker_response_error "$response" >&2
+      ui_error "Não foi possível acessar a sala desta avaliação."
+      ui_pause
+      return 1
+    fi
+    room_id=$(broker_response_field "$response" room_id) || return 1
+    peer=$(broker_response_field "$response" peer) || return 1
+    channel=$(broker_response_field "$response" channel) || return 1
+    if [[ ! "$room_id" =~ ^[a-f0-9]{48}$ ||
+      ! "$channel" =~ ^dm:[0-9]+:[0-9]+$ || -z "$peer" ]]; then
+      ui_error "O Broker retornou dados inválidos para a sala da avaliação."
+      return 1
+    fi
+    # shellcheck disable=SC2034 # Consumed by chat_menu.
+    CHAT_INITIAL_CHANNEL="$channel"
+    # shellcheck disable=SC2034
+    CHAT_INITIAL_ROOM_NAME="DM · $peer"
+    chat_menu || {
+      ui_error "Não foi possível abrir a conversa privada da avaliação."
+      return 1
+    }
+    return 0
+  fi
 
   room_id=$(evaluation_live_room_id "$slot_id") || {
     ui_error "Não foi possível acessar a sala desta avaliação."
