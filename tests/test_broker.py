@@ -759,6 +759,10 @@ class BrokerTests(unittest.TestCase):
             clear_count_before_login = output.count(b"\x1b[2J")
             os.write(master_fd, b"\r")
             read_until(b"[6] Chat global")
+            read_until(b"SEU RESUMO")
+            self.assertIn(b"Pontos 1", output)
+            self.assertIn(b"Aprovados 0", output)
+            self.assertIn(b"Avaliar 0", output)
             self.assertEqual(
                 clear_count_before_login + 1,
                 output.count(b"\x1b[2J"),

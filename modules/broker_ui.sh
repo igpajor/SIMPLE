@@ -1563,6 +1563,11 @@ broker_mode_menu() {
   local choice
   local unread_notifications
   local online_count="indisponível"
+  local points_count
+  local approved_count
+  local open_reviews
+  local summary_response
+  local evaluation_response
   local chat_status_response
   local chat_unread_count=0
   local chat_dm_unread_count=0
@@ -1574,6 +1579,24 @@ broker_mode_menu() {
   local -a menu_options
 
   unread_notifications=$(progress_unread_notification_count) || return 1
+  summary_response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
+    broker_request progress.get token) || return 1
+  broker_check_response "$summary_response" || return 1
+  points_count=$(broker_response_field "$summary_response" points) || return 1
+  approved_count=$(broker_response_nested_field \
+    "$summary_response" submissions approved) || return 1
+  [[ -n "$approved_count" ]] || approved_count=0
+  evaluation_response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
+    broker_request evaluations.slots.list token) || return 1
+  broker_check_response "$evaluation_response" || return 1
+  open_reviews=$(printf '%s' "$evaluation_response" | python3 -c '
+import json
+import sys
+slots = json.load(sys.stdin).get("slots")
+if not isinstance(slots, list):
+    raise SystemExit("Lista de avaliações abertas inválida")
+print(len(slots))
+') || return 1
   if chat_status_response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
     broker_request chat.dashboard token); then
     if broker_check_response "$chat_status_response"; then
@@ -1659,7 +1682,8 @@ print(sum(
   menu_options+=("0|Sair")
   if ui_home_tui_available; then
     ui_home_tui_select \
-      "$CURRENT_USERNAME" "" "" "" "$online_count" "$notification" \
+      "$CURRENT_USERNAME" "$points_count" "$approved_count" "$open_reviews" \
+      "$online_count" "$notification" \
       "${menu_options[@]}" || return 1
     choice="$REPLY"
   else

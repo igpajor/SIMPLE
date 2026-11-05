@@ -98,6 +98,11 @@ class HomeTuiTests(unittest.TestCase):
     def test_arrow_keys_and_enter_select_home_option(self) -> None:
         output = self.run_home(80, [b"\x1bOB"] * 5 + [b"\r"])
         self.assertIn(b"MENU PRINCIPAL", output)
+        self.assertIn(b"SIMPLE", output)
+        self.assertIn(b"SEU RESUMO", output)
+        self.assertIn(b"Pontos 12", output)
+        self.assertIn(b"Aprovados 4", output)
+        self.assertIn(b"Avaliar 2", output)
         self.assertTrue(output.endswith(b"6\r\n"), output[-100:])
 
     def test_narrow_terminal_keeps_home_navigable(self) -> None:

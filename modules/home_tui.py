@@ -84,7 +84,9 @@ class HomeTui:
             return 2
         return 1
 
-    def draw_frame(self, screen: Any, top: int, left: int, width: int, height: int) -> None:
+    def draw_frame(
+        self, screen: Any, top: int, left: int, width: int, height: int
+    ) -> None:
         right = left + width - 1
         bottom = top + height - 1
         attr = self.colors.get("muted", curses.A_NORMAL)
@@ -123,8 +125,13 @@ class HomeTui:
         inner_width = panel_width - 6
         columns = self.stats_columns(inner_width)
         stats_rows = (len(self.stats) + columns - 1) // columns
-        has_notification = bool(self.notification)
-        if self.height < 15 + stats_rows + int(has_notification):
+        summary_top = 5
+        summary_height = stats_rows + 2
+        menu_title_offset = summary_top + summary_height + 1
+        option_start_offset = menu_title_offset + 1
+        max_panel_height = self.height - 2
+        max_visible = max_panel_height - option_start_offset - 6
+        if max_visible < 1 or self.height < 15 + stats_rows:
             self.draw_text(
                 screen,
                 0,
@@ -135,12 +142,11 @@ class HomeTui:
             self.draw_text(screen, self.height - 1, 0, "Esc sair", "muted")
             screen.refresh()
             return
-        max_visible = max(1, self.height - 15 - stats_rows - int(has_notification))
         start, end = self.visible_options(max_visible)
         visible_count = end - start
-
-        panel_height = 13 + stats_rows + visible_count + int(has_notification)
-        panel_height = min(panel_height, self.height - 2)
+        option_rows = visible_count + 2
+        panel_height = option_start_offset + option_rows + 4
+        panel_height = min(panel_height, max_panel_height)
         top = max(0, (self.height - panel_height) // 2)
         self.draw_frame(screen, top, left, panel_width, panel_height)
 
@@ -154,14 +160,48 @@ class HomeTui:
         )
         self.draw_text(
             screen,
+            top + 2,
+            left + 3,
+            f"{'─' * inner_width}",
+            "muted",
+            inner_width,
+        )
+        self.draw_text(
+            screen,
             top + 3,
             left + 3,
             f"Olá, {self.username}. Que bom ter você por aqui.",
             "text",
             inner_width,
         )
-        self.draw_text(screen, top + 5, left + 3, "SEU RESUMO", "title", inner_width)
+        if self.notification:
+            self.draw_text(
+                screen,
+                top + 4,
+                left + 3,
+                self.notification,
+                "notification",
+                inner_width,
+            )
 
+        summary_left = left + 3
+        summary_width = inner_width
+        summary_top_y = top + summary_top
+        self.draw_frame(
+            screen,
+            summary_top_y,
+            summary_left,
+            summary_width,
+            summary_height,
+        )
+        self.draw_text(
+            screen,
+            summary_top_y,
+            summary_left + 2,
+            " SEU RESUMO ",
+            "title",
+            14,
+        )
         stat_width = inner_width // columns
         for index, (label, value) in enumerate(self.stats):
             row = index // columns
@@ -169,28 +209,17 @@ class HomeTui:
             stat_text = f"{label} {value}"
             self.draw_text(
                 screen,
-                top + 6 + row,
-                left + 3 + column * stat_width,
+                summary_top_y + 1 + row,
+                summary_left + 2 + column * stat_width,
                 stat_text,
                 "text",
                 stat_width - 1,
             )
 
-        menu_title_y = top + 7 + stats_rows
-        if self.notification:
-            self.draw_text(
-                screen,
-                menu_title_y,
-                left + 3,
-                self.notification,
-                "notification",
-                inner_width,
-            )
-            menu_title_y += 1
-        menu_title_y += 1
+        menu_title_y = top + menu_title_offset
         self.draw_text(screen, menu_title_y, left + 3, "MENU PRINCIPAL", "title", inner_width)
 
-        option_y = menu_title_y + 1
+        option_y = top + option_start_offset
         option_width = min(inner_width, 58)
         option_left = left + (panel_width - option_width) // 2
         for index in range(start, end):
@@ -253,9 +282,9 @@ class HomeTui:
         while True:
             self.draw(screen)
             key = screen.get_wch()
-            if key in (curses.KEY_UP, curses.KEY_LEFT):
+            if key in (curses.KEY_UP, curses.KEY_LEFT, curses.KEY_BTAB):
                 self.selection = (self.selection - 1) % len(self.options)
-            elif key in (curses.KEY_DOWN, curses.KEY_RIGHT):
+            elif key in (curses.KEY_DOWN, curses.KEY_RIGHT, "\t"):
                 self.selection = (self.selection + 1) % len(self.options)
             elif key in ("\n", "\r", curses.KEY_ENTER):
                 return self.options[self.selection][0]
