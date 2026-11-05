@@ -146,14 +146,6 @@ class HomeTui:
         visible_count = end - start
         option_rows = visible_count + 2
         panel_height = max_panel_height
-        extra_option_space = max(
-            0, panel_height - (option_start_offset + option_rows + 4)
-        )
-        option_gap, extra_gaps = divmod(extra_option_space, visible_count + 1)
-        option_gaps = [
-            option_gap + int(index < extra_gaps)
-            for index in range(visible_count + 1)
-        ]
         top = max(0, (self.height - panel_height) // 2)
         self.draw_frame(screen, top, left, panel_width, panel_height)
 
@@ -226,10 +218,10 @@ class HomeTui:
         menu_title_y = top + menu_title_offset
         self.draw_text(screen, menu_title_y, left + 3, "MENU PRINCIPAL", "title", inner_width)
 
-        option_y = top + option_start_offset + option_gaps[0]
+        option_y = top + option_start_offset
         option_width = min(inner_width, 58)
         option_left = left + (panel_width - option_width) // 2
-        for offset, index in enumerate(range(start, end)):
+        for index in range(start, end):
             key, label = self.options[index]
             option_text = f"[{key}] {label}"
             if index == self.selection:
@@ -268,7 +260,6 @@ class HomeTui:
                     option_width - 4,
                 )
                 option_y += 1
-            option_y += option_gaps[offset + 1]
 
         footer_y = top + panel_height - 2
         self.draw_text(
