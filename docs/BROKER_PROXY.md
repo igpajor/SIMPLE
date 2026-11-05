@@ -121,20 +121,22 @@ uma conversa privada. O Broker valida o acesso a cada pedido; conversas
 diretas só podem ser lidas pelos dois participantes.
 
 O protocolo continua sendo requisição/resposta JSON por socket Unix, sem
-WebSocket. Por padrão, a atualização automática fica desativada: pressione
-Enter com o campo vazio para atualizar; digite uma mensagem e pressione Enter
-para enviá-la. Para ativar polling automático, inclusive durante a digitação,
-defina `CHAT_AUTO_REFRESH=1`; mensagens novas são acrescentadas sem limpar a
-tela e o rascunho é preservado quando a linha de entrada é redesenhada. O
-intervalo padrão é dois segundos. `/sair` retorna ao menu. Backspace edita a
-linha; setas e edição por cursor não são suportadas no leitor interativo atual.
-Sem TTY, a entrada usa o leitor padrão e a atualização automática não é
-executada. A tela mantém as
-últimas dez mensagens por padrão, oferece `/historico` para páginas anteriores
-e `/buscar termo` para pesquisar na sala atual. Horários persistidos em UTC são
-convertidos ao fuso configurado no cliente. Mensagens consecutivas do mesmo
-autor são agrupadas visualmente; a autoria própria e as menções recebem
-destaque. Um indicador temporário informa quando outra pessoa está digitando
+WebSocket. No terminal interativo, a tela do chat usa Python `curses`: o
+histórico e o campo de entrada são atualizados em áreas separadas, sem limpar
+a conversa nem inserir mensagens no meio do texto digitado. O restante da
+interface SIMPLE permanece em Bash. O módulo `curses` do Python 3 precisa estar
+disponível no sistema (em algumas distribuições, pelo pacote `python3-curses`).
+
+Por padrão, a atualização automática continua desativada: pressione Enter com
+o campo vazio para sincronizar, ou defina `CHAT_AUTO_REFRESH=1` para receber
+mensagens enquanto conversa. O intervalo padrão é dois segundos. `/sair`
+retorna ao menu; Backspace e setas editam o texto, Page Up/Page Down navegam
+no histórico e Ctrl+C retorna ao menu. Sem TTY, permanece disponível o leitor
+de linha padrão, sem atualização automática. A tela carrega as últimas dez
+mensagens por padrão, oferece `/historico` para páginas anteriores e
+`/buscar termo` para pesquisar na sala atual. Horários persistidos em UTC são
+convertidos ao fuso configurado no cliente. Autoria própria e menções recebem
+destaque; um indicador temporário mostra quando outra pessoa está digitando
 na mesma sala.
 
 O menu principal mostra pessoas online, quantidade de mensagens não lidas,

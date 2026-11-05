@@ -690,6 +690,7 @@ class BrokerTests(unittest.TestCase):
                 "BROKER_SOCKET": str(self.socket_path),
                 "NO_COLOR": "1",
                 "COLUMNS": "80",
+                "TERM": "xterm-256color",
             }
         )
         master_fd, slave_fd = pty.openpty()
@@ -703,7 +704,6 @@ class BrokerTests(unittest.TestCase):
             env=environment,
             close_fds=True,
         )
-        os.close(slave_fd)
         output = bytearray()
 
         def read_until(
@@ -739,7 +739,11 @@ class BrokerTests(unittest.TestCase):
             read_until(b"[6] Chat global")
             read_until(b"OP\xc3\x87\xc3\x83O > ", after=b"[6] Chat global")
             os.write(master_fd, b"6\r")
+            read_until("SIMPLE · Chat global".encode("utf-8"))
             read_until(b"MENSAGEM > ")
+            os.write(master_fd, b"\r")
+            time.sleep(0.25)
+            self.assertNotIn(b"Nenhuma mensagem nova.", output)
             clear_count_before_send = output.count(b"\x1b[2J")
             output_before_send = len(output)
             os.write(master_fd, b"Mensagem sem piscar\r")
@@ -750,11 +754,101 @@ class BrokerTests(unittest.TestCase):
             self.assertIsNone(
                 re.search(rb"\b\d{4}-\d{2}-\d{2}\b", output[output_before_send:])
             )
+            os.write(master_fd, b"/sair\r")
+            read_until(b"OP\xc3\x87\xc3\x83O > ", after=sent_message)
         finally:
             if process.poll() is None:
                 process.terminate()
                 process.wait(timeout=5)
             os.close(master_fd)
+            os.close(slave_fd)
+
+    def test_curses_chat_polls_without_losing_the_draft(self) -> None:
+        self.create_user("chat-auto-tui")
+        peer = self.create_user("chat-auto-peer")
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "SIMPLE_MODE": "broker",
+                "BROKER_SOCKET": str(self.socket_path),
+                "NO_COLOR": "1",
+                "COLUMNS": "80",
+                "TERM": "xterm-256color",
+                "CHAT_AUTO_REFRESH": "1",
+                "CHAT_REFRESH_SECONDS": "1",
+            }
+        )
+        master_fd, slave_fd = pty.openpty()
+        fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+        process = subprocess.Popen(
+            ["bash", str(ROOT_DIR / "simple.sh")],
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            cwd=ROOT_DIR,
+            env=environment,
+            close_fds=True,
+        )
+        output = bytearray()
+
+        def read_until(needle: bytes, timeout: float = 12.0, after: bytes | None = None) -> None:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                start = output.find(after) + len(after) if after is not None else 0
+                if output.find(needle, start) >= 0:
+                    return
+                ready, _, _ = select.select([master_fd], [], [], 0.2)
+                if ready:
+                    try:
+                        output.extend(os.read(master_fd, 8192))
+                    except OSError:
+                        break
+                if process.poll() is not None:
+                    break
+            start = output.find(after) + len(after) if after is not None else 0
+            self.assertGreaterEqual(
+                output.find(needle, start), 0, output.decode("utf-8", errors="replace")
+            )
+
+        try:
+            read_until(b"OP\xc3\x87\xc3\x83O > ")
+            os.write(master_fd, b"2\r")
+            read_until(b"Nome de usu\xc3\xa1rio > ")
+            os.write(master_fd, b"chat-auto-tui\r")
+            read_until(b"Senha > ")
+            os.write(master_fd, b"secure-pass-123\r")
+            read_until(b"[6] Chat global")
+            read_until(b"OP\xc3\x87\xc3\x83O > ", after=b"[6] Chat global")
+            os.write(master_fd, b"6\r")
+            read_until("SIMPLE · Chat global".encode("utf-8"))
+            read_until(b"MENSAGEM > ")
+            os.write(master_fd, "rascunho".encode("utf-8"))
+            read_until("rascunho".encode("utf-8"))
+            clear_count_before_poll = output.count(b"\x1b[2J")
+            received = self.call(
+                {
+                    "method": "chat.send",
+                    "token": peer["token"],
+                    "message": "mensagem recebida",
+                }
+            )
+            self.assertTrue(received["ok"], received)
+            read_until("chat-auto-peer: mensagem recebida".encode("utf-8"))
+            self.assertEqual(clear_count_before_poll, output.count(b"\x1b[2J"))
+            os.write(master_fd, " preservado\r".encode("utf-8"))
+            read_until("você: rascunho preservado".encode("utf-8"))
+            self.assertNotIn(b"MENSAGENS NOVAS", output)
+            os.write(master_fd, b"/sair\r")
+            read_until(
+                b"OP\xc3\x87\xc3\x83O > ",
+                after="você: rascunho preservado".encode("utf-8"),
+            )
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
+            os.close(master_fd)
+            os.close(slave_fd)
 
     def test_broker_tui_chat_preserves_draft_across_idle_refreshes(self) -> None:
         environment = os.environ.copy()

@@ -966,6 +966,30 @@ chat_menu_loop() {
 chat_menu() {
   local previous_exit_trap
   local menu_status
+  local chat_tui_socket
+  local chat_tui_channel
+  local chat_tui_room_name
+
+  if ui_can_interact && [[ "${TERM:-dumb}" != "dumb" ]]; then
+    if [[ "${SIMPLE_MODE:-local}" == "proxy" ]]; then
+      chat_tui_socket="${PROXY_SOCKET:-}"
+    else
+      chat_tui_socket="${BROKER_SOCKET:-}"
+    fi
+    chat_tui_channel="${CHAT_INITIAL_CHANNEL:-global}"
+    chat_tui_room_name="${CHAT_INITIAL_ROOM_NAME:-Chat global}"
+    CHAT_INITIAL_CHANNEL=""
+    CHAT_INITIAL_ROOM_NAME=""
+    CHAT_TUI_TOKEN="$CURRENT_SESSION_TOKEN" \
+      CHAT_TUI_USER_ID="$CURRENT_USER_ID" \
+      CHAT_TUI_USERNAME="$CURRENT_USERNAME" \
+      CHAT_TUI_IS_ADMIN="$CURRENT_USER_IS_ADMIN" \
+      CHAT_TUI_SOCKET="$chat_tui_socket" \
+      CHAT_TUI_CHANNEL="$chat_tui_channel" \
+      CHAT_TUI_ROOM_NAME="$chat_tui_room_name" \
+      python3 "$SCRIPT_DIR/modules/chat_tui.py"
+    return $?
+  fi
 
   previous_exit_trap=$(trap -p EXIT)
   CHAT_PREVIOUS_EXIT_TRAP="$previous_exit_trap"
