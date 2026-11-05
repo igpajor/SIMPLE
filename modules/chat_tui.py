@@ -130,6 +130,10 @@ class ChatTui:
         self.last_typing_update = 0.0
         self.dm_parent_state: dict[str, Any] | None = None
         self.dm_states: dict[str, dict[str, Any]] = {}
+        self._display_rows_revision = 0
+        self._display_rows_cache: dict[
+            tuple[Any, ...], list[tuple[str, str]]
+        ] = {}
 
     ROOM_STATE_FIELDS = (
         "channel",
@@ -147,6 +151,7 @@ class ChatTui:
         "cursor",
         "typing_active",
         "last_typing_update",
+        "_display_rows_revision",
     )
 
     def request(self, method: str, **fields: str) -> dict[str, Any]:
@@ -165,6 +170,9 @@ class ChatTui:
     def set_status(self, message: str, seconds: float = 5.0) -> None:
         self.status = safe_text(message)
         self.status_until = time.monotonic() + seconds
+
+    def invalidate_display_rows(self) -> None:
+        self._display_rows_revision += 1
 
     def sync(self) -> int:
         previous_last_id = self.last_id
@@ -199,6 +207,30 @@ class ChatTui:
                 if self.messages:
                     self.history_before = int(self.messages[0]["id"])
                     self.history_has_more = True
+        if self.last_id > 0:
+            latest_window = response.get("window")
+            if not isinstance(latest_window, list):
+                raise ChatError("O Broker retornou uma janela de mensagens inválida.")
+            if latest_window:
+                visible_ids = {int(message["id"]) for message in latest_window}
+                window_start = min(visible_ids)
+                self.messages = [
+                    message
+                    for message in self.messages
+                    if int(message["id"]) < window_start
+                    or int(message["id"]) in visible_ids
+                ]
+            else:
+                self.messages = []
+            current_by_id = {
+                int(message["id"]): index
+                for index, message in enumerate(self.messages)
+            }
+            for message in latest_window:
+                message_id = int(message["id"])
+                index = current_by_id.get(message_id)
+                if index is not None:
+                    self.messages[index] = message
         last_id = response.get("last_id", self.last_id)
         if (
             not isinstance(last_id, int)
@@ -206,6 +238,7 @@ class ChatTui:
             or last_id < self.last_id
         ):
             raise ChatError("O Broker retornou um cursor de mensagens inválido.")
+        self.invalidate_display_rows()
         self.last_id = last_id
         self.online_users = response.get("online_users", [])
         self.typing_users = response.get("typing_users", [])
@@ -254,6 +287,7 @@ class ChatTui:
             self.channel = channel
             self.room_name = room_name
             self.messages = []
+            self.invalidate_display_rows()
             self.online_users = []
             self.typing_users = []
             self.pinned = []
@@ -286,6 +320,7 @@ class ChatTui:
         self.channel = channel
         self.room_name = room_name
         self.messages = []
+        self.invalidate_display_rows()
         self.last_id = 0
         self.history_before = None
         self.history_has_more = False
@@ -321,6 +356,7 @@ class ChatTui:
         previous_row_count = len(self.all_display_rows())
         combined = older + self.messages
         self.messages = combined[-500:]
+        self.invalidate_display_rows()
         self.history_loaded = True
         self.history_before = int(self.messages[0]["id"])
         self.history_has_more = (
@@ -360,6 +396,18 @@ class ChatTui:
         return lines
 
     def all_display_rows(self, width: int | None = None) -> list[tuple[str, str]]:
+        display_width = self.width if width is None else width
+        cache_key = (
+            self.channel,
+            display_width,
+            self.history_has_more,
+            self.timezone.key,
+            self._display_rows_revision,
+        )
+        cached_rows = self._display_rows_cache.get(cache_key)
+        if cached_rows is not None:
+            return cached_rows
+
         rows: list[tuple[str, str]] = []
         last_date: str | None = None
         for message in self.messages:
@@ -367,9 +415,12 @@ class ChatTui:
             if created.date().isoformat() != last_date:
                 last_date = created.date().isoformat()
                 rows.append((last_date, "dim"))
-            rows.extend(self.message_display_rows(message, width))
+            rows.extend(self.message_display_rows(message, display_width))
         if self.history_has_more:
             rows.insert(0, ("Há mensagens anteriores · /historico", "dim"))
+        self._display_rows_cache[cache_key] = rows
+        while len(self._display_rows_cache) > 4:
+            self._display_rows_cache.pop(next(iter(self._display_rows_cache)))
         return rows
 
     def draw_text(
@@ -874,10 +925,12 @@ class ChatTui:
         previous_more = self.history_has_more
         self.messages = messages
         self.history_has_more = False
+        self.invalidate_display_rows()
         rows = [text for text, _ in self.all_display_rows()]
         self.popup(screen, title, rows or ["Nenhum resultado."])
         self.messages = previous
         self.history_has_more = previous_more
+        self.invalidate_display_rows()
 
     def handle_command(self, screen: Any, text: str) -> bool:
         parts = text.strip().split(maxsplit=2)
@@ -958,6 +1011,7 @@ class ChatTui:
             return True
         if command == "/limpar":
             self.messages = []
+            self.invalidate_display_rows()
             self.last_id = 0
             self.history_before = None
             self.history_has_more = False
@@ -1023,6 +1077,7 @@ class ChatTui:
                 response = self.request("chat.admin.clear", channel=self.channel)
                 deleted = response.get("deleted_count", 0)
                 self.messages = []
+                self.invalidate_display_rows()
                 self.last_id = 0
                 self.history_before = None
                 self.history_has_more = False
@@ -1036,6 +1091,7 @@ class ChatTui:
     def reload_latest(self) -> None:
         self.last_id = 0
         self.messages = []
+        self.invalidate_display_rows()
         self.history_before = None
         self.history_has_more = False
         self.history_loaded = False
@@ -1186,8 +1242,8 @@ class ChatTui:
             if self.input_text and not self.typing_active:
                 try:
                     self.mark_typing(True)
-                except ChatError:
-                    pass
+                except ChatError as error:
+                    self.set_status(f"Não foi possível atualizar presença: {error}")
         return True
 
     def run(self, screen: Any) -> int:
@@ -1217,8 +1273,8 @@ class ChatTui:
                 if self.typing_active and now - self.last_typing_update >= 4:
                     try:
                         self.mark_typing(True)
-                    except ChatError:
-                        pass
+                    except ChatError as error:
+                        self.set_status(f"Não foi possível atualizar presença: {error}")
                 self.draw(screen)
                 try:
                     key = screen.get_wch()

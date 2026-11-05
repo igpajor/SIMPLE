@@ -959,78 +959,76 @@ class Broker:
         """
         unread_rooms = connection.execute(
             f"""
-            SELECT m.channel, COUNT(*) AS unread_count,
-                   SUM(CASE WHEN EXISTS (
+            WITH unread AS (
+                SELECT m.channel, COUNT(*) AS unread_count,
+                       SUM(CASE WHEN EXISTS (
                        SELECT 1 FROM chat_mentions mention
                        WHERE mention.message_id = m.id
                          AND mention.user_id = ?
-                   ) THEN 1 ELSE 0 END) AS mention_count,
-                   MAX(m.id) AS latest_id
-            FROM chat_messages m
-            LEFT JOIN chat_reads r
-              ON r.user_id = ? AND r.channel = m.channel
-            WHERE m.user_id != ? AND m.hidden_at IS NULL
-              AND m.id > COALESCE(r.last_read_message_id, 0)
-              AND {visible}
-            GROUP BY m.channel
-            ORDER BY latest_id DESC
+                       ) THEN 1 ELSE 0 END) AS mention_count,
+                       MAX(m.id) AS latest_id
+                FROM chat_messages m
+                LEFT JOIN chat_reads r
+                  ON r.user_id = ? AND r.channel = m.channel
+                WHERE m.user_id != ? AND m.hidden_at IS NULL
+                  AND m.id > COALESCE(r.last_read_message_id, 0)
+                  AND {visible}
+                GROUP BY m.channel
+            )
+            SELECT unread.channel, unread.unread_count, unread.mention_count,
+                   latest.id, author.username, latest.body, latest.created_at,
+                   CASE
+                       WHEN unread.channel = 'global' THEN 'Chat global'
+                       WHEN unread.channel = 'help' THEN 'Ajuda'
+                       WHEN unread.channel LIKE 'exercise:%' THEN
+                           COALESCE(
+                               substr(unread.channel, 10) || ' — ' || exercise.name,
+                               unread.channel
+                           )
+                       ELSE 'DM · ' || COALESCE(peer.username, '')
+                   END AS room_name
+            FROM unread
+            JOIN chat_messages latest ON latest.id = unread.latest_id
+            JOIN users author ON author.id = latest.user_id
+            LEFT JOIN exercises exercise
+              ON unread.channel = 'exercise:' || exercise.code
+            LEFT JOIN chat_direct_rooms direct
+              ON unread.channel =
+                 'dm:' || direct.user_low_id || ':' || direct.user_high_id
+            LEFT JOIN users peer
+              ON peer.id = CASE
+                  WHEN direct.user_low_id = ? THEN direct.user_high_id
+                  ELSE direct.user_low_id
+              END
+            ORDER BY unread.latest_id DESC
             """,
-            (user_id, user_id, user_id, user_id, user_id, user_id),
+            (user_id, user_id, user_id, user_id, user_id, user_id, user_id),
         ).fetchall()
 
         rooms: list[dict[str, Any]] = []
         for unread in unread_rooms:
             channel = str(unread["channel"])
-            latest = connection.execute(
-                """
-                SELECT m.id, u.username, m.body, m.created_at
-                FROM chat_messages m
-                JOIN users u ON u.id = m.user_id
-                WHERE m.channel = ? AND m.id = ?
-                """,
-                (channel, unread["latest_id"]),
-            ).fetchone()
-            if channel == "global":
-                name = "Chat global"
-            elif channel == "help":
-                name = "Ajuda"
-            elif channel.startswith("exercise:"):
-                exercise = connection.execute(
-                    "SELECT name FROM exercises WHERE code = ?",
-                    (channel.removeprefix("exercise:"),),
-                ).fetchone()
-                name = (
-                    f"{channel.removeprefix('exercise:')} — {exercise['name']}"
-                    if exercise is not None
-                    else channel
-                )
-            else:
-                first_id, second_id = (
-                    int(value) for value in channel.split(":")[1:]
-                )
-                peer_id = second_id if user_id == first_id else first_id
-                peer = connection.execute(
-                    "SELECT username FROM users WHERE id = ? AND is_active = 1",
-                    (peer_id,),
-                ).fetchone()
-                name = f"DM · {peer['username']}" if peer is not None else "DM"
-
-            if latest is not None:
-                rooms.append(
-                    {
-                        "channel": channel,
-                        "name": name,
-                        "kind": "direct" if channel.startswith("dm:") else "room",
-                        "peer_username": (
-                            name.removeprefix("DM · ")
-                            if channel.startswith("dm:")
-                            else None
-                        ),
-                        "unread_count": int(unread["unread_count"]),
-                        "mention_count": int(unread["mention_count"] or 0),
-                        "preview": dict(latest),
-                    }
-                )
+            name = str(unread["room_name"])
+            rooms.append(
+                {
+                    "channel": channel,
+                    "name": name,
+                    "kind": "direct" if channel.startswith("dm:") else "room",
+                    "peer_username": (
+                        name.removeprefix("DM · ")
+                        if channel.startswith("dm:")
+                        else None
+                    ),
+                    "unread_count": int(unread["unread_count"]),
+                    "mention_count": int(unread["mention_count"] or 0),
+                    "preview": {
+                        "id": unread["id"],
+                        "username": unread["username"],
+                        "body": unread["body"],
+                        "created_at": unread["created_at"],
+                    },
+                }
+            )
         return rooms
 
     @staticmethod
@@ -3334,6 +3332,12 @@ class BrokerServer(socketserver.ThreadingUnixStreamServer):
 
     def process_request(self, request: socket.socket, client_address: Any) -> None:
         if not self.connection_slots.acquire(blocking=False):
+            try:
+                request.sendall(
+                    b'{"ok":false,"error":"Servi\xc3\xa7o ocupado; tente novamente."}\n'
+                )
+            except OSError:
+                logging.debug("Broker busy response could not be delivered")
             self.shutdown_request(request)
             return
         try:

@@ -1056,7 +1056,7 @@ class BrokerTests(unittest.TestCase):
             os.write(master_fd, b"6")
             global_title = "SIMPLE · Chat global".encode("utf-8")
             read_until(global_title)
-            dm_notification = "+1 DM [chat-dm-peer]".encode("utf-8")
+            dm_notification = "DM · chat-dm-peer (1)".encode("utf-8")
             read_until(dm_notification, after=global_title)
             self.assertNotIn(
                 "mensagem privada de teste".encode("utf-8"),
@@ -2092,6 +2092,67 @@ class BrokerTests(unittest.TestCase):
                     response = json.loads(connection.makefile("rb").readline())
                 self.assertFalse(response["ok"])
                 self.assertIn(message, response["error"])
+
+    def test_server_returns_busy_response_when_connection_limit_is_reached(self) -> None:
+        acquired = 0
+        try:
+            for _ in range(simple_broker.BROKER_MAX_CONNECTIONS):
+                self.assertTrue(self.server.connection_slots.acquire(blocking=False))
+                acquired += 1
+            response = self.call({"method": "auth.register", "username": "busy-user", "password": "secure-pass-123"})
+        finally:
+            for _ in range(acquired):
+                self.server.connection_slots.release()
+
+        self.assertEqual(
+            {"ok": False, "error": "Serviço ocupado; tente novamente."},
+            response,
+        )
+
+    def test_unread_room_summary_uses_one_query_for_all_rooms(self) -> None:
+        alice = self.create_user("unread-alice")
+        bob = self.create_user("unread-bob")
+        direct = self.call(
+            {
+                "method": "chat.dm.open",
+                "token": bob["token"],
+                "username": "unread-alice",
+            }
+        )
+        with patch.object(simple_broker, "CHAT_SEND_INTERVAL_SECONDS", 0.0):
+            self.call(
+                {
+                    "method": "chat.post",
+                    "token": alice["token"],
+                    "channel": "global",
+                    "message": "Aviso público",
+                }
+            )
+            self.call(
+                {
+                    "method": "chat.post",
+                    "token": alice["token"],
+                    "channel": direct["channel"],
+                    "message": "Mensagem direta",
+                }
+            )
+
+        statements: list[str] = []
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.set_trace_callback(statements.append)
+            rooms = self.broker._chat_unread_rooms(connection, int(bob["user_id"]))
+
+        reads = [
+            statement
+            for statement in statements
+            if statement.lstrip().upper().startswith(("SELECT", "WITH"))
+        ]
+        self.assertEqual(1, len(reads))
+        self.assertEqual(
+            {"global", direct["channel"]},
+            {room["channel"] for room in rooms},
+        )
 
     def test_socket_mode_and_bash_client_flow(self) -> None:
         self.assertEqual(0o600, self.socket_path.stat().st_mode & 0o777)

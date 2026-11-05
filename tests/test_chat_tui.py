@@ -92,6 +92,68 @@ class ChatTuiTests(unittest.TestCase):
         rows = tui.message_display_rows(self.message(42, "ola"))
         self.assertEqual("[#42 03:00] você: ola", rows[0][0])
 
+    def test_display_rows_are_cached_until_message_content_changes(self) -> None:
+        tui = self.make_tui()
+        tui.messages = [self.message(1)]
+        with patch.object(
+            tui, "message_display_rows", wraps=tui.message_display_rows
+        ) as render_message:
+            first = tui.all_display_rows()
+            self.assertEqual(first, tui.all_display_rows())
+            self.assertEqual(1, render_message.call_count)
+
+            tui.messages[0]["body"] = "atualizada"
+            tui.invalidate_display_rows()
+            updated = tui.all_display_rows()
+
+        self.assertIn("atualizada", updated[1][0])
+        self.assertEqual(2, render_message.call_count)
+
+    def test_sync_updates_recent_message_reactions_and_moderation(self) -> None:
+        tui = self.make_tui()
+        tui.last_id = 4
+        tui.messages = [self.message(3), self.message(4)]
+        updated = self.message(4)
+        updated["reactions"] = "👍:2"
+        updated["pinned_at"] = "2026-11-05 03:00:00"
+        response = {
+            "ok": True,
+            "messages": [],
+            "window": [updated],
+            "last_id": 4,
+            "online_users": [],
+            "typing_users": [],
+            "pinned": [],
+            "unread_rooms": [],
+        }
+
+        with patch.object(tui, "request", return_value=response):
+            tui.sync()
+
+        self.assertEqual("👍:2", tui.messages[-1]["reactions"])
+        self.assertIsNotNone(tui.messages[-1]["pinned_at"])
+        self.assertEqual([3, 4], [message["id"] for message in tui.messages])
+
+    def test_sync_removes_a_recent_message_hidden_by_moderation(self) -> None:
+        tui = self.make_tui()
+        tui.last_id = 5
+        tui.messages = [self.message(4), self.message(5)]
+        response = {
+            "ok": True,
+            "messages": [],
+            "window": [self.message(4)],
+            "last_id": 5,
+            "online_users": [],
+            "typing_users": [],
+            "pinned": [],
+            "unread_rooms": [],
+        }
+
+        with patch.object(tui, "request", return_value=response):
+            tui.sync()
+
+        self.assertEqual([4], [message["id"] for message in tui.messages])
+
     def test_failed_send_restores_the_draft(self) -> None:
         tui = self.make_tui()
         with patch.object(tui, "request", side_effect=ChatError("sem conexão")):
@@ -99,6 +161,16 @@ class ChatTuiTests(unittest.TestCase):
         self.assertEqual("mensagem", tui.input_text)
         self.assertEqual(len("mensagem"), tui.cursor)
         self.assertEqual("sem conexão", tui.status)
+
+    def test_typing_presence_failures_are_reported_without_losing_input(self) -> None:
+        tui = self.make_tui()
+
+        with patch.object(tui, "mark_typing", side_effect=ChatError("sem conexão")):
+            tui.handle_key(None, "x")
+
+        self.assertEqual("x", tui.input_text)
+        self.assertIn("atualizar presença", tui.status)
+        self.assertIn("sem conexão", tui.status)
 
     def test_dm_return_preserves_parent_draft_history_and_scroll(self) -> None:
         tui = self.make_tui()

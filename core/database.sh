@@ -32,6 +32,68 @@ db_ensure_column() {
   fi
 }
 
+db_ensure_columns() {
+  local metadata
+  local table
+  local column
+  local definition
+  local key
+  local migration_sql=""
+  local -A existing_columns=()
+
+  if [[ "${BROKER_MODE:-0}" == "1" ]]; then
+    printf '  Migrações SQLite locais indisponíveis no modo broker.\n' >&2
+    return 2
+  fi
+
+  metadata=$(sqlite3 -batch -bail -cmd ".timeout 5000" "$DB_PATH" "
+    SELECT 'exercises' || char(9) || name FROM pragma_table_info('exercises')
+    UNION ALL SELECT 'users' || char(9) || name FROM pragma_table_info('users')
+    UNION ALL SELECT 'evaluation_slots' || char(9) || name
+      FROM pragma_table_info('evaluation_slots')
+    UNION ALL SELECT 'reviews' || char(9) || name FROM pragma_table_info('reviews')
+    UNION ALL SELECT 'submissions' || char(9) || name
+      FROM pragma_table_info('submissions');
+  ") || return 1
+  while IFS=$'\t' read -r table column; do
+    [[ -n "$table" && -n "$column" ]] || continue
+    existing_columns["$table.$column"]=1
+  done <<<"$metadata"
+
+  while IFS=$'\t' read -r table column definition; do
+    key="$table.$column"
+    if [[ -z "${existing_columns[$key]:-}" ]]; then
+      migration_sql+="ALTER TABLE $table ADD COLUMN $column $definition;"$'\n'
+    fi
+  done <<'MIGRATIONS'
+exercises	statement_path	TEXT
+exercises	statement	TEXT NOT NULL DEFAULT ''
+exercises	example	TEXT NOT NULL DEFAULT ''
+exercises	terminal_model	TEXT NOT NULL DEFAULT ''
+exercises	hints	TEXT NOT NULL DEFAULT ''
+users	is_admin	INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1))
+users	must_change_password	INTEGER NOT NULL DEFAULT 0 CHECK (must_change_password IN (0, 1))
+users	display_name	TEXT NOT NULL DEFAULT ''
+users	github_username	TEXT NOT NULL DEFAULT ''
+users	bio	TEXT NOT NULL DEFAULT ''
+users	is_active	INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1))
+evaluation_slots	accepted_by	INTEGER REFERENCES users(id)
+evaluation_slots	accepted_at	DATETIME
+reviews	recipient_score	INTEGER CHECK (recipient_score IS NULL OR recipient_score BETWEEN 0 AND 5)
+reviews	recipient_feedback	TEXT NOT NULL DEFAULT ''
+reviews	recipient_responded_at	DATETIME
+submissions	content_kind	TEXT NOT NULL DEFAULT 'legacy' CHECK (content_kind IN ('legacy', 'github_commit'))
+submissions	commit_url	TEXT
+submissions	delivery_directory	TEXT
+MIGRATIONS
+
+  if [[ -z "$migration_sql" ]]; then
+    return 0
+  fi
+  sqlite3 -batch -bail -cmd ".timeout 5000" "$DB_PATH" \
+    "PRAGMA foreign_keys = ON; BEGIN IMMEDIATE; $migration_sql COMMIT;"
+}
+
 db_init() {
   local schema_path="$SCRIPT_DIR/database/schema.sql"
   local catalog_path="$SCRIPT_DIR/database/exercises.sql"
@@ -51,25 +113,7 @@ db_init() {
     return 1
   fi
 
-  if ! db_ensure_column exercises statement_path "TEXT" ||
-    ! db_ensure_column exercises statement "TEXT NOT NULL DEFAULT ''" ||
-    ! db_ensure_column exercises example "TEXT NOT NULL DEFAULT ''" ||
-    ! db_ensure_column exercises terminal_model "TEXT NOT NULL DEFAULT ''" ||
-    ! db_ensure_column exercises hints "TEXT NOT NULL DEFAULT ''" ||
-    ! db_ensure_column users is_admin "INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0, 1))" ||
-    ! db_ensure_column users must_change_password "INTEGER NOT NULL DEFAULT 0 CHECK (must_change_password IN (0, 1))" ||
-    ! db_ensure_column users display_name "TEXT NOT NULL DEFAULT ''" ||
-    ! db_ensure_column users github_username "TEXT NOT NULL DEFAULT ''" ||
-    ! db_ensure_column users bio "TEXT NOT NULL DEFAULT ''" ||
-    ! db_ensure_column users is_active "INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1))" ||
-    ! db_ensure_column evaluation_slots accepted_by "INTEGER REFERENCES users(id)" ||
-    ! db_ensure_column evaluation_slots accepted_at "DATETIME" ||
-    ! db_ensure_column reviews recipient_score "INTEGER CHECK (recipient_score IS NULL OR recipient_score BETWEEN 0 AND 5)" ||
-    ! db_ensure_column reviews recipient_feedback "TEXT NOT NULL DEFAULT ''" ||
-    ! db_ensure_column reviews recipient_responded_at "DATETIME" ||
-    ! db_ensure_column submissions content_kind "TEXT NOT NULL DEFAULT 'legacy' CHECK (content_kind IN ('legacy', 'github_commit'))" ||
-    ! db_ensure_column submissions commit_url "TEXT" ||
-    ! db_ensure_column submissions delivery_directory "TEXT"; then
+  if ! db_ensure_columns; then
     printf '  Não foi possível atualizar as colunas do banco de dados.\n' >&2
     return 1
   fi

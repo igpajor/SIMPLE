@@ -493,6 +493,31 @@ class ProxyTests(unittest.TestCase):
         )
 
     @unittest.skipIf(os.geteuid() == 0, "use the root-only multi-UID integration test")
+    def test_proxy_returns_busy_response_when_connection_limit_is_reached(self) -> None:
+        acquired = 0
+        try:
+            for _ in range(simple_broker.BROKER_MAX_CONNECTIONS):
+                self.assertTrue(
+                    self.proxy_server.connection_slots.acquire(blocking=False)
+                )
+                acquired += 1
+            response = self.proxy_call(
+                {
+                    "method": "auth.login",
+                    "username": "student",
+                    "password": "secure-pass-123",
+                }
+            )
+        finally:
+            for _ in range(acquired):
+                self.proxy_server.connection_slots.release()
+
+        self.assertEqual(
+            {"ok": False, "error": "Serviço ocupado; tente novamente."},
+            response,
+        )
+
+    @unittest.skipIf(os.geteuid() == 0, "use the root-only multi-UID integration test")
     def test_proxy_recovers_after_broker_unavailability(self) -> None:
         uid = os.geteuid()
         user = self.create_user("broker-recovery-user")

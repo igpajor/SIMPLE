@@ -414,6 +414,12 @@ class ProxyServer(socketserver.ThreadingUnixStreamServer):
 
     def process_request(self, request: socket.socket, client_address: Any) -> None:
         if not self.connection_slots.acquire(blocking=False):
+            try:
+                request.sendall(
+                    b'{"ok":false,"error":"Servi\xc3\xa7o ocupado; tente novamente."}\n'
+                )
+            except OSError:
+                logging.debug("Proxy busy response could not be delivered")
             self.shutdown_request(request)
             return
         try:
