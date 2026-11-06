@@ -192,12 +192,19 @@ class AccountDashboardTuiTests(unittest.TestCase):
             ACS_VLINE=0,
         ):
             tui.draw(screen)
+        fill_calls = [
+            call
+            for call in screen.addnstr.call_args_list
+            if call.args[2].strip() == ""
+        ]
         self.assertTrue(
             any(
                 "ÚLTIMA NOTIFICAÇÃO" in call.args[2]
                 for call in screen.addnstr.call_args_list
             )
         )
+        self.assertTrue(fill_calls)
+        self.assertTrue(all(call.args[4] == curses.A_REVERSE for call in fill_calls))
 
     def test_f2_notification_accepts_pending_evaluation_request(self) -> None:
         config = dashboard_config()

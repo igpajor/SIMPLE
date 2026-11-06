@@ -118,6 +118,8 @@ class AccountDashboardTui:
         self.width = 80
         self.height = 24
         self.colors: dict[str, int] = {}
+        self.popup_colors: dict[str, int] = {}
+        self.popup_background = curses.A_REVERSE
 
     def initialize_colors(self) -> None:
         if os.environ.get("NO_COLOR") or not curses.has_colors():
@@ -145,6 +147,31 @@ class AccountDashboardTui:
                 self.colors[name] = curses.color_pair(index) | attributes
             except curses.error:
                 self.colors[name] = attributes
+        popup_palette = (
+            ("title", curses.COLOR_CYAN, curses.A_BOLD),
+            ("selected", curses.COLOR_CYAN, curses.A_BOLD),
+            ("text", curses.COLOR_WHITE, curses.A_NORMAL),
+            ("muted", curses.COLOR_WHITE, curses.A_DIM),
+            ("pending", curses.COLOR_YELLOW, curses.A_BOLD),
+            ("approved", curses.COLOR_GREEN, curses.A_BOLD),
+            ("rejected", curses.COLOR_RED, curses.A_BOLD),
+            ("warning", curses.COLOR_YELLOW, curses.A_BOLD),
+        )
+        for index, (name, foreground, attributes) in enumerate(
+            popup_palette, start=9
+        ):
+            try:
+                curses.init_pair(index, foreground, curses.COLOR_BLACK)
+                self.popup_colors[name] = curses.color_pair(index) | attributes
+            except curses.error:
+                self.popup_colors[name] = self.colors.get(
+                    name, curses.A_NORMAL
+                ) | curses.A_REVERSE
+        try:
+            curses.init_pair(17, curses.COLOR_WHITE, curses.COLOR_BLACK)
+            self.popup_background = curses.color_pair(17)
+        except curses.error:
+            self.popup_background = curses.A_REVERSE
 
     def draw_text(
         self,
@@ -154,6 +181,8 @@ class AccountDashboardTui:
         text: str,
         color: str = "text",
         width: int | None = None,
+        *,
+        opaque: bool = False,
     ) -> None:
         if y < 0 or y >= self.height or x < 0 or x >= self.width:
             return
@@ -166,19 +195,34 @@ class AccountDashboardTui:
                 x,
                 safe_text(text).replace("\n", " ").replace("\t", " "),
                 limit,
-                self.colors.get(color, curses.A_NORMAL),
+                (
+                    self.popup_colors.get(color, curses.A_REVERSE)
+                    if opaque
+                    else self.colors.get(color, curses.A_NORMAL)
+                ),
             )
         except curses.error:
             pass
 
     def draw_frame(
-        self, screen: Any, top: int, left: int, width: int, height: int, title: str = ""
+        self,
+        screen: Any,
+        top: int,
+        left: int,
+        width: int,
+        height: int,
+        title: str = "",
+        opaque: bool = False,
     ) -> None:
         if width < 4 or height < 3:
             return
         right = left + width - 1
         bottom = top + height - 1
-        attr = self.colors.get("muted", curses.A_NORMAL)
+        attr = (
+            self.popup_colors.get("muted", curses.A_REVERSE)
+            if opaque
+            else self.colors.get("muted", curses.A_NORMAL)
+        )
         try:
             screen.addch(top, left, curses.ACS_ULCORNER, attr)
             screen.addch(top, right, curses.ACS_URCORNER, attr)
@@ -191,7 +235,15 @@ class AccountDashboardTui:
         except curses.error:
             pass
         if title:
-            self.draw_text(screen, top, left + 2, f" {title} ", "title", width - 4)
+            self.draw_text(
+                screen,
+                top,
+                left + 2,
+                f" {title} ",
+                "title",
+                width - 4,
+                opaque=opaque,
+            )
 
     def selected_submission(self) -> dict[str, Any] | None:
         if self.detail:
@@ -447,8 +499,25 @@ class AccountDashboardTui:
         height = min(12, self.height - 4)
         left = max(0, (self.width - width) // 2)
         top = max(1, (self.height - height) // 2)
+        for row in range(top, min(top + height, self.height)):
+            try:
+                screen.addnstr(
+                    row,
+                    left,
+                    " " * width,
+                    min(width, self.width - left - 1),
+                    self.popup_background,
+                )
+            except curses.error:
+                pass
         self.draw_frame(
-            screen, top, left, width, height, "ÚLTIMA NOTIFICAÇÃO · F2"
+            screen,
+            top,
+            left,
+            width,
+            height,
+            "ÚLTIMA NOTIFICAÇÃO · F2",
+            opaque=True,
         )
         if not self.notifications:
             self.draw_text(
@@ -458,6 +527,7 @@ class AccountDashboardTui:
                 "Você não tem notificações pendentes.",
                 "muted",
                 width - 4,
+                opaque=True,
             )
         else:
             item = self.notifications[0]
@@ -469,7 +539,13 @@ class AccountDashboardTui:
             visible = height - 3
             for index, (line, color) in enumerate(content[:visible]):
                 self.draw_text(
-                    screen, top + 1 + index, left + 2, line, color, width - 4
+                    screen,
+                    top + 1 + index,
+                    left + 2,
+                    line,
+                    color,
+                    width - 4,
+                    opaque=True,
                 )
         self.draw_text(
             screen,
@@ -478,6 +554,7 @@ class AccountDashboardTui:
             "F2/Esc fechar",
             "muted",
             width - 4,
+            opaque=True,
         )
 
     def draw_dashboard(self, screen: Any) -> None:
