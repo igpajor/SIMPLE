@@ -171,6 +171,10 @@ class AccountDashboardTui:
         self.submissions = config["submissions"]
         self.points_history = config.get("points_history", [])
         self.requests = config.get("requests", [])
+        self.evaluation_slots = config.get("evaluation_slots", [])
+        self.accepted_evaluation_requests = config.get(
+            "accepted_evaluation_requests", []
+        )
         self.notifications = config.get("notifications", [])
         self.review_history = config.get("review_history", [])
         self.pending_review_responses = config.get("pending_review_responses", [])
@@ -181,7 +185,12 @@ class AccountDashboardTui:
             if self.detail
             else "progress"
             if config.get("open_progress")
+            else "evaluations"
+            if config.get("open_evaluations")
             else "dashboard"
+        )
+        self.evaluation_return_dashboard = bool(
+            config.get("evaluation_return_dashboard", False)
         )
         self.selection = 0
         if self.selected_id is not None:
@@ -202,7 +211,14 @@ class AccountDashboardTui:
         self.form_buffer = ""
         self.notification_popup = False
         self.popup_request_id: int | None = None
-        self.confirm_release_reservation = False
+        self.evaluation_selection = 0
+        self.evaluation_scroll = 0
+        self.status_message = ""
+        self.confirmation: dict[str, Any] | None = None
+        self.evaluation_form: dict[str, Any] | None = None
+        self.evaluation_form_field = "score"
+        self.evaluation_form_buffer = ""
+        self.evaluation_form_score = ""
         self.live_refresh_error = ""
         self.last_notification_poll = time.monotonic()
         self.width = 80
@@ -589,22 +605,14 @@ class AccountDashboardTui:
         elif item.get("category", item.get("type")) == "evaluation_request_accepted":
             lines.append(("Seu avaliador foi confirmado · Enter: abrir entrega", "selected"))
         elif item.get("category", item.get("type")) == "evaluation_accepted":
-            if self.confirm_release_reservation:
-                lines.extend(
-                    (
-                        ("Liberar sua reserva desta avaliação? [S/N]", "warning"),
-                        ("S: confirmar · N: cancelar", "selected"),
-                    )
+            lines.extend(
+                (
+                    ("[1] Abrir sala de áudio e vídeo", "selected"),
+                    ("[2] Avaliar submissão", "selected"),
+                    ("[3] Liberar minha reserva", "selected"),
+                    ("[0] Voltar", "muted"),
                 )
-            else:
-                lines.extend(
-                    (
-                        ("[1] Abrir sala de áudio e vídeo", "selected"),
-                        ("[2] Avaliar submissão", "selected"),
-                        ("[3] Liberar minha reserva", "selected"),
-                        ("[0] Voltar", "muted"),
-                    )
-                )
+            )
         elif item.get("category", item.get("type")) == "chat_message":
             lines.append(("Enter: abrir conversa", "selected"))
         elif item.get("category", item.get("type")) == "response_received":
@@ -612,6 +620,92 @@ class AccountDashboardTui:
         else:
             lines.append(("Enter: abrir entrega", "selected"))
         return lines
+
+    def evaluation_items(self) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        known_slots: set[str] = set()
+        for slot in self.evaluation_slots:
+            slot_id = str(slot.get("id", ""))
+            if not slot_id:
+                continue
+            known_slots.add(slot_id)
+            items.append(
+                {
+                    **slot,
+                    "item_type": "reviewer_slot",
+                    "label": (
+                        f"{slot.get('exercise_code', '')} · {slot.get('username', '')} "
+                        f"· {slot.get('exercise_name', '')}"
+                    ),
+                }
+            )
+        for request in self.accepted_evaluation_requests:
+            slot_id = str(request.get("slot_id", ""))
+            if not slot_id or slot_id in known_slots:
+                continue
+            known_slots.add(slot_id)
+            items.append(
+                {
+                    **request,
+                    "id": request.get("slot_id"),
+                    "item_type": "reviewer_accepted",
+                    "label": (
+                        f"Avaliar · {request.get('exercise_code', '')} · "
+                        f"{request.get('submitter', '')}"
+                    ),
+                }
+            )
+        submission_by_slot = {
+            str(submission.get("slot_id")): submission
+            for submission in self.submissions
+            if submission.get("slot_id") is not None
+        }
+        for request in self.requests:
+            submission = submission_by_slot.get(str(request.get("slot_id")), {})
+            request_state = (
+                "aguardando sua decisão"
+                if request.get("status") == "pending"
+                else "avaliador confirmado"
+            )
+            items.append(
+                {
+                    **request,
+                    "id": request.get("slot_id"),
+                    "submission_id": submission.get("id"),
+                    "item_type": "author_request",
+                    "label": (
+                        f"Minha entrega · {request.get('exercise_code', '')} · "
+                        f"{request.get('reviewer', '')} · {request_state}"
+                    ),
+                }
+            )
+        for response in self.pending_review_responses:
+            items.append(
+                {
+                    **response,
+                    "id": response.get("review_id"),
+                    "item_type": "review_response",
+                    "label": (
+                        f"Responder feedback · {response.get('exercise_code', '')} · "
+                        f"{response.get('reviewer', '')}"
+                    ),
+                }
+            )
+        priority = {
+            "reviewer_accepted": 0,
+            "author_request": 1,
+            "review_response": 2,
+            "reviewer_slot": 3,
+        }
+        items.sort(
+            key=lambda item: (
+                priority[item["item_type"]],
+                0 if item.get("request_status") == "pending" else 1,
+                str(item.get("created_at", "")),
+                str(item.get("id", "")),
+            )
+        )
+        return items
 
     def active_notification(self) -> dict[str, Any] | None:
         if self.popup_request_id is not None:
@@ -755,9 +849,9 @@ class AccountDashboardTui:
                 content_width,
                 body_height - submissions_height,
             )
-        footer = (
+        footer = self.status_message or (
             "↑/↓ entregas · Enter detalhes · E editar · F2 última notif. · "
-            "P progresso · F3 pontos · Esc voltar"
+            "V avaliações · P progresso · F3 pontos · Esc voltar"
         )
         if self.live_refresh_error:
             footer = f"Atualização falhou: {self.live_refresh_error}"
@@ -1007,6 +1101,212 @@ class AccountDashboardTui:
             panel_width - 2,
         )
 
+    def draw_evaluations(self, screen: Any) -> None:
+        panel_width = min(112, self.width - 2)
+        left = max(0, (self.width - panel_width) // 2)
+        top = 1
+        height = self.height - 3
+        self.draw_frame(screen, top, left, panel_width, height, "AVALIAÇÕES")
+        items = self.evaluation_items()
+        if not items:
+            self.draw_text(
+                screen,
+                top + 2,
+                left + 2,
+                "Não há pedidos, entregas ou respostas de avaliação pendentes.",
+                "muted",
+                panel_width - 4,
+            )
+        else:
+            visible = max(1, height - 6)
+            self.evaluation_selection = min(
+                self.evaluation_selection, len(items) - 1
+            )
+            if self.evaluation_selection < self.evaluation_scroll:
+                self.evaluation_scroll = self.evaluation_selection
+            elif self.evaluation_selection >= self.evaluation_scroll + visible:
+                self.evaluation_scroll = self.evaluation_selection - visible + 1
+            for index, item in enumerate(
+                items[self.evaluation_scroll : self.evaluation_scroll + visible]
+            ):
+                selected = self.evaluation_scroll + index == self.evaluation_selection
+                label = item["label"]
+                if item["item_type"] == "reviewer_slot":
+                    if item.get("request_status") == "pending":
+                        label = f"Pedido enviado · {label}"
+                    else:
+                        label = f"Disponível · {label}"
+                self.draw_text(
+                    screen,
+                    top + 1 + index,
+                    left + 2,
+                    f"{'›' if selected else ' '} {label}",
+                    "selected" if selected else "text",
+                    panel_width - 4,
+                )
+            selected = items[self.evaluation_selection]
+            if selected["item_type"] == "reviewer_slot":
+                hint = (
+                    "C cancelar pedido · Esc voltar"
+                    if selected.get("request_status") == "pending"
+                    else "R solicitar avaliação · Esc voltar"
+                )
+            elif selected["item_type"] == "reviewer_accepted":
+                hint = "1 sala · 2 avaliar entrega · 3 liberar reserva · Esc voltar"
+            elif selected["item_type"] == "author_request":
+                hint = (
+                    "A aceitar · D recusar · Enter abrir entrega · Esc voltar"
+                    if selected.get("status") == "pending"
+                    else "Enter abrir entrega · Esc voltar"
+                )
+            else:
+                hint = "Enter responder · Esc voltar"
+            self.draw_text(
+                screen,
+                top + height - 2,
+                left + 2,
+                hint,
+                "muted",
+                panel_width - 4,
+            )
+        if self.status_message:
+            self.draw_text(
+                screen,
+                top + height - 3,
+                left + 2,
+                self.status_message,
+                "approved",
+                panel_width - 4,
+            )
+        if self.live_refresh_error:
+            self.draw_text(
+                screen,
+                top + height - 4,
+                left + 2,
+                self.live_refresh_error,
+                "warning",
+                panel_width - 4,
+            )
+        self.draw_text(
+            screen,
+            self.height - 1,
+            left + 1,
+            "↑/↓ selecionar · use a ação indicada · Esc voltar",
+            "muted",
+            panel_width - 2,
+        )
+
+    def draw_evaluation_confirmation(self, screen: Any) -> None:
+        panel_width = min(72, self.width - 4)
+        panel_height = 8
+        left = max(0, (self.width - panel_width) // 2)
+        top = max(0, (self.height - panel_height) // 2)
+        self.draw_frame(
+            screen,
+            top,
+            left,
+            panel_width,
+            panel_height,
+            "CONFIRMAR AÇÃO",
+            opaque=True,
+        )
+        message = safe_text((self.confirmation or {}).get("message", ""))
+        for index, line in enumerate(wrap_text(message, panel_width - 6)[:2]):
+            self.draw_text(
+                screen,
+                top + 2 + index,
+                left + 3,
+                line,
+                "text",
+                panel_width - 6,
+                opaque=True,
+            )
+        self.draw_text(
+            screen,
+            top + panel_height - 2,
+            left + 3,
+            "S confirmar · N/Esc cancelar",
+            "selected",
+            panel_width - 6,
+            opaque=True,
+        )
+
+    def draw_evaluation_form(self, screen: Any) -> None:
+        form = self.evaluation_form or {}
+        panel_width = min(112, self.width - 2)
+        left = max(0, (self.width - panel_width) // 2)
+        top = 1
+        height = self.height - 3
+        self.draw_frame(
+            screen,
+            top,
+            left,
+            panel_width,
+            height,
+            safe_text(form.get("title", "AVALIAÇÃO")),
+        )
+        details = form.get("details", [])
+        row = top + 1
+        for text in details:
+            for line in wrap_text(safe_text(text), panel_width - 6):
+                if row >= top + height - 6:
+                    break
+                self.draw_text(
+                    screen, row, left + 3, line, "text", panel_width - 6
+                )
+                row += 1
+        self.draw_text(
+            screen,
+            top + height - 5,
+            left + 3,
+            f"Nota (0-5): {self.evaluation_form_score or '—'}",
+            "selected",
+            panel_width - 6,
+        )
+        feedback_lines = wrap_text(
+            self.evaluation_form_buffer or "(feedback obrigatório)",
+            panel_width - 8,
+        )
+        self.draw_text(
+            screen,
+            top + height - 4,
+            left + 3,
+            "Feedback:",
+            "title",
+            panel_width - 6,
+        )
+        for index, line in enumerate(feedback_lines[-2:]):
+            self.draw_text(
+                screen,
+                top + height - 3 + index,
+                left + 3,
+                line,
+                "text",
+                panel_width - 6,
+            )
+        if self.live_refresh_error:
+            self.draw_text(
+                screen,
+                self.height - 2,
+                left + 1,
+                self.live_refresh_error,
+                "warning",
+                panel_width - 2,
+            )
+        instructions = (
+            "Digite nota 0-5 e Enter; escreva feedback; Ctrl+S enviar · Esc cancelar"
+            if self.evaluation_form_field == "score"
+            else "Feedback obrigatório · Enter nova linha · Ctrl+S enviar · Esc cancelar"
+        )
+        self.draw_text(
+            screen,
+            self.height - 1,
+            left + 1,
+            instructions,
+            "muted",
+            panel_width - 2,
+        )
+
     def draw(self, screen: Any) -> None:
         self.height, self.width = screen.getmaxyx()
         screen.erase()
@@ -1024,6 +1324,21 @@ class AccountDashboardTui:
             self.draw_points(screen)
         elif self.screen == "progress":
             self.draw_progress(screen)
+        elif self.screen == "evaluations":
+            self.draw_evaluations(screen)
+        elif self.screen == "evaluation_confirm":
+            return_screen = (self.confirmation or {}).get("return_screen")
+            if return_screen == "dashboard":
+                self.draw_dashboard(screen)
+                if self.notification_popup:
+                    self.draw_notification_popup(screen)
+            elif return_screen == "detail":
+                self.draw_detail(screen)
+            else:
+                self.draw_evaluations(screen)
+            self.draw_evaluation_confirmation(screen)
+        elif self.screen == "evaluation_form":
+            self.draw_evaluation_form(screen)
         if self.notification_popup and self.screen == "dashboard":
             self.draw_notification_popup(screen)
         screen.refresh()
@@ -1031,12 +1346,13 @@ class AccountDashboardTui:
     def result(self, action: str, **values: Any) -> dict[str, Any]:
         return {"action": action, **values}
 
-    def broker_request(self, method: str) -> dict[str, Any]:
+    def broker_request(self, method: str, **fields: str) -> dict[str, Any]:
         if not self.broker_socket or not self.broker_client or not self.broker_token:
             raise RuntimeError(
                 "Configuração de atualização do Broker ausente "
                 "(socket, cliente ou sessão)."
             )
+        field_names = list(fields)
         completed = subprocess.run(
             [
                 sys.executable,
@@ -1044,8 +1360,14 @@ class AccountDashboardTui:
                 self.broker_socket,
                 method,
                 "token",
+                *field_names,
             ],
-            input=f"{self.broker_token}\0".encode("utf-8"),
+            input=(
+                "\0".join(
+                    [self.broker_token, *(str(fields[name]) for name in field_names)]
+                )
+                + "\0"
+            ).encode("utf-8"),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=8,
@@ -1068,17 +1390,27 @@ class AccountDashboardTui:
         submissions = self.broker_request("submissions.list").get("submissions")
         requests = self.broker_request("evaluations.requests.list").get("requests")
         chat = self.broker_request("chat.dashboard")
+        accepted_requests = progress.get("accepted_evaluation_requests", [])
+        review_history = progress.get("review_history", [])
+        pending_review_responses = progress.get("pending_review_responses", [])
         if not all(
             isinstance(value, list)
-            for value in (submissions, requests, progress.get("notifications"),
-                          chat.get("unread_rooms"))
+            for value in (
+                submissions,
+                requests,
+                progress.get("notifications"),
+                accepted_requests,
+                review_history,
+                pending_review_responses,
+                chat.get("unread_rooms"),
+            )
         ):
             raise RuntimeError("O Broker retornou listas inválidas de notificações.")
         fresh = build_notifications(
             progress["notifications"],
             submissions,
             requests,
-            progress.get("accepted_evaluation_requests", []),
+            accepted_requests,
             chat["unread_rooms"],
         )
         old_request_ids = {
@@ -1095,10 +1427,23 @@ class AccountDashboardTui:
         self.notifications = fresh
         self.requests = requests
         self.submissions = submissions
+        self.accepted_evaluation_requests = accepted_requests
+        self.review_history = review_history
+        self.pending_review_responses = pending_review_responses
+        self.points_history = progress.get("points_history", self.points_history)
         if new_requests:
             self.notification_popup = True
             self.popup_request_id = new_requests[0].get("request_id")
         self.live_refresh_error = ""
+        if self.screen == "evaluations":
+            slots = self.broker_request("evaluations.slots.list").get("slots")
+            if not isinstance(slots, list):
+                raise RuntimeError("O Broker retornou uma lista inválida de avaliações.")
+            self.evaluation_slots = slots
+            self.evaluation_selection = min(
+                self.evaluation_selection,
+                max(0, len(self.evaluation_items()) - 1),
+            )
 
     def poll_notifications(self) -> None:
         now = time.monotonic()
@@ -1115,12 +1460,235 @@ class AccountDashboardTui:
         ) as error:
             self.live_refresh_error = safe_text(error)
 
+    def show_evaluations(self, *, return_dashboard: bool = True) -> None:
+        self.screen = "evaluations"
+        self.evaluation_return_dashboard = return_dashboard
+        self.status_message = ""
+        try:
+            self.refresh_notifications()
+        except (
+            OSError,
+            RuntimeError,
+            subprocess.TimeoutExpired,
+            json.JSONDecodeError,
+        ) as error:
+            self.live_refresh_error = safe_text(error)
+
+    def open_submission(self, submission_id: int) -> None:
+        try:
+            response = self.broker_request(
+                "submissions.get", submission_id=str(submission_id)
+            )
+        except (
+            OSError,
+            RuntimeError,
+            subprocess.TimeoutExpired,
+            json.JSONDecodeError,
+        ) as error:
+            self.live_refresh_error = safe_text(error)
+            return
+        detail = response.get("submission")
+        if not isinstance(detail, dict):
+            self.live_refresh_error = "O Broker retornou uma entrega inválida."
+            return
+        self.detail = detail
+        self.selected_id = submission_id
+        self.screen = "detail"
+        self.scroll = 0
+        self.notification_popup = False
+
+    def request_confirmation(
+        self,
+        method: str,
+        fields: dict[str, str],
+        message: str,
+        return_screen: str,
+    ) -> None:
+        self.confirmation = {
+            "method": method,
+            "fields": fields,
+            "message": message,
+            "return_screen": return_screen,
+        }
+        self.screen = "evaluation_confirm"
+
+    def complete_confirmation(self, accepted: bool) -> None:
+        confirmation = self.confirmation
+        if confirmation is None:
+            self.screen = "evaluations"
+            return
+        self.confirmation = None
+        self.screen = confirmation["return_screen"]
+        if not accepted:
+            return
+        try:
+            response = self.broker_request(
+                confirmation["method"], **confirmation["fields"]
+            )
+        except (
+            OSError,
+            RuntimeError,
+            subprocess.TimeoutExpired,
+            json.JSONDecodeError,
+        ) as error:
+            self.live_refresh_error = safe_text(error)
+            return
+        method = confirmation["method"]
+        if method == "evaluations.accept":
+            self.status_message = "Pedido enviado ao autor para autorização."
+        elif method == "evaluations.cancel":
+            self.status_message = "Pedido/reserva liberado."
+        elif method == "evaluations.request.respond":
+            decision = confirmation["fields"]["decision"]
+            self.status_message = (
+                "Pedido aceito; a avaliação foi confirmada."
+                if decision == "accept"
+                else "Pedido recusado; a reserva foi liberada."
+            )
+        else:
+            self.status_message = safe_text(response.get("message", "Ação concluída."))
+        try:
+            self.refresh_notifications()
+        except (
+            OSError,
+            RuntimeError,
+            subprocess.TimeoutExpired,
+            json.JSONDecodeError,
+        ) as error:
+            self.live_refresh_error = safe_text(error)
+
+    def start_evaluation_form(self, item: dict[str, Any]) -> None:
+        item_type = item.get("item_type")
+        try:
+            if item_type == "reviewer_accepted":
+                response = self.broker_request(
+                    "evaluations.slot.get", slot_id=str(item["slot_id"])
+                )
+                slot = response.get("slot")
+                if not isinstance(slot, dict):
+                    raise RuntimeError("O Broker retornou uma entrega inválida.")
+                details = [
+                    f"{slot.get('exercise_code', '')} — {slot.get('exercise_name', '')}",
+                    f"Avaliado: {slot.get('username', '')}",
+                    f"Descrição: {slot.get('description', '')}",
+                    f"Enunciado: {slot.get('statement', '')}",
+                ]
+                if slot.get("content_kind") == "github_commit":
+                    details.extend(
+                        (
+                            f"Commit: {slot.get('commit_url', '')}",
+                            f"Diretório: {slot.get('delivery_directory', '')}",
+                        )
+                    )
+                else:
+                    details.append(f"Conteúdo legado: {slot.get('content', '')}")
+                self.evaluation_form = {
+                    "mode": "review",
+                    "return_screen": item.get("return_screen", "evaluations"),
+                    "title": f"AVALIAR · {slot.get('exercise_code', '')}",
+                    "details": details,
+                    "slot_id": str(item["slot_id"]),
+                }
+            elif item_type == "review_response":
+                response = self.broker_request(
+                    "evaluations.review.get", review_id=str(item["review_id"])
+                )
+                review = response.get("review")
+                if not isinstance(review, dict):
+                    raise RuntimeError("O Broker retornou uma avaliação inválida.")
+                self.evaluation_form = {
+                    "mode": "response",
+                    "return_screen": item.get("return_screen", "evaluations"),
+                    "title": f"RESPONDER · {review.get('exercise_code', '')}",
+                    "details": [
+                        f"Avaliador: {review.get('reviewer', '')}",
+                        f"Nota recebida: {review.get('score', '')}/5",
+                        f"Feedback: {review.get('feedback', '')}",
+                    ],
+                    "review_id": str(item["review_id"]),
+                }
+            else:
+                return
+        except (
+            OSError,
+            RuntimeError,
+            subprocess.TimeoutExpired,
+            json.JSONDecodeError,
+        ) as error:
+            self.live_refresh_error = safe_text(error)
+            return
+        self.evaluation_form_field = "score"
+        self.evaluation_form_buffer = ""
+        self.evaluation_form_score = ""
+        self.screen = "evaluation_form"
+
+    def submit_evaluation_form(self) -> None:
+        form = self.evaluation_form
+        feedback = self.evaluation_form_buffer
+        if form is None or not feedback.strip():
+            self.live_refresh_error = "O feedback obrigatório não pode ficar vazio."
+            return
+        if not self.evaluation_form_score.isdigit() or not (
+            0 <= int(self.evaluation_form_score) <= 5
+        ):
+            self.live_refresh_error = "A nota deve ser um inteiro entre 0 e 5."
+            self.evaluation_form_field = "score"
+            return
+        if form["mode"] == "review":
+            method = "evaluations.review.submit"
+            fields = {
+                "slot_id": form["slot_id"],
+                "score": self.evaluation_form_score,
+                "feedback": feedback,
+            }
+        else:
+            method = "evaluations.review.respond"
+            fields = {
+                "review_id": form["review_id"],
+                "score": self.evaluation_form_score,
+                "feedback": feedback,
+            }
+        try:
+            response = self.broker_request(method, **fields)
+        except (
+            OSError,
+            RuntimeError,
+            subprocess.TimeoutExpired,
+            json.JSONDecodeError,
+        ) as error:
+            self.live_refresh_error = safe_text(error)
+            return
+        if form["mode"] == "review":
+            status = response.get("status")
+            self.status_message = (
+                f"Avaliação registrada: {'aprovado' if status == 'approved' else 'reprovado'} · "
+                f"saldo {response.get('points', '—')} ponto(s)."
+            )
+        else:
+            self.status_message = "Resposta registrada; o avaliador foi notificado."
+        self.evaluation_form = None
+        self.screen = form.get("return_screen", "evaluations")
+        self.live_refresh_error = ""
+        try:
+            self.refresh_notifications()
+        except (
+            OSError,
+            RuntimeError,
+            subprocess.TimeoutExpired,
+            json.JSONDecodeError,
+        ) as error:
+            self.live_refresh_error = safe_text(error)
+
     def run(self, screen: Any) -> dict[str, Any]:
         curses.cbreak()
         curses.noecho()
         screen.keypad(True)
         screen.timeout(500)
         self.initialize_colors()
+        if self.screen == "evaluations":
+            self.show_evaluations(
+                return_dashboard=self.evaluation_return_dashboard
+            )
         while True:
             self.draw(screen)
             try:
@@ -1135,7 +1703,6 @@ class AccountDashboardTui:
                 if key in (curses.KEY_F2, "\x1b", 27):
                     self.notification_popup = False
                     self.popup_request_id = None
-                    self.confirm_release_reservation = False
                 elif not self.notifications:
                     self.notification_popup = False
                 else:
@@ -1146,48 +1713,47 @@ class AccountDashboardTui:
                     notification_type = item.get("category", item.get("type"))
                     if notification_type == "evaluation_request":
                         if isinstance(key, str) and key.casefold() in {"a", "d"}:
-                            return self.result(
-                                "respond_request",
-                                request_id=item["request_id"],
-                                decision=(
-                                    "accept" if key.casefold() == "a" else "decline"
-                                ),
+                            decision = "accept" if key.casefold() == "a" else "decline"
+                            self.request_confirmation(
+                                "evaluations.request.respond",
+                                {
+                                    "request_id": str(item["request_id"]),
+                                    "decision": decision,
+                                },
+                                "Aceitar este avaliador?"
+                                if decision == "accept"
+                                else "Recusar este pedido de avaliação?",
+                                "dashboard",
                             )
-                        if key in ("\n", "\r", curses.KEY_ENTER):
+                        elif key in ("\n", "\r", curses.KEY_ENTER):
                             submission_id = item.get("submission_id")
                             if submission_id is not None:
-                                return self.result(
-                                    "open_submission",
-                                    submission_id=submission_id,
-                                )
+                                self.open_submission(submission_id)
                     elif notification_type == "evaluation_request_accepted":
                         if key in ("\n", "\r", curses.KEY_ENTER):
                             submission_id = item.get("submission_id")
                             if submission_id is not None:
-                                return self.result(
-                                    "open_submission",
-                                    submission_id=submission_id,
-                                )
+                                self.open_submission(submission_id)
                     elif notification_type == "evaluation_accepted":
-                        if self.confirm_release_reservation:
-                            if isinstance(key, str) and key.casefold() == "s":
-                                return self.result(
-                                    "release_reservation", slot_id=item["slot_id"]
-                                )
-                            if isinstance(key, str) and key.casefold() == "n":
-                                self.confirm_release_reservation = False
-                            elif key in ("0", "\n", "\r", curses.KEY_ENTER):
-                                self.confirm_release_reservation = False
-                        elif key in ("1",):
+                        if key in ("1",):
                             return self.result(
                                 "open_room", slot_id=item["slot_id"]
                             )
                         elif key in ("2",):
-                            return self.result(
-                                "review_submission", slot_id=item["slot_id"]
+                            self.start_evaluation_form(
+                                {
+                                    **item,
+                                    "item_type": "reviewer_accepted",
+                                    "return_screen": "dashboard",
+                                }
                             )
                         elif key in ("3",):
-                            self.confirm_release_reservation = True
+                            self.request_confirmation(
+                                "evaluations.cancel",
+                                {"slot_id": str(item["slot_id"])},
+                                "Liberar sua reserva desta avaliação?",
+                                "dashboard",
+                            )
                         elif key in ("0", "\n", "\r", curses.KEY_ENTER):
                             self.notification_popup = False
                             self.popup_request_id = None
@@ -1204,15 +1770,14 @@ class AccountDashboardTui:
                             or isinstance(key, str)
                             and key.casefold() == "p"
                         ):
-                            return self.result("show_progress")
+                            self.screen = "progress"
+                            self.notification_popup = False
+                            self.popup_request_id = None
                     elif notification_type == "review_received":
                         if key in ("\n", "\r", curses.KEY_ENTER):
                             submission_id = item.get("submission_id")
                             if submission_id is not None:
-                                return self.result(
-                                    "open_submission",
-                                    submission_id=submission_id,
-                                )
+                                self.open_submission(submission_id)
                     if key in ("\n", "\r", curses.KEY_ENTER):
                         self.notification_popup = False
                 continue
@@ -1224,7 +1789,7 @@ class AccountDashboardTui:
                 elif key in ("\n", "\r", curses.KEY_ENTER) and self.submissions:
                     selected = self.selected_submission()
                     assert selected is not None
-                    return self.result("open_submission", submission_id=selected["id"])
+                    self.open_submission(selected["id"])
                 elif isinstance(key, str) and key.casefold() == "e":
                     self.screen = "profile"
                     self.form_values = [
@@ -1233,7 +1798,9 @@ class AccountDashboardTui:
                         self.bio,
                     ]
                 elif isinstance(key, str) and key.casefold() == "p":
-                    return self.result("show_progress")
+                    self.screen = "progress"
+                elif isinstance(key, str) and key.casefold() == "v":
+                    self.show_evaluations(return_dashboard=True)
                 elif key == curses.KEY_F3:
                     self.screen = "points"
                 elif key == curses.KEY_F2:
@@ -1260,21 +1827,149 @@ class AccountDashboardTui:
                         None,
                     )
                     if key.casefold() == "a" and pending:
-                        return self.result(
-                            "respond_request",
-                            request_id=pending["request_id"],
-                            decision="accept",
+                        self.request_confirmation(
+                            "evaluations.request.respond",
+                            {
+                                "request_id": str(pending["request_id"]),
+                                "decision": "accept",
+                            },
+                            "Aceitar este avaliador?",
+                            "detail",
                         )
                     if key.casefold() == "d" and pending:
-                        return self.result(
-                            "respond_request",
-                            request_id=pending["request_id"],
-                            decision="decline",
+                        self.request_confirmation(
+                            "evaluations.request.respond",
+                            {
+                                "request_id": str(pending["request_id"]),
+                                "decision": "decline",
+                            },
+                            "Recusar este pedido de avaliação?",
+                            "detail",
                         )
                     if key.casefold() == "m" and accepted:
                         return self.result("open_room", slot_id=accepted["slot_id"])
                 elif key in ("\x1b", 27):
-                    return self.result("back")
+                    self.detail = None
+                    self.screen = "dashboard"
+            elif self.screen == "evaluations":
+                items = self.evaluation_items()
+                selected = (
+                    items[self.evaluation_selection]
+                    if items and self.evaluation_selection < len(items)
+                    else None
+                )
+                if key in (curses.KEY_UP, curses.KEY_LEFT) and items:
+                    self.evaluation_selection = max(0, self.evaluation_selection - 1)
+                    self.status_message = ""
+                elif key in (curses.KEY_DOWN, curses.KEY_RIGHT) and items:
+                    self.evaluation_selection = min(
+                        len(items) - 1, self.evaluation_selection + 1
+                    )
+                    self.status_message = ""
+                elif isinstance(key, str) and key.casefold() == "r" and selected:
+                    if selected["item_type"] == "reviewer_slot" and not selected.get(
+                        "request_status"
+                    ):
+                        self.request_confirmation(
+                            "evaluations.accept",
+                            {"slot_id": str(selected["id"])},
+                            "Solicitar autorização para avaliar esta entrega?",
+                            "evaluations",
+                        )
+                elif isinstance(key, str) and key.casefold() == "c" and selected:
+                    if (
+                        selected["item_type"] == "reviewer_slot"
+                        and selected.get("request_status") == "pending"
+                    ):
+                        self.request_confirmation(
+                            "evaluations.cancel",
+                            {"slot_id": str(selected["id"])},
+                            "Cancelar seu pedido para esta avaliação?",
+                            "evaluations",
+                        )
+                elif isinstance(key, str) and key.casefold() in {"a", "d"} and selected:
+                    if (
+                        selected["item_type"] == "author_request"
+                        and selected.get("status") == "pending"
+                    ):
+                        decision = "accept" if key.casefold() == "a" else "decline"
+                        self.request_confirmation(
+                            "evaluations.request.respond",
+                            {
+                                "request_id": str(selected["request_id"]),
+                                "decision": decision,
+                            },
+                            "Aceitar este avaliador?"
+                            if decision == "accept"
+                            else "Recusar este pedido de avaliação?",
+                            "evaluations",
+                        )
+                elif key == "1" and selected:
+                    if selected["item_type"] == "reviewer_accepted":
+                        return self.result(
+                            "open_room",
+                            slot_id=selected["slot_id"],
+                            resume_evaluations=True,
+                            evaluation_return_dashboard=(
+                                self.evaluation_return_dashboard
+                            ),
+                        )
+                elif key == "2" and selected:
+                    if selected["item_type"] == "reviewer_accepted":
+                        self.start_evaluation_form(selected)
+                elif key == "3" and selected:
+                    if selected["item_type"] == "reviewer_accepted":
+                        self.request_confirmation(
+                            "evaluations.cancel",
+                            {"slot_id": str(selected["slot_id"])},
+                            "Liberar sua reserva desta avaliação?",
+                            "evaluations",
+                        )
+                elif key in ("\n", "\r", curses.KEY_ENTER) and selected:
+                    if selected["item_type"] == "author_request":
+                        submission_id = selected.get("submission_id")
+                        if submission_id is not None:
+                            self.open_submission(submission_id)
+                    elif selected["item_type"] == "review_response":
+                        self.start_evaluation_form(selected)
+                elif key in ("\x1b", 27):
+                    self.status_message = ""
+                    if self.evaluation_return_dashboard:
+                        self.screen = "dashboard"
+                    elif self.config.get("open_evaluations"):
+                        return self.result("exit")
+                    self.screen = "dashboard"
+            elif self.screen == "evaluation_confirm":
+                if isinstance(key, str) and key.casefold() == "s":
+                    self.complete_confirmation(True)
+                elif (
+                    isinstance(key, str) and key.casefold() == "n"
+                ) or key in ("\x1b", 27):
+                    self.complete_confirmation(False)
+            elif self.screen == "evaluation_form":
+                if key in ("\x1b", 27):
+                    return_screen = (self.evaluation_form or {}).get(
+                        "return_screen", "evaluations"
+                    )
+                    self.evaluation_form = None
+                    self.screen = return_screen
+                elif key == "\x13":
+                    self.submit_evaluation_form()
+                elif self.evaluation_form_field == "score":
+                    if isinstance(key, str) and key in "012345":
+                        self.evaluation_form_score = key
+                    elif key in ("\n", "\r", curses.KEY_ENTER):
+                        if self.evaluation_form_score:
+                            self.evaluation_form_field = "feedback"
+                            self.live_refresh_error = ""
+                elif isinstance(key, str) and key.isprintable():
+                    if len(self.evaluation_form_buffer) < 2000:
+                        self.evaluation_form_buffer += key
+                elif key in ("\n", "\r", curses.KEY_ENTER):
+                    if len(self.evaluation_form_buffer) < 2000:
+                        self.evaluation_form_buffer += "\n"
+                elif key in (curses.KEY_BACKSPACE, "\b", "\x7f"):
+                    self.evaluation_form_buffer = self.evaluation_form_buffer[:-1]
             elif self.screen == "profile":
                 if key in ("\x1b", 27) and not self.form_editing:
                     return self.result("back")
@@ -1324,12 +2019,24 @@ class AccountDashboardTui:
                     self.progress_scroll += 1
                 elif isinstance(key, str) and key.casefold() == "r":
                     if self.pending_review_responses:
-                        return self.result(
-                            "respond_review",
-                            review_id=self.pending_review_responses[0]["review_id"],
+                        self.start_evaluation_form(
+                            {
+                                **self.pending_review_responses[0],
+                                "item_type": "review_response",
+                                "return_screen": "progress",
+                            }
                         )
                 elif key in ("\x1b", 27):
-                    return self.result("back")
+                    try:
+                        self.broker_request("notifications.mark_read")
+                    except (
+                        OSError,
+                        RuntimeError,
+                        subprocess.TimeoutExpired,
+                        json.JSONDecodeError,
+                    ) as error:
+                        self.live_refresh_error = safe_text(error)
+                    self.screen = "dashboard"
 
 
 def load_config() -> dict[str, Any]:
@@ -1343,6 +2050,8 @@ def load_config() -> dict[str, Any]:
         or not isinstance(config.get("submissions"), list)
         or not isinstance(config.get("points_history", []), list)
         or not isinstance(config.get("requests", []), list)
+        or not isinstance(config.get("evaluation_slots", []), list)
+        or not isinstance(config.get("accepted_evaluation_requests", []), list)
         or not isinstance(config.get("notifications", []), list)
         or not isinstance(config.get("review_history", []), list)
         or not isinstance(config.get("pending_review_responses", []), list)

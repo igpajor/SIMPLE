@@ -581,8 +581,14 @@ broker_account_dashboard() {
   local mark_response
   local selected_submission_id=""
   local open_progress=0
+  local open_evaluations=0
+  local evaluation_return_dashboard=0
   local dashboard_broker_socket
   local dashboard_broker_client="$SCRIPT_DIR/core/broker_client.py"
+
+  if [[ "${1:-}" == "evaluations" ]]; then
+    open_evaluations=1
+  fi
 
   if [[ "${SIMPLE_MODE:-local}" == "proxy" ]]; then
     dashboard_broker_socket="${PROXY_SOCKET:-}"
@@ -595,6 +601,10 @@ broker_account_dashboard() {
   fi
 
   if ! ui_home_tui_available; then
+    if ((open_evaluations)); then
+      broker_evaluations_menu
+      return $?
+    fi
     local choice
     while true; do
       ui_screen_begin "MEU ESPAÇO"
@@ -630,16 +640,17 @@ broker_account_dashboard() {
     broker_check_response "$requests_response" || return 1
     broker_check_response "$chat_response" || return 1
 
-    config=$(printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0' \
+    config=$(printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0' \
       "$profile_response" "$progress_response" "$submissions_response" \
       "$requests_response" "$chat_response" "$detail_response" \
-      "$selected_submission_id" "$open_progress" |
+      "$selected_submission_id" "$open_progress" "$open_evaluations" \
+      "$evaluation_return_dashboard" |
       python3 -c '
 import json
 import sys
 
 parts = sys.stdin.buffer.read().split(b"\0")
-if len(parts) != 9 or parts[-1] or len(sys.argv) != 4:
+if len(parts) != 11 or parts[-1] or len(sys.argv) != 4:
     raise SystemExit("Respostas inválidas para Meu espaço")
 profile, progress, submissions, requests, chat = (
     json.loads(part) for part in parts[:5]
@@ -647,6 +658,8 @@ profile, progress, submissions, requests, chat = (
 detail_response = json.loads(parts[5]) if parts[5] else {}
 selected_id = int(parts[6]) if parts[6] else None
 open_progress = parts[7] == b"1"
+open_evaluations = parts[8] == b"1"
+evaluation_return_dashboard = parts[9] == b"1"
 submission_items = submissions.get("submissions")
 request_items = requests.get("requests")
 counts = progress.get("submissions")
@@ -750,6 +763,8 @@ config = {
     "selected_submission_id": detail.get("id") if detail else selected_id,
     "detail": detail,
     "open_progress": open_progress,
+    "open_evaluations": open_evaluations,
+    "evaluation_return_dashboard": evaluation_return_dashboard,
     "broker_socket": sys.argv[1],
     "broker_client": sys.argv[2],
     "broker_token": sys.argv[3],
@@ -840,6 +855,10 @@ print(json.dumps(config, ensure_ascii=False))
       ;;
     open_room)
       slot_id=$(broker_response_field "$result" slot_id) || return 1
+      local resume_evaluations
+      local resume_dashboard
+      resume_evaluations=$(broker_response_field "$result" resume_evaluations) || return 1
+      resume_dashboard=$(broker_response_field "$result" evaluation_return_dashboard) || return 1
       if [[ "$slot_id" =~ ^[0-9]+$ ]]; then
         if ! evaluation_open_live_room "$slot_id"; then
           ui_pause
@@ -847,6 +866,10 @@ print(json.dumps(config, ensure_ascii=False))
       else
         ui_error "A tela retornou uma sala inválida."
         ui_pause
+      fi
+      if [[ "$resume_evaluations" == "True" ]]; then
+        open_evaluations=1
+        [[ "$resume_dashboard" == "True" ]] && evaluation_return_dashboard=1
       fi
       detail_response=""
       ;;
@@ -2119,7 +2142,7 @@ print(sum(
     fi
     ;;
   2)
-    if ! evaluations_menu; then
+    if ! broker_account_dashboard evaluations; then
       ui_error "Não foi possível carregar as avaliações abertas."
       ui_pause
     fi
