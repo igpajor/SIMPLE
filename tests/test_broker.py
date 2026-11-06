@@ -190,6 +190,142 @@ class BrokerTests(unittest.TestCase):
         self.assertIn("Crie todos esses arquivos e diretórios", exercise["exercise"]["statement"])
         self.assertEqual("ex02/", exercise["exercise"]["delivery_directory"])
 
+    def test_tripulantes_search_and_public_profile_are_authenticated_and_scoped(
+        self,
+    ) -> None:
+        viewer = self.create_user("tripulantes-viewer")
+        target = self.create_user("tripulante")
+        inactive = self.create_user("tripulante-inactive")
+        self.call(
+            {
+                "method": "profile.update",
+                "token": target["token"],
+                "display_name": "Íris Silva",
+                "github_username": "iris-gh",
+                "bio": "Tripulante de teste",
+            }
+        )
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            connection.execute(
+                "UPDATE users SET is_active = 0 WHERE id = ?",
+                (inactive["user_id"],),
+            )
+            connection.execute(
+                """
+                INSERT INTO exercises (code, name, description, statement)
+                VALUES (?, ?, ?, ?)
+                """,
+                ("TRIP-01", "Missão pública", "Resumo público", "Enunciado público"),
+            )
+        submission = self.call(
+            {
+                "method": "submissions.create",
+                "token": target["token"],
+                "exercise_code": "TRIP-01",
+                "commit_url": "https://github.com/iris/repo/commit/abcdef0123456",
+                "delivery_directory": "ex01",
+            }
+        )
+        self.assertTrue(submission["ok"], submission)
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            exercise_id = connection.execute(
+                "SELECT id FROM exercises WHERE code = ?", ("TRIP-01",)
+            ).fetchone()[0]
+            connection.execute(
+                "UPDATE submissions SET status = 'rejected' WHERE id = ?",
+                (submission["submission_id"],),
+            )
+            connection.execute(
+                """
+                UPDATE points_ledger SET amount = 40
+                WHERE user_id = ? AND entry_type = 'welcome'
+                """,
+                (target["user_id"],),
+            )
+            connection.executemany(
+                """
+                INSERT INTO submissions (user_id, exercise_id, content, status)
+                VALUES (?, ?, ?, 'rejected')
+                """,
+                [
+                    (target["user_id"], exercise_id, f"legacy-{index}")
+                    for index in range(20)
+                ],
+            )
+
+        results = self.call(
+            {
+                "method": "users.search",
+                "token": viewer["token"],
+                "query": "ÍRIS",
+            }
+        )
+        self.assertTrue(results["ok"], results)
+        self.assertEqual(
+            [{"username": "tripulante", "display_name": "Íris Silva"}],
+            results["users"],
+        )
+        all_users = self.call(
+            {"method": "users.search", "token": viewer["token"], "query": ""}
+        )
+        usernames = {item["username"] for item in all_users["users"]}
+        self.assertNotIn("tripulantes-viewer", usernames)
+        self.assertNotIn("tripulante-inactive", usernames)
+
+        public = self.call(
+            {
+                "method": "users.profile.get",
+                "token": viewer["token"],
+                "username": "TRIPULANTE",
+                "offset": "0",
+            }
+        )
+        self.assertTrue(public["ok"], public)
+        profile = public["profile"]
+        self.assertEqual("Íris Silva", profile["display_name"])
+        self.assertEqual("iris-gh", profile["github_username"])
+        self.assertEqual(19, profile["points"])
+        self.assertEqual({"rejected": 21}, profile["counts"])
+        self.assertEqual(20, len(profile["submissions"]))
+        self.assertEqual("TRIP-01", profile["submissions"][0]["exercise_code"])
+        self.assertTrue(profile["submissions_has_more"])
+        next_page = self.call(
+            {
+                "method": "users.profile.get",
+                "token": viewer["token"],
+                "username": "tripulante",
+                "offset": "20",
+            }
+        )
+        self.assertTrue(next_page["ok"], next_page)
+        self.assertEqual(1, len(next_page["profile"]["submissions"]))
+        self.assertFalse(next_page["profile"]["submissions_has_more"])
+        self.assertNotIn("notifications", profile)
+        self.assertNotIn("pending_evaluation_requests", profile)
+        self.assertFalse(
+            self.call(
+                {
+                    "method": "users.profile.get",
+                    "token": viewer["token"],
+                    "username": "tripulantes-viewer",
+                    "offset": "0",
+                }
+            )["ok"]
+        )
+        self.assertFalse(
+            self.call(
+                {
+                    "method": "users.profile.get",
+                    "token": viewer["token"],
+                    "username": "tripulante-inactive",
+                    "offset": "0",
+                }
+            )["ok"]
+        )
+        self.assertFalse(
+            self.call({"method": "users.search", "query": "tripulante"})["ok"]
+        )
+
     def test_catalog_dashboard_returns_details_and_authenticated_progress(self) -> None:
         user = self.create_user("catalog-dashboard")
         with closing(sqlite3.connect(self.database_path)) as connection, connection:
@@ -2312,6 +2448,7 @@ class BrokerTests(unittest.TestCase):
             dashboard_start = len(output)
             os.write(master_fd, b"\x1b")
             read_until(b"Dashboard", start=dashboard_start)
+
             home_start = len(output)
             os.write(master_fd, b"\x1b")
             read_until(b"MENU PRINCIPAL", start=home_start)
@@ -2328,6 +2465,96 @@ class BrokerTests(unittest.TestCase):
                     "display_name"
                 ],
             )
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
+            os.close(master_fd)
+
+    def test_tripulantes_tui_opens_dm_and_returns_to_selected_profile(self) -> None:
+        user = self.create_user("tripulantes-tui")
+        peer = self.create_user("crew-mate")
+        self.call(
+            {
+                "method": "profile.update",
+                "token": peer["token"],
+                "display_name": "Tripulante Teste",
+                "github_username": "",
+                "bio": "Perfil visível no diretório",
+            }
+        )
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "SIMPLE_MODE": "broker",
+                "BROKER_SOCKET": str(self.socket_path),
+                "NO_COLOR": "1",
+                "TERM": "xterm-256color",
+                "COLUMNS": "80",
+            }
+        )
+        master_fd, slave_fd = pty.openpty()
+        fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+        process = subprocess.Popen(
+            ["bash", str(ROOT_DIR / "simple.sh")],
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            cwd=ROOT_DIR,
+            env=environment,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        output = bytearray()
+
+        def read_until(
+            needle: bytes, timeout: float = 15.0, start: int = 0
+        ) -> None:
+            deadline = time.monotonic() + timeout
+            while output.find(needle, start) < 0 and time.monotonic() < deadline:
+                ready, _, _ = select.select([master_fd], [], [], 0.2)
+                if ready:
+                    try:
+                        output.extend(os.read(master_fd, 8192))
+                    except OSError:
+                        break
+                if process.poll() is not None:
+                    break
+            self.assertGreaterEqual(
+                output.find(needle, start),
+                0,
+                output.decode("utf-8", errors="replace"),
+            )
+
+        try:
+            read_until("███████╗██╗███╗".encode("utf-8"))
+            os.write(master_fd, b"\r")
+            read_until(b"Login")
+            os.write(master_fd, b"tripulantes-tui\tsecure-pass-123")
+            read_until(b"*")
+            os.write(master_fd, b"\r")
+            read_until(b"MENU PRINCIPAL")
+            os.write(master_fd, b"3")
+            read_until(b"MEU CADASTRO")
+
+            list_start = len(output)
+            os.write(master_fd, b"t")
+            read_until("TRIPULANTES".encode("utf-8"), start=list_start)
+            read_until("Tripulante Teste".encode("utf-8"), start=list_start)
+            os.write(master_fd, b"\r")
+            read_until("GitHub: —".encode("utf-8"), start=list_start)
+
+            os.write(master_fd, b"d")
+            read_until("DM · crew-mate".encode("utf-8"), start=list_start)
+            profile_start = len(output)
+            os.write(master_fd, b"\x1b")
+            read_until("GitHub: —".encode("utf-8"), start=profile_start)
+            list_start = len(output)
+            os.write(master_fd, b"\x1b")
+            read_until("Tripulante Teste".encode("utf-8"), start=list_start)
+            dashboard_start = len(output)
+            os.write(master_fd, b"\x1b")
+            read_until("MEU CADASTRO".encode("utf-8"), start=dashboard_start)
         finally:
             if process.poll() is None:
                 process.terminate()

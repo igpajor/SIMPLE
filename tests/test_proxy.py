@@ -121,6 +121,26 @@ class ProxyTests(unittest.TestCase):
         self.assertTrue(home_dashboard["ok"], home_dashboard)
         self.assertEqual(1, home_dashboard["points"])
         self.assertEqual(0, home_dashboard["chat_unread_count"])
+        tripulantes = self.proxy_call(
+            {
+                "method": "users.search",
+                "token": login["token"],
+                "query": "proxy-chat-peer",
+            }
+        )
+        self.assertEqual(["proxy-chat-peer"], [
+            user["username"] for user in tripulantes["users"]
+        ])
+        public_profile = self.proxy_call(
+            {
+                "method": "users.profile.get",
+                "token": login["token"],
+                "username": "proxy-chat-peer",
+                "offset": "0",
+            }
+        )
+        self.assertTrue(public_profile["ok"], public_profile)
+        self.assertEqual("proxy-chat-peer", public_profile["profile"]["username"])
         rooms = self.proxy_call({"method": "chat.rooms", "token": login["token"]})
         self.assertIn("global", [room["channel"] for room in rooms["rooms"]])
         post = self.proxy_call(

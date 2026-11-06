@@ -181,7 +181,11 @@ class AccountDashboardTui:
         self.selected_id = config.get("selected_submission_id")
         self.detail = config.get("detail")
         self.screen = (
-            "detail"
+            "tripulant_profile"
+            if config.get("selected_tripulant")
+            else "tripulantes"
+            if config.get("open_tripulantes")
+            else "detail"
             if self.detail
             else "progress"
             if config.get("open_progress")
@@ -213,6 +217,16 @@ class AccountDashboardTui:
         self.popup_request_id: int | None = None
         self.evaluation_selection = 0
         self.evaluation_scroll = 0
+        self.tripulantes: list[dict[str, Any]] = []
+        self.tripulant_selection = 0
+        self.tripulant_scroll = 0
+        self.tripulant_query = ""
+        self.tripulant_searching = False
+        self.tripulant_search_buffer = ""
+        self.tripulant_has_more = False
+        self.tripulant_profile: dict[str, Any] | None = None
+        self.tripulant_profile_scroll = 0
+        self.tripulant_profile_selection = 0
         self.status_message = ""
         self.confirmation: dict[str, Any] | None = None
         self.evaluation_form: dict[str, Any] | None = None
@@ -852,10 +866,15 @@ class AccountDashboardTui:
                 content_width,
                 body_height - submissions_height,
             )
-        footer = self.status_message or (
-            "↑/↓ entregas · Enter detalhes · E editar · F2 última notif. · "
-            "V avaliações · P progresso · F3 pontos · Esc voltar"
-        )
+        footer = self.status_message
+        if not footer:
+            footer = (
+                "E perfil · T tripulantes · F2 notif · V aval · "
+                "P prog · F3 pontos · Esc"
+                if panel_width < 100
+                else "↑/↓/Enter entregas · E perfil · T tripulantes · "
+                "F2 notif · V aval · P prog · F3 pontos · Esc"
+            )
         if self.live_refresh_error:
             footer = f"Atualização falhou: {self.live_refresh_error}"
         self.draw_text(
@@ -1100,6 +1119,298 @@ class AccountDashboardTui:
             self.height - 1,
             left + 1,
             "↑/↓ rolar · R responder pendente · Esc voltar",
+            "muted",
+            panel_width - 2,
+        )
+
+    def draw_tripulantes(self, screen: Any) -> None:
+        panel_width = min(112, self.width - 2)
+        left = max(0, (self.width - panel_width) // 2)
+        top = 1
+        height = self.height - 3
+        self.draw_frame(screen, top, left, panel_width, height, "TRIPULANTES")
+        query = self.tripulant_search_buffer if self.tripulant_searching else self.tripulant_query
+        self.draw_text(
+            screen,
+            top + 1,
+            left + 2,
+            f"Buscar nome/usuário: {query or 'todos'}"
+            + ("▏" if self.tripulant_searching else ""),
+            "selected" if self.tripulant_searching else "text",
+            panel_width - 4,
+        )
+        visible = max(1, height - 5)
+        if self.tripulantes:
+            self.tripulant_selection = min(
+                self.tripulant_selection, len(self.tripulantes) - 1
+            )
+            if self.tripulant_selection < self.tripulant_scroll:
+                self.tripulant_scroll = self.tripulant_selection
+            elif self.tripulant_selection >= self.tripulant_scroll + visible:
+                self.tripulant_scroll = self.tripulant_selection - visible + 1
+            for index, person in enumerate(
+                self.tripulantes[
+                    self.tripulant_scroll : self.tripulant_scroll + visible
+                ]
+            ):
+                selected = self.tripulant_scroll + index == self.tripulant_selection
+                name = person.get("display_name") or person.get("username", "")
+                label = f"{name} · @{person.get('username', '')}"
+                self.draw_text(
+                    screen,
+                    top + 2 + index,
+                    left + 2,
+                    f"{'› ' if selected else '  '}{label}",
+                    "selected" if selected else "text",
+                    panel_width - 4,
+                )
+        else:
+            message = (
+                "Nenhum tripulante encontrado."
+                if self.tripulant_query
+                else "Não há outros tripulantes ativos."
+            )
+            self.draw_text(
+                screen, top + 3, left + 2, message, "muted", panel_width - 4
+            )
+        if self.tripulant_has_more:
+            self.draw_text(
+                screen,
+                top + height - 2,
+                left + 2,
+                "Há mais resultados; refine a busca.",
+                "muted",
+                panel_width - 4,
+            )
+        if self.live_refresh_error:
+            self.draw_text(
+                screen,
+                top + height - 3,
+                left + 2,
+                self.live_refresh_error,
+                "warning",
+                panel_width - 4,
+            )
+        instruction = (
+            "Digite para buscar · Enter aplicar · Esc cancelar busca"
+            if self.tripulant_searching
+            else "/ buscar · ↑/↓ selecionar · Enter perfil · Esc voltar"
+        )
+        self.draw_text(
+            screen,
+            self.height - 1,
+            left + 1,
+            instruction,
+            "muted",
+            panel_width - 2,
+        )
+
+    def tripulant_submission_lines(
+        self, submission: dict[str, Any]
+    ) -> list[tuple[str, str]]:
+        lines: list[tuple[str, str]] = [
+            (
+                "Status: "
+                f"{STATUS_LABELS.get(submission.get('status', ''), submission.get('status', ''))}",
+                submission.get("status", "text"),
+            ),
+            (f"Enviada: {submission.get('submitted_at') or '—'}", "muted"),
+        ]
+        if submission.get("reviewer"):
+            lines.append((f"Avaliador: {submission['reviewer']}", "text"))
+        if submission.get("score") not in (None, ""):
+            lines.append((f"Nota: {submission['score']}/5", "selected"))
+        if submission.get("feedback"):
+            lines.append((f"Feedback: {submission['feedback']}", "text"))
+        if submission.get("delivery_directory"):
+            lines.append((f"Diretório: {submission['delivery_directory']}", "muted"))
+        if submission.get("commit_url"):
+            lines.append((f"Commit: {submission['commit_url']}", "muted"))
+        for label, key in (("Resumo", "description"), ("Enunciado", "statement")):
+            if submission.get(key):
+                lines.append((f"{label}: {submission[key]}", "text"))
+        return lines
+
+    def draw_tripulant_profile(self, screen: Any) -> None:
+        profile = self.tripulant_profile or {}
+        panel_width = min(112, self.width - 2)
+        left = max(0, (self.width - panel_width) // 2)
+        top = 1
+        height = self.height - 3
+        if height < 16:
+            self.draw_text(
+                screen,
+                top + 2,
+                left + 2,
+                "Aumente a altura do terminal para ver o perfil.",
+                "warning",
+                panel_width - 4,
+            )
+            self.draw_text(
+                screen,
+                self.height - 1,
+                left + 1,
+                "Esc voltar",
+                "muted",
+                panel_width - 2,
+            )
+            return
+        name = profile.get("display_name") or profile.get("username", "")
+        self.draw_frame(
+            screen,
+            top,
+            left,
+            panel_width,
+            height,
+            f"TRIPULANTE · {name}",
+        )
+        self.draw_text(
+            screen,
+            top + 1,
+            left + 2,
+            f"@{profile.get('username', '')} · "
+            f"GitHub: {profile.get('github_username') or '—'}",
+            "text",
+            panel_width - 4,
+        )
+        bio_lines = wrap_text(
+            profile.get("bio") or "Sem bio.", panel_width - 6
+        )
+        for index, line in enumerate(bio_lines[:2]):
+            self.draw_text(
+                screen,
+                top + 2 + index,
+                left + 2,
+                line,
+                "muted",
+                panel_width - 4,
+            )
+        counts = profile.get("counts", {})
+        self.draw_text(
+            screen,
+            top + 4,
+            left + 2,
+            f"Pontos: {profile.get('points', 0)} · "
+            f"Aprovadas: {counts.get('approved', 0)} · "
+            f"Reprovadas: {counts.get('rejected', 0)} · "
+            f"Em avaliação: {counts.get('pending', 0)}",
+            "selected",
+            panel_width - 4,
+        )
+
+        submissions = profile.get("submissions", [])
+        list_top = top + 6
+        list_height = max(4, min(8, (height - 8) // 2))
+        self.draw_frame(
+            screen, list_top, left + 1, panel_width - 2, list_height, "ENTREGAS"
+        )
+        visible = max(1, list_height - 2)
+        if submissions:
+            self.tripulant_profile_selection = min(
+                self.tripulant_profile_selection, len(submissions) - 1
+            )
+            start = max(
+                0,
+                min(
+                    self.tripulant_profile_selection - visible // 2,
+                    len(submissions) - visible,
+                ),
+            )
+            for index, item in enumerate(submissions[start : start + visible]):
+                current = start + index == self.tripulant_profile_selection
+                status = STATUS_LABELS.get(item.get("status", ""), item.get("status", ""))
+                label = (
+                    f"{item.get('exercise_code', '')} · "
+                    f"{item.get('exercise_name', '')} [{status}]"
+                )
+                if item.get("score") not in (None, ""):
+                    label += f" · {item['score']}/5"
+                self.draw_text(
+                    screen,
+                    list_top + 1 + index,
+                    left + 3,
+                    f"{'› ' if current else '  '}{label}",
+                    "selected" if current else "text",
+                    panel_width - 6,
+                )
+        else:
+            self.draw_text(
+                screen,
+                list_top + 1,
+                left + 3,
+                "Nenhuma entrega registrada.",
+                "muted",
+                panel_width - 6,
+            )
+
+        detail_top = list_top + list_height
+        detail_height = top + height - 1 - detail_top
+        selected_submission = (
+            submissions[self.tripulant_profile_selection]
+            if submissions
+            else None
+        )
+        self.draw_frame(
+            screen,
+            detail_top,
+            left + 1,
+            panel_width - 2,
+            detail_height,
+            "DETALHES DA ENTREGA",
+        )
+        if selected_submission:
+            details = [
+                (wrapped, color)
+                for text, color in self.tripulant_submission_lines(selected_submission)
+                for wrapped in wrap_text(text, panel_width - 8)
+            ]
+            detail_visible = max(1, detail_height - 2)
+            max_scroll = max(0, len(details) - detail_visible)
+            self.tripulant_profile_scroll = min(
+                self.tripulant_profile_scroll, max_scroll
+            )
+            for index, (line, color) in enumerate(
+                details[
+                    self.tripulant_profile_scroll : self.tripulant_profile_scroll
+                    + detail_visible
+                ]
+            ):
+                self.draw_text(
+                    screen,
+                    detail_top + 1 + index,
+                    left + 3,
+                    line,
+                    color,
+                    panel_width - 6,
+                )
+        else:
+            self.draw_text(
+                screen,
+                detail_top + 1,
+                left + 3,
+                "Sem detalhes de entrega.",
+                "muted",
+                panel_width - 6,
+            )
+        if self.live_refresh_error:
+            self.draw_text(
+                screen,
+                self.height - 2,
+                left + 1,
+                self.live_refresh_error,
+                "warning",
+                panel_width - 2,
+            )
+        self.draw_text(
+            screen,
+            self.height - 1,
+            left + 1,
+            (
+                "↑/↓ entregas · M mais · PgUp/PgDn detalhes · "
+                "D DM · Esc Tripulantes"
+                if profile.get("submissions_has_more")
+                else "↑/↓ entregas · PgUp/PgDn detalhes · D DM · Esc Tripulantes"
+            ),
             "muted",
             panel_width - 2,
         )
@@ -1528,6 +1839,10 @@ class AccountDashboardTui:
             self.draw_points(screen)
         elif self.screen == "progress":
             self.draw_progress(screen)
+        elif self.screen == "tripulantes":
+            self.draw_tripulantes(screen)
+        elif self.screen == "tripulant_profile":
+            self.draw_tripulant_profile(screen)
         elif self.screen == "evaluations":
             self.draw_evaluations(screen)
         elif self.screen == "evaluation_confirm":
@@ -1700,6 +2015,129 @@ class AccountDashboardTui:
         self.screen = "detail"
         self.scroll = 0
         self.notification_popup = False
+
+    def load_tripulantes(self, query: str = "") -> None:
+        try:
+            response = self.broker_request("users.search", query=query)
+        except (
+            OSError,
+            RuntimeError,
+            subprocess.TimeoutExpired,
+            json.JSONDecodeError,
+        ) as error:
+            self.live_refresh_error = safe_text(error)
+            return
+        users = response.get("users")
+        if not isinstance(users, list) or not all(
+            isinstance(person, dict)
+            and isinstance(person.get("username"), str)
+            and isinstance(person.get("display_name", ""), str)
+            for person in users
+        ):
+            self.live_refresh_error = "O Broker retornou uma lista de tripulantes inválida."
+            return
+        previous = (
+            self.tripulantes[self.tripulant_selection].get("username")
+            if self.tripulantes
+            and self.tripulant_selection < len(self.tripulantes)
+            else None
+        )
+        self.tripulantes = users
+        if type(response.get("has_more")) is not bool:
+            self.live_refresh_error = "O Broker retornou o indicador de páginas inválido."
+            return
+        self.tripulant_has_more = response["has_more"]
+        self.tripulant_query = query
+        self.tripulant_selection = next(
+            (
+                index
+                for index, person in enumerate(users)
+                if person.get("username") == previous
+            ),
+            0,
+        )
+        self.tripulant_scroll = 0
+        self.live_refresh_error = ""
+
+    def show_tripulantes(self) -> None:
+        self.tripulant_profile = None
+        self.tripulant_query = ""
+        self.tripulant_search_buffer = ""
+        self.tripulant_searching = False
+        self.load_tripulantes()
+        self.screen = "tripulantes"
+
+    def open_tripulant_profile(self, username: str) -> None:
+        try:
+            response = self.broker_request(
+                "users.profile.get", username=username, offset="0"
+            )
+        except (
+            OSError,
+            RuntimeError,
+            subprocess.TimeoutExpired,
+            json.JSONDecodeError,
+        ) as error:
+            self.live_refresh_error = safe_text(error)
+            return
+        profile = response.get("profile")
+        if (
+            not isinstance(profile, dict)
+            or not isinstance(profile.get("username"), str)
+            or not isinstance(profile.get("submissions"), list)
+            or not isinstance(profile.get("counts"), dict)
+            or type(profile.get("submissions_offset")) is not int
+            or type(profile.get("submissions_has_more")) is not bool
+            or not all(isinstance(item, dict) for item in profile["submissions"])
+        ):
+            self.live_refresh_error = "O Broker retornou um perfil de tripulante inválido."
+            return
+        if profile["username"].casefold() == self.username.casefold():
+            self.live_refresh_error = "Seu próprio perfil fica em Meu espaço."
+            return
+        self.tripulant_profile = profile
+        self.tripulant_profile_selection = 0
+        self.tripulant_profile_scroll = 0
+        self.live_refresh_error = ""
+        self.screen = "tripulant_profile"
+
+    def load_more_tripulant_submissions(self) -> None:
+        profile = self.tripulant_profile
+        if not profile or not profile.get("submissions_has_more"):
+            return
+        submissions = profile.get("submissions", [])
+        offset = profile["submissions_offset"] + len(submissions)
+        try:
+            response = self.broker_request(
+                "users.profile.get",
+                username=profile["username"],
+                offset=str(offset),
+            )
+        except (
+            OSError,
+            RuntimeError,
+            subprocess.TimeoutExpired,
+            json.JSONDecodeError,
+        ) as error:
+            self.live_refresh_error = safe_text(error)
+            return
+        next_profile = response.get("profile")
+        if (
+            not isinstance(next_profile, dict)
+            or not isinstance(next_profile.get("submissions"), list)
+            or type(next_profile.get("submissions_offset")) is not int
+            or type(next_profile.get("submissions_has_more")) is not bool
+            or not all(
+                isinstance(item, dict)
+                for item in next_profile["submissions"]
+            )
+        ):
+            self.live_refresh_error = "O Broker retornou uma página de entregas inválida."
+            return
+        profile["submissions"].extend(next_profile["submissions"])
+        profile["submissions_offset"] = next_profile["submissions_offset"]
+        profile["submissions_has_more"] = next_profile["submissions_has_more"]
+        self.live_refresh_error = ""
 
     def request_confirmation(
         self,
@@ -1886,6 +2324,16 @@ class AccountDashboardTui:
             self.show_evaluations(
                 return_dashboard=self.evaluation_return_dashboard
             )
+        elif self.screen == "tripulantes":
+            self.load_tripulantes()
+        elif self.screen == "tripulant_profile":
+            selected_username = safe_text(
+                self.config.get("selected_tripulant", "")
+            )
+            self.load_tripulantes()
+            self.open_tripulant_profile(selected_username)
+            if self.tripulant_profile is None:
+                self.screen = "tripulantes"
         while True:
             self.draw(screen)
             try:
@@ -1998,6 +2446,8 @@ class AccountDashboardTui:
                     self.screen = "progress"
                 elif isinstance(key, str) and key.casefold() == "v":
                     self.show_evaluations(return_dashboard=True)
+                elif isinstance(key, str) and key.casefold() == "t":
+                    self.show_tripulantes()
                 elif key == curses.KEY_F3:
                     self.screen = "points"
                 elif key == curses.KEY_F2:
@@ -2242,6 +2692,66 @@ class AccountDashboardTui:
                     ) as error:
                         self.live_refresh_error = safe_text(error)
                     self.screen = "dashboard"
+            elif self.screen == "tripulantes":
+                if self.tripulant_searching:
+                    if key in ("\n", "\r", curses.KEY_ENTER):
+                        self.tripulant_searching = False
+                        self.load_tripulantes(self.tripulant_search_buffer.strip())
+                    elif key in ("\x1b", 27):
+                        self.tripulant_searching = False
+                        self.tripulant_search_buffer = self.tripulant_query
+                    elif key in (curses.KEY_BACKSPACE, "\b", "\x7f"):
+                        self.tripulant_search_buffer = (
+                            self.tripulant_search_buffer[:-1]
+                        )
+                    elif isinstance(key, str) and key.isprintable():
+                        if len(self.tripulant_search_buffer) < 80:
+                            self.tripulant_search_buffer += key
+                elif key == "/":
+                    self.tripulant_searching = True
+                    self.tripulant_search_buffer = ""
+                elif key in (curses.KEY_UP, curses.KEY_LEFT):
+                    self.tripulant_selection = max(
+                        0, self.tripulant_selection - 1
+                    )
+                elif key in (curses.KEY_DOWN, curses.KEY_RIGHT):
+                    self.tripulant_selection = min(
+                        max(0, len(self.tripulantes) - 1),
+                        self.tripulant_selection + 1,
+                    )
+                elif key in ("\n", "\r", curses.KEY_ENTER) and self.tripulantes:
+                    selected = self.tripulantes[self.tripulant_selection]
+                    self.open_tripulant_profile(selected["username"])
+                elif key in ("\x1b", 27):
+                    self.screen = "dashboard"
+            elif self.screen == "tripulant_profile":
+                profile = self.tripulant_profile or {}
+                submissions = profile.get("submissions", [])
+                if key in (curses.KEY_UP, curses.KEY_LEFT) and submissions:
+                    self.tripulant_profile_selection = max(
+                        0, self.tripulant_profile_selection - 1
+                    )
+                    self.tripulant_profile_scroll = 0
+                elif key in (curses.KEY_DOWN, curses.KEY_RIGHT) and submissions:
+                    self.tripulant_profile_selection = min(
+                        len(submissions) - 1,
+                        self.tripulant_profile_selection + 1,
+                    )
+                    self.tripulant_profile_scroll = 0
+                elif key == curses.KEY_PPAGE:
+                    self.tripulant_profile_scroll = max(
+                        0, self.tripulant_profile_scroll - 5
+                    )
+                elif key == curses.KEY_NPAGE:
+                    self.tripulant_profile_scroll += 5
+                elif isinstance(key, str) and key.casefold() == "m":
+                    self.load_more_tripulant_submissions()
+                elif isinstance(key, str) and key.casefold() == "d":
+                    return self.result(
+                        "open_tripulant_dm", username=profile["username"]
+                    )
+                elif key in ("\x1b", 27):
+                    self.screen = "tripulantes"
 
 
 def load_config() -> dict[str, Any]:

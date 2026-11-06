@@ -167,6 +167,190 @@ class AccountDashboardTuiTests(unittest.TestCase):
         self.assertTrue(any("Aumente a altura" in text for text in rendered))
         self.assertFalse(any("PERFIL" in text for text in rendered))
 
+    def test_tripulantes_search_opens_profile_and_returns_dm_action(self) -> None:
+        config = dashboard_config()
+        tui = AccountDashboardTui(config)
+        screen = Mock()
+        screen.getmaxyx.return_value = (24, 80)
+        screen.get_wch.side_effect = [
+            "t",
+            "/",
+            "I",
+            "r",
+            "i",
+            "s",
+            "\n",
+            "\n",
+            "m",
+            "d",
+        ]
+        responses = {
+            ("users.search", ""): {
+                "ok": True,
+                "users": [{"username": "iris", "display_name": "Íris Silva"}],
+                "has_more": False,
+            },
+            ("users.search", "Iris"): {
+                "ok": True,
+                "users": [{"username": "iris", "display_name": "Íris Silva"}],
+                "has_more": False,
+            },
+            ("users.profile.get", "iris"): {
+                "ok": True,
+                "profile": {
+                    "username": "iris",
+                    "display_name": "Íris Silva",
+                    "github_username": "iris-gh",
+                    "bio": "Tripulante",
+                    "points": 3,
+                    "counts": {"approved": 1, "pending": 1, "rejected": 0},
+                    "submissions_offset": 0,
+                    "submissions_has_more": True,
+                    "submissions": [
+                        {
+                            "id": 5,
+                            "exercise_code": "EX-05",
+                            "exercise_name": "Missão",
+                            "status": "approved",
+                            "score": 5,
+                            "feedback": "Bem feito",
+                        }
+                    ],
+                },
+            },
+            ("users.profile.get", "iris", "1"): {
+                "ok": True,
+                "profile": {
+                    "username": "iris",
+                    "submissions_offset": 1,
+                    "submissions_has_more": False,
+                    "submissions": [
+                        {
+                            "id": 6,
+                            "exercise_code": "EX-06",
+                            "exercise_name": "Outra missão",
+                            "status": "pending",
+                        }
+                    ],
+                },
+            },
+        }
+
+        def broker_request(method: str, **fields: str) -> dict[str, object]:
+            key = (
+                method,
+                fields.get("query", fields.get("username", "")),
+                fields.get("offset"),
+            )
+            return responses.get(key) or responses[
+                (method, fields.get("query", fields.get("username", "")))
+            ]
+
+        with (
+            patch.object(
+                AccountDashboardTui, "broker_request", side_effect=broker_request
+            ) as request,
+            patch(
+                "modules.account_dashboard_tui.curses.has_colors",
+                return_value=False,
+            ),
+            patch("modules.account_dashboard_tui.curses.cbreak"),
+            patch("modules.account_dashboard_tui.curses.noecho"),
+            patch.multiple(
+                "modules.account_dashboard_tui.curses",
+                create=True,
+                ACS_ULCORNER=0,
+                ACS_URCORNER=0,
+                ACS_LLCORNER=0,
+                ACS_LRCORNER=0,
+                ACS_HLINE=0,
+                ACS_VLINE=0,
+            ),
+        ):
+            result = tui.run(screen)
+
+        self.assertEqual(
+            {"action": "open_tripulant_dm", "username": "iris"}, result
+        )
+        self.assertEqual(
+            [
+                (call.args, call.kwargs)
+                for call in request.call_args_list
+            ],
+            [
+                (("users.search",), {"query": ""}),
+                (("users.search",), {"query": "Iris"}),
+                (
+                    ("users.profile.get",),
+                    {"username": "iris", "offset": "0"},
+                ),
+                (
+                    ("users.profile.get",),
+                    {"username": "iris", "offset": "1"},
+                ),
+            ],
+        )
+        self.assertEqual(2, len(tui.tripulant_profile["submissions"]))
+        self.assertFalse(tui.tripulant_profile["submissions_has_more"])
+
+    def test_tripulantes_screens_render_search_profile_and_feedback(self) -> None:
+        config = dashboard_config()
+        tui = AccountDashboardTui(config)
+        tui.screen = "tripulantes"
+        tui.tripulantes = [
+            {"username": "iris", "display_name": "Íris Silva"},
+        ]
+        list_screen = Mock()
+        list_screen.getmaxyx.return_value = (24, 80)
+        tui.screen = "tripulant_profile"
+        tui.tripulant_profile = {
+            "username": "iris",
+            "display_name": "Íris Silva",
+            "github_username": "iris-gh",
+            "bio": "Tripulante",
+            "points": 3,
+            "counts": {"approved": 1, "pending": 0, "rejected": 0},
+            "submissions": [
+                {
+                    "id": 5,
+                    "exercise_code": "EX-05",
+                    "exercise_name": "Missão",
+                    "status": "approved",
+                    "score": 5,
+                    "reviewer": "reviewer",
+                    "feedback": "Bem feito",
+                }
+            ],
+        }
+        profile_screen = Mock()
+        profile_screen.getmaxyx.return_value = (24, 80)
+        with patch.multiple(
+            "modules.account_dashboard_tui.curses",
+            create=True,
+            ACS_ULCORNER=0,
+            ACS_URCORNER=0,
+            ACS_LLCORNER=0,
+            ACS_LRCORNER=0,
+            ACS_HLINE=0,
+            ACS_VLINE=0,
+        ):
+            tui.screen = "tripulantes"
+            tui.draw(list_screen)
+            tui.screen = "tripulant_profile"
+            tui.draw(profile_screen)
+
+        list_lines = [
+            call.args[2] for call in list_screen.addnstr.call_args_list
+        ]
+        profile_lines = [
+            call.args[2] for call in profile_screen.addnstr.call_args_list
+        ]
+        self.assertTrue(any("TRIPULANTES" in text for text in list_lines))
+        self.assertTrue(any("Íris Silva" in text for text in list_lines))
+        self.assertTrue(any("TRIPULANTE · Íris Silva" in text for text in profile_lines))
+        self.assertTrue(any("Bem feito" in text for text in profile_lines))
+        self.assertTrue(any("D DM" in text for text in profile_lines))
+
     def test_f2_opens_and_closes_latest_notification_popup(self) -> None:
         config = dashboard_config()
         config["notifications"] = [

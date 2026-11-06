@@ -582,6 +582,8 @@ broker_account_dashboard() {
   local selected_submission_id=""
   local open_progress=0
   local open_evaluations=0
+  local open_tripulantes=0
+  local selected_tripulant=""
   local evaluation_return_dashboard=0
   local dashboard_broker_socket
   local dashboard_broker_client="$SCRIPT_DIR/core/broker_client.py"
@@ -640,17 +642,18 @@ broker_account_dashboard() {
     broker_check_response "$requests_response" || return 1
     broker_check_response "$chat_response" || return 1
 
-    config=$(printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0' \
+    config=$(printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0' \
       "$profile_response" "$progress_response" "$submissions_response" \
       "$requests_response" "$chat_response" "$detail_response" \
       "$selected_submission_id" "$open_progress" "$open_evaluations" \
-      "$evaluation_return_dashboard" |
+      "$evaluation_return_dashboard" "$open_tripulantes" \
+      "$selected_tripulant" |
       python3 -c '
 import json
 import sys
 
 parts = sys.stdin.buffer.read().split(b"\0")
-if len(parts) != 11 or parts[-1] or len(sys.argv) != 4:
+if len(parts) != 13 or parts[-1] or len(sys.argv) != 4:
     raise SystemExit("Respostas inválidas para Meu espaço")
 profile, progress, submissions, requests, chat = (
     json.loads(part) for part in parts[:5]
@@ -660,6 +663,8 @@ selected_id = int(parts[6]) if parts[6] else None
 open_progress = parts[7] == b"1"
 open_evaluations = parts[8] == b"1"
 evaluation_return_dashboard = parts[9] == b"1"
+open_tripulantes = parts[10] == b"1"
+selected_tripulant = parts[11].decode("utf-8")
 submission_items = submissions.get("submissions")
 request_items = requests.get("requests")
 counts = progress.get("submissions")
@@ -764,6 +769,8 @@ config = {
     "detail": detail,
     "open_progress": open_progress,
     "open_evaluations": open_evaluations,
+    "open_tripulantes": open_tripulantes,
+    "selected_tripulant": selected_tripulant,
     "evaluation_return_dashboard": evaluation_return_dashboard,
     "broker_socket": sys.argv[1],
     "broker_client": sys.argv[2],
@@ -773,6 +780,8 @@ print(json.dumps(config, ensure_ascii=False))
 ' "$dashboard_broker_socket" "$dashboard_broker_client" \
         "$CURRENT_SESSION_TOKEN") || return 1
 
+    open_tripulantes=0
+    selected_tripulant=""
     local tui_path
     tui_path="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/account_dashboard_tui.py"
     exec 4>&1
@@ -792,6 +801,31 @@ print(json.dumps(config, ensure_ascii=False))
     case "$action" in
     exit)
       return 0
+      ;;
+    open_tripulant_dm)
+      selected_tripulant=$(broker_response_field "$result" username) || return 1
+      if [[ -z "$selected_tripulant" ]]; then
+        ui_error "A tela retornou um tripulante inválido."
+        ui_pause
+        continue
+      fi
+      response=$(printf '%s\0%s\0' \
+        "$CURRENT_SESSION_TOKEN" "$selected_tripulant" |
+        broker_request chat.dm.open token username) || return 1
+      if ! broker_check_response "$response"; then
+        ui_pause
+        open_tripulantes=1
+        continue
+      fi
+      local tripulant_dm_channel
+      tripulant_dm_channel=$(broker_response_field "$response" channel) || return 1
+      CHAT_INITIAL_CHANNEL="$tripulant_dm_channel"
+      CHAT_INITIAL_ROOM_NAME="DM · $selected_tripulant"
+      if ! chat_menu; then
+        ui_error "Não foi possível abrir a DM do tripulante."
+        ui_pause
+      fi
+      open_tripulantes=1
       ;;
     back)
       if ((open_progress)); then

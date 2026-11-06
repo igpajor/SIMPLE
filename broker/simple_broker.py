@@ -134,6 +134,8 @@ METHOD_FIELDS = {
     "chat.typing": ("token", "channel", "active"),
     "profile.get": ("token",),
     "profile.update": ("token", "display_name", "github_username", "bio"),
+    "users.search": ("token", "query"),
+    "users.profile.get": ("token", "username", "offset"),
     "catalog.list": ("token",),
     "catalog.dashboard": ("token",),
     "catalog.get": ("token", "exercise_code"),
@@ -2127,6 +2129,111 @@ class Broker:
 
             if method == "profile.get":
                 return {"ok": True, **self._profile(connection, user_id)}
+
+            if method == "users.search":
+                query = self._text(request["query"], "Busca", 80, False).strip()
+                folded_query = query.casefold()
+                rows = connection.execute(
+                    """
+                    SELECT username, display_name
+                    FROM users
+                    WHERE is_active = 1 AND id != ?
+                    ORDER BY username
+                    """,
+                    (user_id,),
+                ).fetchall()
+                matches = [
+                    {
+                        "username": row["username"],
+                        "display_name": row["display_name"],
+                    }
+                    for row in rows
+                    if not folded_query
+                    or folded_query in row["username"].casefold()
+                    or folded_query in row["display_name"].casefold()
+                ]
+                limit = 50
+                return {
+                    "ok": True,
+                    "users": matches[:limit],
+                    "has_more": len(matches) > limit,
+                }
+
+            if method == "users.profile.get":
+                username = self._text(
+                    request["username"], "Usuário", 32, False
+                ).strip()
+                offset = self._integer(
+                    request["offset"], "Posição das entregas", minimum=0
+                )
+                if offset > 1_000_000:
+                    raise ValueError("Posição das entregas inválida.")
+                target = connection.execute(
+                    """
+                    SELECT id, username, display_name, github_username, bio, created_at
+                    FROM users
+                    WHERE username = ? COLLATE NOCASE AND is_active = 1
+                    """,
+                    (username,),
+                ).fetchone()
+                if target is None or target["id"] == user_id:
+                    raise ValueError("Tripulante ativo não encontrado.")
+
+                status_rows = connection.execute(
+                    """
+                    SELECT status, COUNT(*) AS count
+                    FROM submissions
+                    WHERE user_id = ?
+                    GROUP BY status
+                    """,
+                    (target["id"],),
+                ).fetchall()
+                submission_count = connection.execute(
+                    "SELECT COUNT(*) FROM submissions WHERE user_id = ?",
+                    (target["id"],),
+                ).fetchone()[0]
+                submissions = connection.execute(
+                    """
+                    SELECT e.code AS exercise_code, e.name AS exercise_name,
+                           s.status, s.commit_url, s.delivery_directory,
+                           s.submitted_at, r.score, r.feedback,
+                           COALESCE(
+                               (SELECT evaluator.username
+                                FROM users evaluator
+                                WHERE evaluator.id = r.reviewer_id),
+                               (SELECT evaluator.username
+                                FROM users evaluator
+                                WHERE evaluator.id = slot.accepted_by)
+                           ) AS reviewer
+                    FROM submissions s
+                    JOIN exercises e ON e.id = s.exercise_id
+                    LEFT JOIN evaluation_slots slot ON slot.submission_id = s.id
+                    LEFT JOIN reviews r ON r.slot_id = slot.id
+                    WHERE s.user_id = ?
+                    ORDER BY s.submitted_at DESC, s.id DESC
+                    LIMIT 20 OFFSET ?
+                    """,
+                    (target["id"], offset),
+                ).fetchall()
+                return {
+                    "ok": True,
+                    "profile": {
+                        "username": target["username"],
+                        "display_name": target["display_name"],
+                        "github_username": target["github_username"],
+                        "bio": target["bio"],
+                        "created_at": target["created_at"],
+                        "points": self._point_balance(connection, target["id"]),
+                        "counts": {
+                            row["status"]: row["count"] for row in status_rows
+                        },
+                        "submissions": [dict(row) for row in submissions],
+                        "submissions_offset": offset,
+                        "submissions_has_more": (
+                            offset + len(submissions) < submission_count
+                        ),
+                    },
+                }
 
             if method == "profile.update":
                 display_name = request["display_name"]

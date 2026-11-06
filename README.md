@@ -47,9 +47,11 @@ Unix.
 5. A pessoa avaliada pode responder ao feedback e avaliar o avaliador.
 6. No modo Broker/Proxy, consulte **Meu espaço** para acompanhar o perfil,
    entregas, avaliações, respostas, notificações e pontos. Em um terminal Curses,
-   use F2 para abrir a notificação mais recente, P para notificações e
-   avaliações, ou F3 para o histórico de pontos. Pedidos pendentes aparecem
-   ao entrar em Meu espaço; as notificações são atualizadas automaticamente.
+   use T para abrir **Tripulantes**, buscar pessoas e ver o perfil compartilhável;
+   D inicia uma DM e o retorno do chat mantém o perfil selecionado. Use F2 para
+   abrir a notificação mais recente, P para notificações e avaliações, ou F3
+   para o histórico de pontos. Pedidos pendentes aparecem ao entrar em Meu
+   espaço; as notificações são atualizadas automaticamente.
 
 ## Recursos
 
