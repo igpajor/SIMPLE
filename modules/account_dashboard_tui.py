@@ -249,6 +249,8 @@ class AccountDashboardTui:
             (
                 ("title", curses.COLOR_CYAN, curses.A_BOLD),
                 ("selected", curses.COLOR_CYAN, curses.A_BOLD),
+                ("input", curses.COLOR_BLUE, curses.A_NORMAL),
+                ("active_frame", curses.COLOR_CYAN, curses.A_BOLD),
                 ("text", curses.COLOR_WHITE, curses.A_NORMAL),
                 ("muted", curses.COLOR_WHITE, curses.A_DIM),
                 ("pending", curses.COLOR_YELLOW, curses.A_BOLD),
@@ -329,15 +331,16 @@ class AccountDashboardTui:
         height: int,
         title: str = "",
         opaque: bool = False,
+        border_color: str = "muted",
     ) -> None:
         if width < 4 or height < 3:
             return
         right = left + width - 1
         bottom = top + height - 1
         attr = (
-            self.popup_colors.get("muted", curses.A_REVERSE)
+            self.popup_colors.get(border_color, curses.A_REVERSE)
             if opaque
-            else self.colors.get("muted", curses.A_NORMAL)
+            else self.colors.get(border_color, curses.A_NORMAL)
         )
         try:
             screen.addch(top, left, curses.ACS_ULCORNER, attr)
@@ -1432,7 +1435,8 @@ class AccountDashboardTui:
             row += 4
 
         score_height = 3
-        feedback_height = top + height - 1 - row
+        feedback_height = top + height - 1 - (row + score_height)
+        score_active = self.evaluation_form_field == "score"
         self.draw_frame(
             screen,
             row,
@@ -1441,26 +1445,32 @@ class AccountDashboardTui:
             score_height,
             (
                 "NOTA (0-5) · ATIVA"
-                if self.evaluation_form_field == "score"
+                if score_active
                 else "NOTA (0-5)"
             ),
+            border_color="active_frame" if score_active else "muted",
         )
         self.draw_text(
             screen,
             row + 1,
             inner_left + 2,
             self.evaluation_form_score or "Digite uma nota de 0 a 5",
-            "selected",
+            "input",
             inner_width - 4,
         )
         row += score_height
-        feedback_title = (
-            "FEEDBACK DETALHADO · ATIVO"
-            if self.evaluation_form_field == "feedback"
-            else "FEEDBACK DETALHADO"
-        )
+        feedback_active = self.evaluation_form_field == "feedback"
+        feedback_title = "FEEDBACK DETALHADO"
+        if feedback_active:
+            feedback_title += " · ATIVO"
         self.draw_frame(
-            screen, row, inner_left, inner_width, feedback_height, feedback_title
+            screen,
+            row,
+            inner_left,
+            inner_width,
+            feedback_height,
+            feedback_title,
+            border_color="active_frame" if feedback_active else "muted",
         )
         feedback_lines = wrap_text(
             self.evaluation_form_buffer or "Escreva aqui um feedback detalhado.",
@@ -1474,7 +1484,7 @@ class AccountDashboardTui:
                 row + 1 + index,
                 inner_left + 2,
                 line,
-                "text",
+                "input",
                 inner_width - 4,
             )
         if self.live_refresh_error:

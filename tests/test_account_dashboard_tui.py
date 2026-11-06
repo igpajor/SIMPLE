@@ -791,6 +791,12 @@ class AccountDashboardTuiTests(unittest.TestCase):
             "delivery_directory": "src",
         }
         tui.height, tui.width = 31, 105
+        tui.colors = {
+            "active_frame": 123,
+            "input": 456,
+            "muted": 789,
+            "title": 321,
+        }
         screen = Mock()
         screen.getmaxyx.return_value = (31, 105)
 
@@ -826,6 +832,63 @@ class AccountDashboardTuiTests(unittest.TestCase):
         self.assertGreater(
             frame_titles["FEEDBACK DETALHADO"],
             frame_titles["NOTA (0-5) · ATIVA"],
+        )
+        frame_calls = {
+            call.args[5]: call for call in draw_frame.call_args_list
+        }
+        self.assertEqual(
+            "active_frame",
+            frame_calls["NOTA (0-5) · ATIVA"].kwargs["border_color"],
+        )
+        self.assertEqual(
+            "muted", frame_calls["FEEDBACK DETALHADO"].kwargs["border_color"]
+        )
+        self.assertTrue(
+            any(
+                call.args[2] == "Digite uma nota de 0 a 5"
+                and call.args[4] == 456
+                for call in screen.addnstr.call_args_list
+            )
+        )
+
+        feedback_frame = frame_calls["FEEDBACK DETALHADO"].args
+        feedback_bottom = feedback_frame[1] + feedback_frame[4] - 1
+        outer_frame = frame_calls["AVALIAR · EX-01"].args
+        outer_bottom = outer_frame[1] + outer_frame[4] - 1
+        self.assertLess(feedback_bottom, outer_bottom)
+        self.assertLess(feedback_bottom, tui.height - 1)
+        self.assertTrue(
+            any(
+                call.args[:2] == (feedback_bottom, feedback_frame[2] + 1)
+                and call.args[-1] == 789
+                for call in screen.hline.call_args_list
+            )
+        )
+
+        tui.evaluation_form_field = "feedback"
+        feedback_screen = Mock()
+        feedback_screen.getmaxyx.return_value = (31, 105)
+        with (
+            patch.multiple(
+                "modules.account_dashboard_tui.curses",
+                create=True,
+                ACS_ULCORNER=0,
+                ACS_URCORNER=0,
+                ACS_LLCORNER=0,
+                ACS_LRCORNER=0,
+                ACS_HLINE=0,
+                ACS_VLINE=0,
+            ),
+            patch.object(tui, "draw_frame", wraps=tui.draw_frame) as draw_frame,
+        ):
+            tui.draw(feedback_screen)
+        active_borders = {
+            call.args[5]: call.kwargs.get("border_color")
+            for call in draw_frame.call_args_list
+        }
+        self.assertEqual("muted", active_borders["NOTA (0-5)"])
+        self.assertEqual(
+            "active_frame", active_borders["FEEDBACK DETALHADO · ATIVO"]
         )
 
     def test_author_replies_to_review_inside_curses(self) -> None:
