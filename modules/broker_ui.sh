@@ -559,6 +559,245 @@ broker_submission_render_detail() {
     "$submitted_at" "$slot_id" "$score" "$feedback"
 }
 
+broker_account_dashboard() {
+  local profile_response
+  local progress_response
+  local submissions_response
+  local requests_response
+  local detail_response=""
+  local config
+  local result
+  local status
+  local action
+  local submission_id
+  local request_id
+  local decision
+  local slot_id
+  local display_name
+  local github_username
+  local bio
+  local response
+  local mark_response
+  local selected_submission_id=""
+  local open_progress=0
+
+  if ! ui_home_tui_available; then
+    local choice
+    while true; do
+      ui_screen_begin "MEU ESPAÇO"
+      ui_menu_choice choice "MEU ESPAÇO" \
+        "1|Meu perfil" \
+        "2|Meu progresso" \
+        "3|Minhas entregas" \
+        "0|Voltar" || return 0
+      case "$choice" in
+      1) broker_profile_menu || return 1 ;;
+      2) broker_progress_menu || return 1 ;;
+      3) broker_submissions_menu || return 1 ;;
+      0) return 0 ;;
+      *) ui_error "Opção inválida."; ui_pause ;;
+      esac
+    done
+  fi
+
+  while true; do
+    profile_response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
+      broker_request profile.get token) || return 1
+    progress_response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
+      broker_request progress.get token) || return 1
+    submissions_response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
+      broker_request submissions.list token) || return 1
+    requests_response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
+      broker_request evaluations.requests.list token) || return 1
+    broker_check_response "$profile_response" || return 1
+    broker_check_response "$progress_response" || return 1
+    broker_check_response "$submissions_response" || return 1
+    broker_check_response "$requests_response" || return 1
+
+    config=$(printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0' \
+      "$profile_response" "$progress_response" "$submissions_response" \
+      "$requests_response" "$detail_response" "$selected_submission_id" \
+      "$open_progress" |
+      python3 -c '
+import json
+import sys
+
+parts = sys.stdin.buffer.read().split(b"\0")
+if len(parts) != 8 or parts[-1]:
+    raise SystemExit("Respostas inválidas para Meu espaço")
+profile, progress, submissions, requests = (
+    json.loads(part) for part in parts[:4]
+)
+detail_response = json.loads(parts[4]) if parts[4] else {}
+selected_id = int(parts[5]) if parts[5] else None
+open_progress = parts[6] == b"1"
+submission_items = submissions.get("submissions")
+request_items = requests.get("requests")
+counts = progress.get("submissions")
+history = progress.get("points_history")
+notifications = progress.get("notifications")
+review_history = progress.get("review_history")
+pending_review_responses = progress.get("pending_review_responses")
+if (
+    not isinstance(submission_items, list)
+    or not isinstance(request_items, list)
+    or not isinstance(counts, dict)
+    or not isinstance(history, list)
+    or not isinstance(notifications, list)
+    or not isinstance(review_history, list)
+    or not isinstance(pending_review_responses, list)
+):
+    raise SystemExit("Dados incompletos para Meu espaço")
+detail = detail_response.get("submission")
+if detail is not None and not isinstance(detail, dict):
+    raise SystemExit("Detalhe de entrega inválido")
+config = {
+    "username": profile.get("username", ""),
+    "display_name": profile.get("display_name", ""),
+    "github_username": profile.get("github_username", ""),
+    "bio": profile.get("bio", ""),
+    "points": progress.get("points", 0),
+    "counts": counts,
+    "submissions": submission_items,
+    "requests": request_items,
+    "points_history": history,
+    "notifications": notifications,
+    "review_history": review_history,
+    "pending_review_responses": pending_review_responses,
+    "selected_submission_id": detail.get("id") if detail else selected_id,
+    "detail": detail,
+    "open_progress": open_progress,
+}
+print(json.dumps(config, ensure_ascii=False))
+') || return 1
+
+    local tui_path
+    tui_path="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/account_dashboard_tui.py"
+    exec 4>&1
+    if result=$(
+      ACCOUNT_DASHBOARD_CONFIG="$config" \
+        ACCOUNT_DASHBOARD_RESULT_FD=3 \
+        python3 "$tui_path" 3>&1 1>&4
+    ); then
+      exec 4>&-
+    else
+      status=$?
+      exec 4>&-
+      return "$status"
+    fi
+
+    action=$(broker_response_field "$result" action) || return 1
+    case "$action" in
+    exit)
+      return 0
+      ;;
+    back)
+      if ((open_progress)); then
+        open_progress=0
+        mark_response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
+          broker_request notifications.mark_read token) || return 1
+        if ! broker_check_response "$mark_response"; then
+          ui_pause
+        fi
+      else
+        detail_response=""
+      fi
+      ;;
+    show_progress)
+      open_progress=1
+      ;;
+    respond_review)
+      local review_id
+      review_id=$(broker_response_field "$result" review_id) || return 1
+      if [[ ! "$review_id" =~ ^[0-9]+$ ]]; then
+        ui_error "A tela retornou uma avaliação inválida."
+        ui_pause
+      elif ! broker_evaluation_response_prompt "$review_id"; then
+        ui_warn "Não foi possível responder à avaliação."
+        ui_pause
+      fi
+      detail_response=""
+      open_progress=1
+      ;;
+    open_submission)
+      submission_id=$(broker_response_field "$result" submission_id) || return 1
+      if [[ ! "$submission_id" =~ ^[0-9]+$ ]]; then
+        ui_error "A tela retornou uma entrega inválida."
+        ui_pause
+        detail_response=""
+        continue
+      fi
+      detail_response=$(printf '%s\0%s\0' \
+        "$CURRENT_SESSION_TOKEN" "$submission_id" |
+        broker_request submissions.get token submission_id) || return 1
+      if ! broker_check_response "$detail_response"; then
+        ui_pause
+        detail_response=""
+        continue
+      fi
+      selected_submission_id="$submission_id"
+      ;;
+    update_profile)
+      display_name=$(broker_response_field "$result" display_name) || return 1
+      github_username=$(broker_response_field "$result" github_username) || return 1
+      bio=$(broker_response_field "$result" bio) || return 1
+      response=$(printf '%s\0%s\0%s\0%s\0' \
+        "$CURRENT_SESSION_TOKEN" "$display_name" "$github_username" "$bio" |
+        broker_request profile.update token display_name github_username bio) || return 1
+      if broker_check_response "$response"; then
+        ui_success "Perfil atualizado."
+      else
+        ui_pause
+      fi
+      detail_response=""
+      ui_pause
+      ;;
+    respond_request)
+      request_id=$(broker_response_field "$result" request_id) || return 1
+      decision=$(broker_response_field "$result" decision) || return 1
+      if [[ ! "$request_id" =~ ^[0-9]+$ ||
+        ( "$decision" != "accept" && "$decision" != "decline" ) ]]; then
+        ui_error "A tela retornou um pedido inválido."
+        ui_pause
+        continue
+      fi
+      if ui_confirm "$([[ "$decision" == "accept" ]] &&
+        printf 'Aceitar o pedido de avaliação?' ||
+        printf 'Recusar o pedido de avaliação?')"; then
+        response=$(printf '%s\0%s\0%s\0' \
+          "$CURRENT_SESSION_TOKEN" "$request_id" "$decision" |
+          broker_request evaluations.request.respond token request_id decision) || return 1
+        if broker_check_response "$response"; then
+          ui_success "$([[ "$decision" == "accept" ]] &&
+            printf 'Pedido aceito.' || printf 'Pedido recusado.')"
+          ui_pause
+        else
+          ui_pause
+        fi
+      fi
+      detail_response=""
+      ;;
+    open_room)
+      slot_id=$(broker_response_field "$result" slot_id) || return 1
+      if [[ "$slot_id" =~ ^[0-9]+$ ]]; then
+        if ! evaluation_open_live_room "$slot_id"; then
+          ui_pause
+        fi
+      else
+        ui_error "A tela retornou uma sala inválida."
+        ui_pause
+      fi
+      detail_response=""
+      ;;
+    *)
+      ui_error "A tela retornou uma ação desconhecida."
+      ui_pause
+      return 1
+      ;;
+    esac
+  done
+}
+
 broker_submissions_menu() {
   local response
   local rows
@@ -574,8 +813,10 @@ broker_submissions_menu() {
   local slot_id
   local score
   local feedback
+  local reviewer
   local choice
   local status_label
+  local label
   local -a submission_rows
   local -a menu_options
 
@@ -585,7 +826,7 @@ broker_submissions_menu() {
     ui_pause
     return 1
   fi
-  rows=$(broker_response_rows "$response" submissions) || return 1
+  rows=$(broker_response_rows "$response" --separator '|' submissions) || return 1
   if [[ -n "$rows" ]]; then
     mapfile -t submission_rows <<<"$rows"
   else
@@ -608,8 +849,8 @@ broker_submissions_menu() {
     ui_screen_begin "MINHAS ENTREGAS"
     menu_options=()
     for encoded in "${submission_rows[@]}"; do
-      IFS=$'\t' read -r submission_id code name status kind commit_url directory \
-        submitted_at slot_id score feedback <<<"$encoded"
+      IFS='|' read -r submission_id code name status kind commit_url directory \
+        submitted_at slot_id score feedback reviewer <<<"$encoded"
       submission_id=$(db_hex_decode "$submission_id") || return 1
       code=$(db_hex_decode "$code") || return 1
       name=$(db_hex_decode "$name") || return 1
@@ -621,13 +862,16 @@ broker_submissions_menu() {
       slot_id=$(db_hex_decode "$slot_id") || return 1
       score=$(db_hex_decode "$score") || return 1
       feedback=$(db_hex_decode "$feedback") || return 1
+      reviewer=$(db_hex_decode "$reviewer") || return 1
 
       status_label=$(submission_status_label "$status")
       if [[ -n "$score" ]]; then
-        menu_options+=("$submission_id|$code — $name · $status_label · nota $score/5")
+        label="$code — $name · $status_label · nota $score/5"
       else
-        menu_options+=("$submission_id|$code — $name · $status_label")
+        label="$code — $name · $status_label"
       fi
+      [[ -n "$reviewer" ]] && label+=" · avaliador $reviewer"
+      menu_options+=("$submission_id|$label")
     done
     ui_wrap_text \
       "Para avaliar uma entrega aceita, acesse Avaliações abertas." \
@@ -1589,7 +1833,6 @@ broker_mode_menu() {
   local chat_mention_count=0
   local chat_label="Chat global"
   local chat_label_open=0
-  local progress_label="Meu progresso"
   local home_dashboard_response
   local home_dashboard_values
   local use_home_tui=0
@@ -1703,27 +1946,19 @@ print(sum(
   if ((chat_label_open)); then
     chat_label+=")"
   fi
-  if ((unread_notifications > 0)); then
-    progress_label+=" ($unread_notifications alertas)"
-  fi
   local notification=""
   if ((unread_notifications > 0)); then
-    notification="Você tem $unread_notifications atualizações pendentes · Confira Meu progresso"
+    notification="Você tem $unread_notifications atualizações pendentes · Confira Meu espaço"
   fi
   menu_options=(
     "1|Catálogo de exercícios"
     "2|Avaliações abertas"
-    "3|$progress_label"
-    "4|Meu perfil"
+    "3|Meu espaço"
   )
   if [[ "$CURRENT_USER_IS_ADMIN" == "True" ]]; then
-    menu_options+=("5|Administração")
+    menu_options+=("4|Administração" "5|$chat_label")
   else
-    menu_options+=("5|Minhas entregas")
-  fi
-  menu_options+=("6|$chat_label")
-  if [[ "$CURRENT_USER_IS_ADMIN" == "True" ]]; then
-    menu_options+=("7|Minhas entregas")
+    menu_options+=("4|$chat_label")
   fi
   menu_options+=("0|Sair")
   if ((use_home_tui)); then
@@ -1737,7 +1972,7 @@ print(sum(
     ui_home_intro "$CURRENT_USERNAME" || return 1
     ui_labeled_value "Online agora" "$online_count" "$(ui_width)"
     if ((unread_notifications > 0)); then
-      ui_warn "Você tem $unread_notifications atualização(ões) pendente(s). Confira Meu progresso."
+      ui_warn "Você tem $unread_notifications atualização(ões) pendente(s). Confira Meu espaço."
     fi
     printf '\n'
     if ! ui_menu_choice choice "MENU PRINCIPAL" "${menu_options[@]}"; then
@@ -1758,36 +1993,24 @@ print(sum(
     fi
     ;;
   3)
-    if ! progress_menu; then
-      ui_error "Não foi possível carregar Meu progresso. Consulte a mensagem acima."
+    if ! broker_account_dashboard; then
+      ui_error "Não foi possível carregar Meu espaço. Consulte a mensagem acima."
       ui_pause
     fi
     ;;
   4)
-    if ! users_profile_menu; then
-      ui_error "Não foi possível carregar seu perfil."
-      ui_pause
-    fi
-    ;;
-  5)
     if [[ "$CURRENT_USER_IS_ADMIN" == "True" ]]; then
       admin_menu
     else
-      if ! broker_submissions_menu; then
-        ui_error "Não foi possível carregar Minhas entregas. Consulte a mensagem acima."
+      if ! chat_menu; then
+        ui_error "Não foi possível acessar o chat global."
         ui_pause
       fi
     fi
     ;;
-  6)
+  5)
     if ! chat_menu; then
       ui_error "Não foi possível acessar o chat global."
-      ui_pause
-    fi
-    ;;
-  7)
-    if ! broker_submissions_menu; then
-      ui_error "Não foi possível carregar Minhas entregas. Consulte a mensagem acima."
       ui_pause
     fi
     ;;

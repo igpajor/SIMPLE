@@ -782,7 +782,7 @@ class BrokerTests(unittest.TestCase):
             ["bash", str(ROOT_DIR / "simple.sh")],
             input=(
                 "2\nchat-tui\nsecure-pass-123\n"
-                "6\n\nHello everyone\n\n/sair\n0\n"
+                "4\n\nHello everyone\n\n/sair\n0\n"
             ),
             text=True,
             capture_output=True,
@@ -861,7 +861,7 @@ class BrokerTests(unittest.TestCase):
             read_until(b"*")
             clear_count_before_login = output.count(b"\x1b[2J")
             os.write(master_fd, b"\r")
-            read_until(b"[6] Chat global")
+            read_until(b"[4] Chat global")
             read_until(b"SEU RESUMO")
             self.assertIn(b"Pontos 1", output)
             self.assertIn(b"Aprovados 0", output)
@@ -870,7 +870,7 @@ class BrokerTests(unittest.TestCase):
                 clear_count_before_login + 1,
                 output.count(b"\x1b[2J"),
             )
-            os.write(master_fd, b"6")
+            os.write(master_fd, b"4")
             read_until("SIMPLE · Chat global".encode("utf-8"))
             read_until(b"MENSAGEM >")
             os.write(master_fd, b"\r")
@@ -949,8 +949,8 @@ class BrokerTests(unittest.TestCase):
             os.write(master_fd, b"chat-auto-tui\tsecure-pass-123")
             read_until(b"*")
             os.write(master_fd, b"\r")
-            read_until(b"[6] Chat global")
-            os.write(master_fd, b"6")
+            read_until(b"[4] Chat global")
+            os.write(master_fd, b"4")
             read_until("SIMPLE · Chat global".encode("utf-8"))
             read_until(b"MENSAGEM >")
             os.write(master_fd, "rascunho".encode("utf-8"))
@@ -1052,10 +1052,10 @@ class BrokerTests(unittest.TestCase):
             os.write(master_fd, b"chat-dm-window\tsecure-pass-123")
             read_until(b"*")
             os.write(master_fd, b"\r")
-            read_until(b"[6] Chat global")
-            self.assertIn(b"[6] Chat global (2 online \xc2\xb7 +1 DM)", output)
+            read_until(b"[4] Chat global")
+            self.assertIn(b"[4] Chat global (2 online \xc2\xb7 +1 DM)", output)
             self.assertNotIn("mensagem privada de teste".encode("utf-8"), output)
-            os.write(master_fd, b"6")
+            os.write(master_fd, b"4")
             global_title = "SIMPLE · Chat global".encode("utf-8")
             read_until(global_title)
             dm_notification = "DM · chat-dm-peer (1)".encode("utf-8")
@@ -1203,7 +1203,7 @@ class BrokerTests(unittest.TestCase):
             os.close(master_fd)
             os.close(slave_fd)
 
-    def test_broker_admin_menu_orders_chat_before_submissions(self) -> None:
+    def test_broker_admin_home_groups_profile_progress_and_submissions(self) -> None:
         user = self.create_user("chat-admin-menu")
         with closing(sqlite3.connect(self.database_path)) as connection, connection:
             connection.execute(
@@ -1229,9 +1229,9 @@ class BrokerTests(unittest.TestCase):
         positions = [
             next(index for index, line in enumerate(option_lines) if label in line)
             for label in (
-                "[5] Administração",
-                "[6] Chat global",
-                "[7] Minhas entregas",
+                "[3] Meu espaço",
+                "[4] Administração",
+                "[5] Chat global",
             )
         ]
         self.assertEqual(sorted(positions), positions)
@@ -1262,7 +1262,7 @@ class BrokerTests(unittest.TestCase):
             ["bash", str(ROOT_DIR / "simple.sh")],
             input=(
                 "2\nclear-cli-admin\nsecure-pass-123\n"
-                "6\n/apagar-historico\nn\n/sair\n0\n"
+                "5\n/apagar-historico\nn\n/sair\n0\n"
             ),
             text=True,
             capture_output=True,
@@ -1283,7 +1283,7 @@ class BrokerTests(unittest.TestCase):
             ["bash", str(ROOT_DIR / "simple.sh")],
             input=(
                 "2\nclear-cli-admin\nsecure-pass-123\n"
-                "6\n/apagar-historico\ns\n/sair\n0\n"
+                "5\n/apagar-historico\ns\n/sair\n0\n"
             ),
             text=True,
             capture_output=True,
@@ -2220,7 +2220,7 @@ class BrokerTests(unittest.TestCase):
 
         process = subprocess.run(
             ["bash", str(ROOT_DIR / "simple.sh")],
-            input="2\nstudent\nsecure-pass-123\n4\n0\n0\n",
+            input="2\nstudent\nsecure-pass-123\n3\n1\n0\n0\n",
             text=True,
             capture_output=True,
             cwd=ROOT_DIR,
@@ -2231,6 +2231,94 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual(0, process.returncode, process.stderr)
         self.assertIn("MEU PERFIL", process.stdout)
         self.assertIn("Saldo de pontos: 1", process.stdout)
+
+    def test_account_dashboard_tui_updates_profile_and_opens_points_history(self) -> None:
+        user = self.create_user("dashboard-tui")
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "SIMPLE_MODE": "broker",
+                "BROKER_SOCKET": str(self.socket_path),
+                "NO_COLOR": "1",
+                "TERM": "xterm-256color",
+                "COLUMNS": "80",
+            }
+        )
+        master_fd, slave_fd = pty.openpty()
+        fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+        process = subprocess.Popen(
+            ["bash", str(ROOT_DIR / "simple.sh")],
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            cwd=ROOT_DIR,
+            env=environment,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        output = bytearray()
+
+        def read_until(
+            needle: bytes, timeout: float = 15.0, start: int = 0
+        ) -> None:
+            deadline = time.monotonic() + timeout
+            while output.find(needle, start) < 0 and time.monotonic() < deadline:
+                ready, _, _ = select.select([master_fd], [], [], 0.2)
+                if ready:
+                    try:
+                        output.extend(os.read(master_fd, 8192))
+                    except OSError:
+                        break
+                if process.poll() is not None:
+                    break
+            self.assertGreaterEqual(
+                output.find(needle, start),
+                0,
+                output.decode("utf-8", errors="replace"),
+            )
+
+        try:
+            read_until("███████╗██╗███╗".encode("utf-8"))
+            os.write(master_fd, b"\r")
+            read_until(b"Login")
+            os.write(master_fd, b"dashboard-tui\tsecure-pass-123")
+            read_until(b"*")
+            os.write(master_fd, b"\r")
+            read_until(b"MENU PRINCIPAL")
+            os.write(master_fd, b"3")
+            read_until(b"MINHAS ENTREGAS")
+
+            os.write(master_fd, b"e")
+            read_until(b"EDITAR PERFIL")
+            os.write(master_fd, b"\rDashboard")
+            time.sleep(0.1)
+            os.write(master_fd, b"\r")
+            os.write(master_fd, b"s")
+            read_until("Perfil atualizado.".encode("utf-8"))
+            dashboard_start = len(output)
+            os.write(master_fd, b"\r")
+            read_until(b"Dashboard", start=dashboard_start)
+
+            points_start = len(output)
+            os.write(master_fd, b"\x1bOR")
+            read_until("HISTÓRICO DE PONTOS".encode("utf-8"), start=points_start)
+            dashboard_start = len(output)
+            os.write(master_fd, b"\x1b")
+            read_until(b"Dashboard", start=dashboard_start)
+            home_start = len(output)
+            os.write(master_fd, b"\x1b")
+            read_until(b"MENU PRINCIPAL", start=home_start)
+            self.assertEqual(
+                "Dashboard",
+                self.call({"method": "profile.get", "token": user["token"]})[
+                    "display_name"
+                ],
+            )
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
+            os.close(master_fd)
 
     def test_broker_interactive_catalog_can_open_evaluation_slot(self) -> None:
         user = self.create_user()
@@ -2448,6 +2536,18 @@ class BrokerTests(unittest.TestCase):
                 {"method": "evaluations.requests.list", "token": owner["token"]}
             )["requests"][0]["status"],
         )
+        accepted_submission = self.call(
+            {"method": "submissions.list", "token": owner["token"]}
+        )["submissions"][0]
+        self.assertEqual("exercise-reviewer", accepted_submission["reviewer"])
+        accepted_detail = self.call(
+            {
+                "method": "submissions.get",
+                "token": owner["token"],
+                "submission_id": str(submission["submission_id"]),
+            }
+        )["submission"]
+        self.assertEqual("exercise-reviewer", accepted_detail["reviewer"])
         owner_room = self.call(
             {
                 "method": "evaluations.room.get",
@@ -3170,7 +3270,7 @@ class BrokerTests(unittest.TestCase):
             ["bash", str(ROOT_DIR / "simple.sh")],
             input=(
                 "2\ntui-identity-admin\nsecure-pass-123\n"
-                "5\n6\n1\n230100\n"
+                "4\n6\n1\n230100\n"
                 f"{participant['user_id']}\ns\n0\n0\n0\n"
             ),
             text=True,
@@ -3254,7 +3354,7 @@ class BrokerTests(unittest.TestCase):
             ["bash", str(ROOT_DIR / "simple.sh")],
             input=(
                 "2\ntui-owner\nsecure-pass-123\n"
-                "5\n1\n0\n1\n0\n"
+                "3\n3\n1\n0\n1\n0\n"
             ),
             text=True,
             capture_output=True,
@@ -3264,7 +3364,7 @@ class BrokerTests(unittest.TestCase):
             timeout=15,
         )
         self.assertEqual(0, accepted.returncode, accepted.stderr)
-        self.assertIn("Pedido aceito", accepted.stdout)
+        self.assertIn("Pedido aceito", accepted.stdout, accepted.stderr)
         self.assertIn("MINHAS ENTREGAS", accepted.stdout)
 
         def find_room_link(output: str) -> re.Match[str] | None:
@@ -3304,7 +3404,7 @@ class BrokerTests(unittest.TestCase):
             ["bash", str(ROOT_DIR / "simple.sh")],
             input=(
                 "2\ntui-reviewer\nsecure-pass-123\n"
-                "3\n\n0\n"
+                "3\n2\n\n0\n"
             ),
             text=True,
             capture_output=True,
@@ -3338,7 +3438,7 @@ class BrokerTests(unittest.TestCase):
             ["bash", str(ROOT_DIR / "simple.sh")],
             input=(
                 "2\ntui-owner\nsecure-pass-123\n"
-                "5\n1\n0\n0\n"
+                "3\n3\n1\n0\n0\n"
             ),
             text=True,
             capture_output=True,
@@ -3350,14 +3450,18 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual(
             0, owner_submission_detail.returncode, owner_submission_detail.stderr
         )
-        self.assertIn("Boa solução.", owner_submission_detail.stdout)
+        self.assertIn(
+            "Boa solução.",
+            owner_submission_detail.stdout,
+            owner_submission_detail.stderr,
+        )
         self.assertIn("5/5", owner_submission_detail.stdout)
 
         progress = subprocess.run(
             ["bash", str(ROOT_DIR / "simple.sh")],
             input=(
                 "2\ntui-reviewer\nsecure-pass-123\n"
-                "3\n\n0\n0\n"
+                "3\n2\n\n0\n0\n"
             ),
             text=True,
             capture_output=True,
@@ -3374,7 +3478,7 @@ class BrokerTests(unittest.TestCase):
             ["bash", str(ROOT_DIR / "simple.sh")],
             input=(
                 "2\ntui-admin\nsecure-pass-123\n"
-                "5\n1\nc\n"
+                "4\n1\nc\n"
                 "UI-NEW\nExercício via TUI\n"
                 "Descrição completa\n.fim\n"
                 "Missão completa\n.fim\n"

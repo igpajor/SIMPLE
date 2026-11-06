@@ -38,14 +38,16 @@ Unix.
 1. Escolha um exercício e leia seu enunciado, especificações e exemplos.
 2. Registre a solução por meio da URL do commit no GitHub e do diretório de
    entrega.
-3. Outro participante solicita autorização para avaliar; a pessoa autora aceita
-   ou recusa o pedido em **Minhas entregas**. Pedidos sem resposta expiram em
-   24 horas e são liberados na próxima operação do sistema que processar pedidos.
+3. Outro participante solicita autorização para avaliar; no modo Broker/Proxy,
+   a pessoa autora aceita ou recusa o pedido em **Meu espaço > Minhas entregas**.
+   Pedidos sem resposta expiram em 24 horas e são liberados na próxima operação
+   do sistema que processar pedidos.
 4. Após o aceite, o avaliador consulta o exercício e a referência, dá uma nota
    de 0 a 5 e escreve um feedback. A nota mínima para aprovação é 3.
 5. A pessoa avaliada pode responder ao feedback e avaliar o avaliador.
-6. Consulte **Meu progresso** para acompanhar entregas, avaliações, respostas,
-   notificações e pontos.
+6. No modo Broker/Proxy, consulte **Meu espaço** para acompanhar o perfil,
+   entregas, avaliações, respostas, notificações e pontos. Em um terminal Curses,
+   use P para notificações e avaliações, ou F3 para o histórico de pontos.
 
 ## Recursos
 

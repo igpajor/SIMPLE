@@ -2293,7 +2293,15 @@ class Broker:
                     """
                     SELECT s.id, e.code AS exercise_code, e.name AS exercise_name,
                            s.status, s.content_kind, s.commit_url, s.delivery_directory,
-                           s.submitted_at, slot.id AS slot_id, r.score, r.feedback
+                           s.submitted_at, slot.id AS slot_id, r.score, r.feedback,
+                           COALESCE(
+                               (SELECT evaluator.username
+                                FROM users evaluator
+                                WHERE evaluator.id = r.reviewer_id),
+                               (SELECT evaluator.username
+                                FROM users evaluator
+                                WHERE evaluator.id = slot.accepted_by)
+                           ) AS reviewer
                     FROM submissions s
                     JOIN exercises e ON e.id = s.exercise_id
                     LEFT JOIN evaluation_slots slot ON slot.submission_id = s.id
@@ -2311,7 +2319,15 @@ class Broker:
                     """
                     SELECT s.id, e.code AS exercise_code, e.name AS exercise_name,
                            s.status, s.content_kind, s.commit_url, s.delivery_directory,
-                           s.submitted_at, slot.id AS slot_id, r.score, r.feedback
+                           s.submitted_at, slot.id AS slot_id, r.score, r.feedback,
+                           COALESCE(
+                               (SELECT evaluator.username
+                                FROM users evaluator
+                                WHERE evaluator.id = r.reviewer_id),
+                               (SELECT evaluator.username
+                                FROM users evaluator
+                                WHERE evaluator.id = slot.accepted_by)
+                           ) AS reviewer
                     FROM submissions s
                     JOIN exercises e ON e.id = s.exercise_id
                     LEFT JOIN evaluation_slots slot ON slot.submission_id = s.id
