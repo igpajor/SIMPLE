@@ -201,6 +201,7 @@ class AccountDashboardTui:
         self.form_buffer = ""
         self.notification_popup = False
         self.popup_request_id: int | None = None
+        self.confirm_release_reservation = False
         self.live_refresh_error = ""
         self.last_notification_poll = time.monotonic()
         self.width = 80
@@ -583,14 +584,22 @@ class AccountDashboardTui:
         if item.get("category", item.get("type")) == "evaluation_request":
             lines.append(("A: aceitar · D: recusar · Enter: abrir entrega", "selected"))
         elif item.get("category", item.get("type")) == "evaluation_accepted":
-            lines.extend(
-                (
-                    ("[1] Abrir sala de áudio e vídeo", "selected"),
-                    ("[2] Avaliar submissão", "selected"),
-                    ("[3] Liberar minha reserva", "selected"),
-                    ("[0] Voltar", "muted"),
+            if self.confirm_release_reservation:
+                lines.extend(
+                    (
+                        ("Liberar sua reserva desta avaliação? [S/N]", "warning"),
+                        ("S: confirmar · N: cancelar", "selected"),
+                    )
                 )
-            )
+            else:
+                lines.extend(
+                    (
+                        ("[1] Abrir sala de áudio e vídeo", "selected"),
+                        ("[2] Avaliar submissão", "selected"),
+                        ("[3] Liberar minha reserva", "selected"),
+                        ("[0] Voltar", "muted"),
+                    )
+                )
         elif item.get("category", item.get("type")) == "chat_message":
             lines.append(("Enter: abrir conversa", "selected"))
         elif item.get("category", item.get("type")) == "response_received":
@@ -1121,6 +1130,7 @@ class AccountDashboardTui:
                 if key in (curses.KEY_F2, "\x1b", 27):
                     self.notification_popup = False
                     self.popup_request_id = None
+                    self.confirm_release_reservation = False
                 elif not self.notifications:
                     self.notification_popup = False
                 else:
@@ -1146,19 +1156,26 @@ class AccountDashboardTui:
                                     submission_id=submission_id,
                                 )
                     elif notification_type == "evaluation_accepted":
-                        if key in ("1",):
+                        if self.confirm_release_reservation:
+                            if isinstance(key, str) and key.casefold() == "s":
+                                return self.result(
+                                    "release_reservation", slot_id=item["slot_id"]
+                                )
+                            if isinstance(key, str) and key.casefold() == "n":
+                                self.confirm_release_reservation = False
+                            elif key in ("0", "\n", "\r", curses.KEY_ENTER):
+                                self.confirm_release_reservation = False
+                        elif key in ("1",):
                             return self.result(
                                 "open_room", slot_id=item["slot_id"]
                             )
-                        if key in ("2",):
+                        elif key in ("2",):
                             return self.result(
                                 "review_submission", slot_id=item["slot_id"]
                             )
-                        if key in ("3",):
-                            return self.result(
-                                "release_reservation", slot_id=item["slot_id"]
-                            )
-                        if key in ("0", "\n", "\r", curses.KEY_ENTER):
+                        elif key in ("3",):
+                            self.confirm_release_reservation = True
+                        elif key in ("0", "\n", "\r", curses.KEY_ENTER):
                             self.notification_popup = False
                             self.popup_request_id = None
                     elif notification_type == "chat_message":

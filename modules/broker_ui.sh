@@ -827,14 +827,11 @@ print(json.dumps(config, ensure_ascii=False))
       if [[ ! "$slot_id" =~ ^[0-9]+$ ]]; then
         ui_error "A notificação contém um slot inválido."
         ui_pause
-      elif ui_confirm "Liberar sua reserva desta avaliação?"; then
+      else
         response=$(printf '%s\0%s\0' \
           "$CURRENT_SESSION_TOKEN" "$slot_id" |
           broker_request evaluations.cancel token slot_id) || return 1
-        if broker_check_response "$response"; then
-          ui_success "Reserva liberada. O exercício voltou às avaliações abertas."
-          ui_pause
-        else
+        if ! broker_check_response "$response"; then
           ui_pause
         fi
       fi

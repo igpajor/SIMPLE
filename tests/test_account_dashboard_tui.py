@@ -303,11 +303,44 @@ class AccountDashboardTuiTests(unittest.TestCase):
                 "created_at": "today",
             }
         ]
-        _tui, result = self.run_tui(config, [curses.KEY_F2, "3"])
+        _tui, result = self.run_tui(config, [curses.KEY_F2, "3", "s"])
         self.assertEqual(
             {"action": "release_reservation", "slot_id": 10},
             result,
         )
+
+    def test_f2_reservation_release_confirmation_can_be_cancelled(self) -> None:
+        config = dashboard_config()
+        config["notifications"] = [
+            {
+                "type": "evaluation_accepted",
+                "category": "evaluation_accepted",
+                "slot_id": 10,
+                "exercise_code": "EX-01",
+                "created_at": "today",
+            }
+        ]
+        _tui, result = self.run_tui(config, [curses.KEY_F2, "3", "n", "2"])
+        self.assertEqual({"action": "review_submission", "slot_id": 10}, result)
+
+    def test_f2_reservation_release_confirmation_is_shown_in_popup(self) -> None:
+        config = dashboard_config()
+        config["notifications"] = [
+            {
+                "type": "evaluation_accepted",
+                "category": "evaluation_accepted",
+                "slot_id": 10,
+                "exercise_code": "EX-01",
+                "created_at": "today",
+            }
+        ]
+        tui = AccountDashboardTui(config)
+        tui.confirm_release_reservation = True
+        lines = "\n".join(
+            line for line, _ in tui.notification_lines(tui.notifications[0])
+        )
+        self.assertIn("Liberar sua reserva desta avaliação? [S/N]", lines)
+        self.assertIn("S: confirmar · N: cancelar", lines)
 
     def test_pending_evaluation_request_opens_popup_on_entry(self) -> None:
         config = dashboard_config()
