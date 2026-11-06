@@ -162,6 +162,102 @@ class AccountDashboardTuiTests(unittest.TestCase):
         self.assertTrue(any("Aumente a altura" in text for text in rendered))
         self.assertFalse(any("PERFIL" in text for text in rendered))
 
+    def test_f2_opens_and_closes_latest_notification_popup(self) -> None:
+        config = dashboard_config()
+        config["notifications"] = [
+            {
+                "type": "review_received",
+                "category": "review_received",
+                "exercise_code": "EX-01",
+                "created_at": "today",
+                "score": 4,
+                "feedback": "Bom trabalho",
+                "submission_id": 1,
+            }
+        ]
+        tui, result = self.run_tui(config, [curses.KEY_F2, "\x1b", "\x1b"])
+        self.assertEqual("exit", result["action"])
+        self.assertFalse(tui.notification_popup)
+        tui.notification_popup = True
+        screen = Mock()
+        screen.getmaxyx.return_value = (24, 80)
+        with patch.multiple(
+            "modules.account_dashboard_tui.curses",
+            create=True,
+            ACS_ULCORNER=0,
+            ACS_URCORNER=0,
+            ACS_LLCORNER=0,
+            ACS_LRCORNER=0,
+            ACS_HLINE=0,
+            ACS_VLINE=0,
+        ):
+            tui.draw(screen)
+        self.assertTrue(
+            any(
+                "ÚLTIMA NOTIFICAÇÃO" in call.args[2]
+                for call in screen.addnstr.call_args_list
+            )
+        )
+
+    def test_f2_notification_accepts_pending_evaluation_request(self) -> None:
+        config = dashboard_config()
+        config["notifications"] = [
+            {
+                "type": "evaluation_request",
+                "category": "evaluation_request",
+                "request_id": 42,
+                "slot_id": 10,
+                "submission_id": 1,
+                "exercise_code": "EX-01",
+                "created_at": "today",
+            }
+        ]
+        _tui, result = self.run_tui(config, [curses.KEY_F2, "a"])
+        self.assertEqual(
+            {
+                "action": "respond_request",
+                "request_id": 42,
+                "decision": "accept",
+            },
+            result,
+        )
+
+    def test_f2_notification_opens_direct_message(self) -> None:
+        config = dashboard_config()
+        config["notifications"] = [
+            {
+                "type": "chat_message",
+                "category": "chat_message",
+                "channel": "dm:1:2",
+                "room_name": "DM · reviewer",
+                "created_at": "today",
+                "feedback": "Oi!",
+            }
+        ]
+        _tui, result = self.run_tui(config, [curses.KEY_F2, "\n"])
+        self.assertEqual(
+            {
+                "action": "open_notification_room",
+                "channel": "dm:1:2",
+                "room_name": "DM · reviewer",
+            },
+            result,
+        )
+
+    def test_f2_notification_opens_accepted_evaluation_room(self) -> None:
+        config = dashboard_config()
+        config["notifications"] = [
+            {
+                "type": "evaluation_accepted",
+                "category": "evaluation_accepted",
+                "slot_id": 10,
+                "exercise_code": "EX-01",
+                "created_at": "today",
+            }
+        ]
+        _tui, result = self.run_tui(config, [curses.KEY_F2, "\n"])
+        self.assertEqual({"action": "open_room", "slot_id": 10}, result)
+
     def test_selected_submission_is_preserved_and_opened(self) -> None:
         config = dashboard_config()
         config["submissions"] = [submission(1), submission(2)]
@@ -294,7 +390,7 @@ class AccountDashboardTuiTests(unittest.TestCase):
         tui, result = self.run_tui(config, ["p"])
         self.assertEqual({"action": "show_progress"}, result)
         lines = "\n".join(line for line, _ in tui.progress_lines())
-        self.assertIn("Nova avaliação", lines)
+        self.assertIn("Avaliação recebida", lines)
         self.assertIn("HISTÓRICO DE AVALIAÇÕES", lines)
         self.assertIn("RESPONDER A UMA AVALIAÇÃO", lines)
 

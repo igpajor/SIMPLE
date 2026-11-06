@@ -2738,6 +2738,10 @@ class BrokerTests(unittest.TestCase):
             ],
         )
         self.assertEqual("review_received", progress["notifications"][0]["type"])
+        self.assertEqual(
+            submission["submission_id"],
+            progress["notifications"][0]["submission_id"],
+        )
         self.assertEqual("Boa solução.", progress["review_history"][0]["feedback"])
         self.assertEqual(1, self.call(
             {"method": "notifications.count", "token": owner["token"]}

@@ -564,6 +564,7 @@ broker_account_dashboard() {
   local progress_response
   local submissions_response
   local requests_response
+  local chat_response
   local detail_response=""
   local config
   local result
@@ -609,45 +610,107 @@ broker_account_dashboard() {
       broker_request submissions.list token) || return 1
     requests_response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
       broker_request evaluations.requests.list token) || return 1
+    chat_response=$(printf '%s\0' "$CURRENT_SESSION_TOKEN" |
+      broker_request chat.dashboard token) || return 1
     broker_check_response "$profile_response" || return 1
     broker_check_response "$progress_response" || return 1
     broker_check_response "$submissions_response" || return 1
     broker_check_response "$requests_response" || return 1
+    broker_check_response "$chat_response" || return 1
 
-    config=$(printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0' \
+    config=$(printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0' \
       "$profile_response" "$progress_response" "$submissions_response" \
-      "$requests_response" "$detail_response" "$selected_submission_id" \
-      "$open_progress" |
+      "$requests_response" "$chat_response" "$detail_response" \
+      "$selected_submission_id" "$open_progress" |
       python3 -c '
 import json
 import sys
 
 parts = sys.stdin.buffer.read().split(b"\0")
-if len(parts) != 8 or parts[-1]:
+if len(parts) != 9 or parts[-1]:
     raise SystemExit("Respostas inválidas para Meu espaço")
-profile, progress, submissions, requests = (
-    json.loads(part) for part in parts[:4]
+profile, progress, submissions, requests, chat = (
+    json.loads(part) for part in parts[:5]
 )
-detail_response = json.loads(parts[4]) if parts[4] else {}
-selected_id = int(parts[5]) if parts[5] else None
-open_progress = parts[6] == b"1"
+detail_response = json.loads(parts[5]) if parts[5] else {}
+selected_id = int(parts[6]) if parts[6] else None
+open_progress = parts[7] == b"1"
 submission_items = submissions.get("submissions")
 request_items = requests.get("requests")
 counts = progress.get("submissions")
 history = progress.get("points_history")
-notifications = progress.get("notifications")
+stored_notifications = progress.get("notifications")
 review_history = progress.get("review_history")
 pending_review_responses = progress.get("pending_review_responses")
+accepted_requests = progress.get("accepted_evaluation_requests")
+chat_rooms = chat.get("unread_rooms")
 if (
     not isinstance(submission_items, list)
     or not isinstance(request_items, list)
     or not isinstance(counts, dict)
     or not isinstance(history, list)
-    or not isinstance(notifications, list)
+    or not isinstance(stored_notifications, list)
     or not isinstance(review_history, list)
     or not isinstance(pending_review_responses, list)
+    or not isinstance(accepted_requests, list)
+    or not isinstance(chat_rooms, list)
 ):
     raise SystemExit("Dados incompletos para Meu espaço")
+notifications = [
+    {**item, "category": item.get("type")}
+    for item in stored_notifications
+]
+submission_by_slot = {
+    str(item.get("slot_id")): item
+    for item in submission_items
+    if item.get("slot_id") is not None
+}
+for request in request_items:
+    submission = submission_by_slot.get(str(request.get("slot_id")), {})
+    if request.get("status") == "accepted":
+        notifications.append({
+            **request,
+            "type": "evaluation_accepted",
+            "category": "evaluation_accepted",
+            "created_at": request.get("responded_at", ""),
+            "other_user": request.get("reviewer", ""),
+        })
+        continue
+    if request.get("status") != "pending":
+        continue
+    notifications.append({
+        **request,
+        "type": "evaluation_request",
+        "category": "evaluation_request",
+        "created_at": request.get("requested_at", ""),
+        "submission_id": submission.get("id"),
+        "other_user": request.get("reviewer", ""),
+    })
+for request in accepted_requests:
+    notifications.append({
+        **request,
+        "type": "evaluation_accepted",
+        "category": "evaluation_accepted",
+        "created_at": request.get("accepted_at", ""),
+        "other_user": request.get("submitter", ""),
+    })
+for room in chat_rooms:
+    preview = room.get("preview") or {}
+    notifications.append({
+        "type": "chat_message",
+        "category": "chat_message",
+        "channel": room.get("channel", ""),
+        "room_name": room.get("name", ""),
+        "unread_count": room.get("unread_count", 0),
+        "mention_count": room.get("mention_count", 0),
+        "other_user": preview.get("username", ""),
+        "feedback": preview.get("body", ""),
+        "created_at": preview.get("created_at", ""),
+    })
+notifications.sort(
+    key=lambda item: (str(item.get("created_at", "")), str(item.get("type", ""))),
+    reverse=True,
+)
 detail = detail_response.get("submission")
 if detail is not None and not isinstance(detail, dict):
     raise SystemExit("Detalhe de entrega inválido")
@@ -705,6 +768,25 @@ print(json.dumps(config, ensure_ascii=False))
       ;;
     show_progress)
       open_progress=1
+      ;;
+    open_notification_room)
+      local notification_channel
+      local notification_room_name
+      notification_channel=$(broker_response_field "$result" channel) || return 1
+      notification_room_name=$(broker_response_field "$result" room_name) || return 1
+      if [[ "$notification_channel" =~ ^(global|help|exercise:[A-Za-z0-9._-]+|dm:[0-9]+:[0-9]+)$ ]]; then
+        # shellcheck disable=SC2034 # Consumed by chat_menu.
+        CHAT_INITIAL_CHANNEL="$notification_channel"
+        # shellcheck disable=SC2034
+        CHAT_INITIAL_ROOM_NAME="$notification_room_name"
+        if ! chat_menu; then
+          ui_error "Não foi possível abrir a conversa da notificação."
+          ui_pause
+        fi
+      else
+        ui_error "A notificação contém uma sala inválida."
+        ui_pause
+      fi
       ;;
     respond_review)
       local review_id

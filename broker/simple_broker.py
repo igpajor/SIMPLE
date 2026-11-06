@@ -2380,7 +2380,8 @@ class Broker:
                     SELECT request.id AS request_id, slot.id AS slot_id,
                            evaluator.username AS reviewer,
                            e.code AS exercise_code, e.name AS exercise_name,
-                           request.requested_at, request.status
+                           request.requested_at, request.responded_at,
+                           request.status
                     FROM evaluation_requests request
                     JOIN evaluation_slots slot ON slot.id = request.slot_id
                     JOIN submissions s ON s.id = slot.submission_id
@@ -3336,7 +3337,8 @@ class Broker:
     ) -> list[dict[str, Any]]:
         rows = connection.execute(
             """
-            SELECT n.type, e.code AS exercise_code, n.created_at,
+            SELECT n.type, n.review_id, s.id AS submission_id, slot.id AS slot_id,
+                   e.code AS exercise_code, n.created_at,
                    CASE WHEN n.type = 'review_received' THEN r.score
                         ELSE r.recipient_score END AS score,
                    CASE WHEN n.type = 'review_received' THEN r.feedback

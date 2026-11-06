@@ -47,7 +47,8 @@ Unix.
 5. A pessoa avaliada pode responder ao feedback e avaliar o avaliador.
 6. No modo Broker/Proxy, consulte **Meu espaço** para acompanhar o perfil,
    entregas, avaliações, respostas, notificações e pontos. Em um terminal Curses,
-   use P para notificações e avaliações, ou F3 para o histórico de pontos.
+   use F2 para abrir a notificação mais recente, P para notificações e
+   avaliações, ou F3 para o histórico de pontos.
 
 ## Recursos
 

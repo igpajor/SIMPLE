@@ -114,6 +114,7 @@ class AccountDashboardTui:
         self.form_values = [self.display_name, self.github_username, self.bio]
         self.form_editing = False
         self.form_buffer = ""
+        self.notification_popup = False
         self.width = 80
         self.height = 24
         self.colors: dict[str, int] = {}
@@ -372,14 +373,7 @@ class AccountDashboardTui:
             return
         shown = visible if visible == 1 else min(len(self.notifications), visible - 1)
         for index, item in enumerate(self.notifications[:shown]):
-            kind = (
-                "Avaliação recebida"
-                if item.get("type") == "review_received"
-                else "Resposta recebida"
-            )
-            label = f"{item.get('exercise_code', '')} · {kind}"
-            if item.get("other_user"):
-                label += f" · {item['other_user']}"
+            label = self.notification_summary(item)
             self.draw_text(
                 screen,
                 top + 1 + index,
@@ -394,10 +388,97 @@ class AccountDashboardTui:
                 screen,
                 top + height - 2,
                 left + 1,
-                f"+{remaining} · P para ver todas",
+                f"+{remaining} · F2 última",
                 "muted",
                 width - 2,
             )
+
+    @staticmethod
+    def notification_summary(item: dict[str, Any]) -> str:
+        notification_type = item.get("category", item.get("type", ""))
+        if notification_type == "review_received":
+            label = f"{item.get('exercise_code', '')} · Avaliação recebida"
+        elif notification_type == "response_received":
+            label = f"{item.get('exercise_code', '')} · Resposta de avaliação"
+        elif notification_type == "evaluation_request":
+            label = f"{item.get('exercise_code', '')} · Pedido de avaliação"
+        elif notification_type == "evaluation_accepted":
+            label = f"{item.get('exercise_code', '')} · Pedido aceito"
+        elif notification_type == "chat_message":
+            room = item.get("room_name", "Chat")
+            label = f"{room} · Mensagem nova"
+        else:
+            label = f"{item.get('exercise_code', '')} · Atualização"
+        if item.get("other_user"):
+            label += f" · {item['other_user']}"
+        return label
+
+    def notification_lines(self, item: dict[str, Any]) -> list[tuple[str, str]]:
+        lines: list[tuple[str, str]] = [
+            (self.notification_summary(item), "title"),
+            (f"Recebida em: {item.get('created_at') or '—'}", "muted"),
+        ]
+        if item.get("category", item.get("type")) == "chat_message":
+            if item.get("feedback"):
+                lines.append((f"Mensagem: {item['feedback']}", "text"))
+            if item.get("mention_count"):
+                lines.append((f"Menções: {item['mention_count']}", "warning"))
+            if item.get("unread_count"):
+                lines.append((f"Mensagens não lidas: {item['unread_count']}", "muted"))
+        else:
+            if item.get("score") not in (None, ""):
+                lines.append((f"Nota: {item['score']}/5", "selected"))
+            if item.get("feedback"):
+                lines.append((f"Detalhes: {item['feedback']}", "text"))
+        if item.get("category", item.get("type")) == "evaluation_request":
+            lines.append(("A: aceitar · D: recusar · Enter: abrir entrega", "selected"))
+        elif item.get("category", item.get("type")) == "evaluation_accepted":
+            lines.append(("M/Enter: abrir DM e sala de avaliação", "selected"))
+        elif item.get("category", item.get("type")) == "chat_message":
+            lines.append(("Enter: abrir conversa", "selected"))
+        elif item.get("category", item.get("type")) == "response_received":
+            lines.append(("P/Enter: abrir histórico de avaliações", "selected"))
+        else:
+            lines.append(("Enter: abrir entrega", "selected"))
+        return lines
+
+    def draw_notification_popup(self, screen: Any) -> None:
+        width = min(66, self.width - 4)
+        height = min(12, self.height - 4)
+        left = max(0, (self.width - width) // 2)
+        top = max(1, (self.height - height) // 2)
+        self.draw_frame(
+            screen, top, left, width, height, "ÚLTIMA NOTIFICAÇÃO · F2"
+        )
+        if not self.notifications:
+            self.draw_text(
+                screen,
+                top + 2,
+                left + 2,
+                "Você não tem notificações pendentes.",
+                "muted",
+                width - 4,
+            )
+        else:
+            item = self.notifications[0]
+            content = [
+                (wrapped, color)
+                for text, color in self.notification_lines(item)
+                for wrapped in wrap_text(text, width - 5)
+            ]
+            visible = height - 3
+            for index, (line, color) in enumerate(content[:visible]):
+                self.draw_text(
+                    screen, top + 1 + index, left + 2, line, color, width - 4
+                )
+        self.draw_text(
+            screen,
+            top + height - 2,
+            left + 2,
+            "F2/Esc fechar",
+            "muted",
+            width - 4,
+        )
 
     def draw_dashboard(self, screen: Any) -> None:
         panel_width = min(120, self.width - 2)
@@ -462,8 +543,8 @@ class AccountDashboardTui:
                 body_height - submissions_height,
             )
         footer = (
-            "↑/↓ entregas · Enter detalhes · E editar · P progresso · "
-            "F3 pontos · Esc voltar"
+            "↑/↓ entregas · Enter detalhes · E editar · F2 última notif. · "
+            "P progresso · F3 pontos · Esc voltar"
         )
         self.draw_text(
             screen,
@@ -640,21 +721,7 @@ class AccountDashboardTui:
         if not self.notifications:
             lines.append(("Nenhuma notificação nova.", "muted"))
         for item in self.notifications:
-            notification_type = (
-                "Nova avaliação"
-                if item.get("type") == "review_received"
-                else "Resposta de avaliação"
-            )
-            lines.append(
-                (
-                    f"{item.get('exercise_code', '')} · {notification_type} · "
-                    f"{item.get('other_user', '')} · nota {item.get('score', '')}/5 "
-                    f"({item.get('created_at', '')})",
-                    "text",
-                )
-            )
-            if item.get("feedback"):
-                lines.append((f"Feedback: {item['feedback']}", "muted"))
+            lines.extend(self.notification_lines(item))
         lines.append(("HISTÓRICO DE AVALIAÇÕES", "title"))
         if not self.review_history:
             lines.append(("Nenhuma avaliação registrada.", "muted"))
@@ -742,6 +809,8 @@ class AccountDashboardTui:
             self.draw_points(screen)
         elif self.screen == "progress":
             self.draw_progress(screen)
+        if self.notification_popup and self.screen == "dashboard":
+            self.draw_notification_popup(screen)
         screen.refresh()
 
     def result(self, action: str, **values: Any) -> dict[str, Any]:
@@ -757,6 +826,62 @@ class AccountDashboardTui:
             self.draw(screen)
             key = screen.get_wch()
             if key == curses.KEY_RESIZE:
+                continue
+            if self.notification_popup and self.screen == "dashboard":
+                if key in (curses.KEY_F2, "\x1b", 27):
+                    self.notification_popup = False
+                elif not self.notifications:
+                    self.notification_popup = False
+                else:
+                    item = self.notifications[0]
+                    notification_type = item.get("category", item.get("type"))
+                    if notification_type == "evaluation_request":
+                        if isinstance(key, str) and key.casefold() in {"a", "d"}:
+                            return self.result(
+                                "respond_request",
+                                request_id=item["request_id"],
+                                decision=(
+                                    "accept" if key.casefold() == "a" else "decline"
+                                ),
+                            )
+                        if key in ("\n", "\r", curses.KEY_ENTER):
+                            submission_id = item.get("submission_id")
+                            if submission_id is not None:
+                                return self.result(
+                                    "open_submission",
+                                    submission_id=submission_id,
+                                )
+                    elif notification_type == "evaluation_accepted":
+                        if key in ("\n", "\r", curses.KEY_ENTER) or (
+                            isinstance(key, str) and key.casefold() == "m"
+                        ):
+                            return self.result(
+                                "open_room", slot_id=item["slot_id"]
+                            )
+                    elif notification_type == "chat_message":
+                        if key in ("\n", "\r", curses.KEY_ENTER):
+                            return self.result(
+                                "open_notification_room",
+                                channel=item["channel"],
+                                room_name=item["room_name"],
+                            )
+                    elif notification_type == "response_received":
+                        if (
+                            key in ("\n", "\r", curses.KEY_ENTER)
+                            or isinstance(key, str)
+                            and key.casefold() == "p"
+                        ):
+                            return self.result("show_progress")
+                    elif notification_type == "review_received":
+                        if key in ("\n", "\r", curses.KEY_ENTER):
+                            submission_id = item.get("submission_id")
+                            if submission_id is not None:
+                                return self.result(
+                                    "open_submission",
+                                    submission_id=submission_id,
+                                )
+                    if key in ("\n", "\r", curses.KEY_ENTER):
+                        self.notification_popup = False
                 continue
             if self.screen == "dashboard":
                 if key in (curses.KEY_UP, curses.KEY_LEFT):
@@ -778,6 +903,8 @@ class AccountDashboardTui:
                     return self.result("show_progress")
                 elif key == curses.KEY_F3:
                     self.screen = "points"
+                elif key == curses.KEY_F2:
+                    self.notification_popup = True
                 elif key in ("\x1b", 27):
                     return self.result("exit")
             elif self.screen == "detail":
