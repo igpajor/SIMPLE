@@ -2484,6 +2484,12 @@ class BrokerTests(unittest.TestCase):
         )
         self.assertTrue(accepted["ok"], accepted)
         self.assertEqual("pending", accepted["status"])
+        self.assertEqual(
+            [],
+            self.call(
+                {"method": "evaluations.slots.list", "token": reviewer["token"]}
+            )["slots"],
+        )
         self.assertFalse(
             self.call(
                 {
@@ -2530,6 +2536,13 @@ class BrokerTests(unittest.TestCase):
         )
         self.assertTrue(owner_accept["ok"], owner_accept)
         self.assertEqual("accepted", owner_accept["status"])
+        accepted_progress = self.call(
+            {"method": "progress.get", "token": reviewer["token"]}
+        )
+        self.assertEqual(
+            accepted["request_id"],
+            accepted_progress["accepted_evaluation_requests"][0]["request_id"],
+        )
         self.assertEqual(
             "accepted",
             self.call(
@@ -3385,23 +3398,11 @@ class BrokerTests(unittest.TestCase):
         self.assertIn("AVALIAÇÃO", accepted.stdout)
         self.assertIn("Aguardando avaliação", accepted.stdout)
 
-        reviewer_room = subprocess.run(
-            ["bash", str(ROOT_DIR / "simple.sh")],
-            input=(
-                "2\ntui-reviewer\nsecure-pass-123\n"
-                f"2\n{slot_id}\n1\n\n0\n0\n"
-            ),
-            text=True,
-            capture_output=True,
-            cwd=ROOT_DIR,
-            env=environment,
-            check=False,
-            timeout=15,
-        )
-        self.assertEqual(0, reviewer_room.returncode, reviewer_room.stderr)
-        self.assertIn(
-            accepted_room.group(0),
-            reviewer_room.stdout,
+        self.assertEqual(
+            [],
+            self.call(
+                {"method": "evaluations.slots.list", "token": reviewer["token"]}
+            )["slots"],
         )
 
         reviewer_progress = subprocess.run(
@@ -3422,21 +3423,17 @@ class BrokerTests(unittest.TestCase):
         self.assertIn("Pedido #", reviewer_progress.stdout)
         self.assertIn("Avaliações abertas", reviewer_progress.stdout)
 
-        reviewed = subprocess.run(
-            ["bash", str(ROOT_DIR / "simple.sh")],
-            input=(
-                "2\ntui-reviewer\nsecure-pass-123\n"
-                f"2\n{slot_id}\n2\n5\nBoa solução.\n.fim\ns\n0\n0\n"
-            ),
-            text=True,
-            capture_output=True,
-            cwd=ROOT_DIR,
-            env=environment,
-            check=False,
-            timeout=15,
+        reviewed = self.call(
+            {
+                "method": "evaluations.review.submit",
+                "token": reviewer["token"],
+                "slot_id": str(slot_id),
+                "score": "5",
+                "feedback": "Boa solução.",
+            }
         )
-        self.assertEqual(0, reviewed.returncode, reviewed.stderr)
-        self.assertIn("Avaliação registrada: aprovado.", reviewed.stdout)
+        self.assertTrue(reviewed["ok"], reviewed)
+        self.assertEqual("approved", reviewed["status"])
 
         owner_submission_detail = subprocess.run(
             ["bash", str(ROOT_DIR / "simple.sh")],

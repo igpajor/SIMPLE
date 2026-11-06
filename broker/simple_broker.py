@@ -1631,7 +1631,7 @@ class Broker:
                     FROM evaluation_slots slot
                     JOIN submissions s ON s.id = slot.submission_id
                     WHERE slot.status = 'open' AND s.user_id != ?
-                      AND (slot.accepted_by IS NULL OR slot.accepted_by = ?)
+                      AND slot.accepted_by IS NULL
                       AND NOT EXISTS (
                           SELECT 1 FROM evaluation_requests declined
                           WHERE declined.slot_id = slot.id
@@ -1639,7 +1639,7 @@ class Broker:
                             AND declined.status = 'declined'
                       )
                     """,
-                    (user_id, user_id, user_id),
+                    (user_id, user_id),
                 ).fetchone()[0]
                 notifications = connection.execute(
                     """
@@ -2351,7 +2351,7 @@ class Broker:
                            e.name AS exercise_name, slot.created_at,
                            COALESCE(request.id, '') AS request_id,
                            COALESCE(request.status, '') AS request_status,
-                           CASE WHEN slot.accepted_by = ? THEN 1 ELSE 0 END AS accepted_by_me
+                           0 AS accepted_by_me
                     FROM evaluation_slots slot
                     JOIN submissions s ON s.id = slot.submission_id
                     JOIN users u ON u.id = s.user_id
@@ -2361,7 +2361,7 @@ class Broker:
                      AND request.reviewer_id = ?
                      AND request.status IN ('pending', 'accepted')
                     WHERE slot.status = 'open' AND s.user_id != ?
-                      AND (slot.accepted_by IS NULL OR slot.accepted_by = ?)
+                      AND slot.accepted_by IS NULL
                       AND NOT EXISTS (
                           SELECT 1 FROM evaluation_requests declined
                           WHERE declined.slot_id = slot.id
@@ -2370,7 +2370,7 @@ class Broker:
                       )
                     ORDER BY slot.created_at, slot.id
                     """,
-                    (user_id, user_id, user_id, user_id, user_id),
+                    (user_id, user_id, user_id),
                 ).fetchall()
                 return {"ok": True, "slots": [dict(row) for row in rows]}
 

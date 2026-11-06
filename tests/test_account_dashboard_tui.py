@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import curses
 import json
+import sys
 import unittest
 from unittest.mock import Mock, patch
 
@@ -266,8 +267,47 @@ class AccountDashboardTuiTests(unittest.TestCase):
                 "created_at": "today",
             }
         ]
-        _tui, result = self.run_tui(config, [curses.KEY_F2, "\n"])
+        _tui, result = self.run_tui(config, [curses.KEY_F2, "1"])
         self.assertEqual({"action": "open_room", "slot_id": 10}, result)
+
+    def test_f2_accepted_evaluation_can_open_review_submission(self) -> None:
+        config = dashboard_config()
+        config["notifications"] = [
+            {
+                "type": "evaluation_accepted",
+                "category": "evaluation_accepted",
+                "slot_id": 10,
+                "exercise_code": "EX-01",
+                "created_at": "today",
+            }
+        ]
+        tui = AccountDashboardTui(config)
+        lines = "\n".join(line for line, _ in tui.notification_lines(
+            tui.notifications[0]
+        ))
+        self.assertIn("[1] Abrir sala de áudio e vídeo", lines)
+        self.assertIn("[2] Avaliar submissão", lines)
+        self.assertIn("[3] Liberar minha reserva", lines)
+        self.assertIn("[0] Voltar", lines)
+        _tui, result = self.run_tui(config, [curses.KEY_F2, "2"])
+        self.assertEqual({"action": "review_submission", "slot_id": 10}, result)
+
+    def test_f2_accepted_evaluation_can_release_reservation(self) -> None:
+        config = dashboard_config()
+        config["notifications"] = [
+            {
+                "type": "evaluation_accepted",
+                "category": "evaluation_accepted",
+                "slot_id": 10,
+                "exercise_code": "EX-01",
+                "created_at": "today",
+            }
+        ]
+        _tui, result = self.run_tui(config, [curses.KEY_F2, "3"])
+        self.assertEqual(
+            {"action": "release_reservation", "slot_id": 10},
+            result,
+        )
 
     def test_pending_evaluation_request_opens_popup_on_entry(self) -> None:
         config = dashboard_config()
@@ -390,6 +430,35 @@ class AccountDashboardTuiTests(unittest.TestCase):
             },
             result,
         )
+
+    def test_broker_poll_uses_connection_config_from_dashboard_payload(self) -> None:
+        config = dashboard_config()
+        config.update(
+            {
+                "broker_socket": "/run/simple/broker.sock",
+                "broker_client": "/opt/simple/core/broker_client.py",
+                "broker_token": "session-token",
+            }
+        )
+        tui = AccountDashboardTui(config)
+        completed = Mock(returncode=0, stdout=b'{"ok": true}\n', stderr=b"")
+        with patch(
+            "modules.account_dashboard_tui.subprocess.run",
+            return_value=completed,
+        ) as run:
+            response = tui.broker_request("progress.get")
+        self.assertEqual({"ok": True}, response)
+        self.assertEqual(
+            [
+                sys.executable,
+                "/opt/simple/core/broker_client.py",
+                "/run/simple/broker.sock",
+                "progress.get",
+                "token",
+            ],
+            run.call_args.args[0],
+        )
+        self.assertEqual(b"session-token\0", run.call_args.kwargs["input"])
 
     def test_notification_aggregation_includes_directed_chat_and_evaluations(self) -> None:
         notifications = build_notifications(

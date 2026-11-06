@@ -158,6 +158,9 @@ def build_notifications(
 class AccountDashboardTui:
     def __init__(self, config: dict[str, Any]) -> None:
         self.config = config
+        self.broker_socket = safe_text(config.get("broker_socket", ""))
+        self.broker_client = safe_text(config.get("broker_client", ""))
+        self.broker_token = safe_text(config.get("broker_token", ""))
         self.username = safe_text(config["username"])
         self.display_name = safe_text(config.get("display_name", ""))
         self.github_username = safe_text(config.get("github_username", ""))
@@ -580,7 +583,14 @@ class AccountDashboardTui:
         if item.get("category", item.get("type")) == "evaluation_request":
             lines.append(("A: aceitar · D: recusar · Enter: abrir entrega", "selected"))
         elif item.get("category", item.get("type")) == "evaluation_accepted":
-            lines.append(("M/Enter: abrir DM e sala de avaliação", "selected"))
+            lines.extend(
+                (
+                    ("[1] Abrir sala de áudio e vídeo", "selected"),
+                    ("[2] Avaliar submissão", "selected"),
+                    ("[3] Liberar minha reserva", "selected"),
+                    ("[0] Voltar", "muted"),
+                )
+            )
         elif item.get("category", item.get("type")) == "chat_message":
             lines.append(("Enter: abrir conversa", "selected"))
         elif item.get("category", item.get("type")) == "response_received":
@@ -1008,14 +1018,20 @@ class AccountDashboardTui:
         return {"action": action, **values}
 
     def broker_request(self, method: str) -> dict[str, Any]:
-        socket_path = os.environ.get("ACCOUNT_DASHBOARD_BROKER_SOCKET", "")
-        client_path = os.environ.get("ACCOUNT_DASHBOARD_BROKER_CLIENT", "")
-        token = os.environ.get("ACCOUNT_DASHBOARD_TOKEN", "")
-        if not socket_path or not client_path or not token:
-            raise RuntimeError("Configuração de atualização do Broker ausente.")
+        if not self.broker_socket or not self.broker_client or not self.broker_token:
+            raise RuntimeError(
+                "Configuração de atualização do Broker ausente "
+                "(socket, cliente ou sessão)."
+            )
         completed = subprocess.run(
-            [sys.executable, client_path, socket_path, method, "token"],
-            input=f"{token}\0".encode("utf-8"),
+            [
+                sys.executable,
+                self.broker_client,
+                self.broker_socket,
+                method,
+                "token",
+            ],
+            input=f"{self.broker_token}\0".encode("utf-8"),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=8,
@@ -1130,12 +1146,21 @@ class AccountDashboardTui:
                                     submission_id=submission_id,
                                 )
                     elif notification_type == "evaluation_accepted":
-                        if key in ("\n", "\r", curses.KEY_ENTER) or (
-                            isinstance(key, str) and key.casefold() == "m"
-                        ):
+                        if key in ("1",):
                             return self.result(
                                 "open_room", slot_id=item["slot_id"]
                             )
+                        if key in ("2",):
+                            return self.result(
+                                "review_submission", slot_id=item["slot_id"]
+                            )
+                        if key in ("3",):
+                            return self.result(
+                                "release_reservation", slot_id=item["slot_id"]
+                            )
+                        if key in ("0", "\n", "\r", curses.KEY_ENTER):
+                            self.notification_popup = False
+                            self.popup_request_id = None
                     elif notification_type == "chat_message":
                         if key in ("\n", "\r", curses.KEY_ENTER):
                             return self.result(

@@ -229,7 +229,7 @@ broker_progress_menu() {
       name=$(db_hex_decode "$name") || return 1
       accepted_at=$(db_hex_decode "$accepted_at") || return 1
       ui_wrap_text \
-        "Pedido #$slot_id aceito por $submitter: $code — $name ($accepted_at). Acesse Avaliações abertas." \
+        "Pedido #$slot_id aceito por $submitter: $code — $name ($accepted_at). Use a notificação em Meu espaço (F2)." \
         "$(ui_width)" 2
     done <<<"$accepted_request_rows"
   fi
@@ -639,7 +639,7 @@ import json
 import sys
 
 parts = sys.stdin.buffer.read().split(b"\0")
-if len(parts) != 9 or parts[-1]:
+if len(parts) != 9 or parts[-1] or len(sys.argv) != 4:
     raise SystemExit("Respostas inválidas para Meu espaço")
 profile, progress, submissions, requests, chat = (
     json.loads(part) for part in parts[:5]
@@ -749,17 +749,18 @@ config = {
     "selected_submission_id": detail.get("id") if detail else selected_id,
     "detail": detail,
     "open_progress": open_progress,
+    "broker_socket": sys.argv[1],
+    "broker_client": sys.argv[2],
+    "broker_token": sys.argv[3],
 }
 print(json.dumps(config, ensure_ascii=False))
-') || return 1
+' "$dashboard_broker_socket" "$dashboard_broker_client" \
+        "$CURRENT_SESSION_TOKEN") || return 1
 
     local tui_path
     tui_path="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/account_dashboard_tui.py"
     exec 4>&1
     if result=$(
-      ACCOUNT_DASHBOARD_BROKER_SOCKET="$dashboard_broker_socket" \
-      ACCOUNT_DASHBOARD_BROKER_CLIENT="$dashboard_broker_client" \
-      ACCOUNT_DASHBOARD_TOKEN="$CURRENT_SESSION_TOKEN" \
       ACCOUNT_DASHBOARD_CONFIG="$config" \
         ACCOUNT_DASHBOARD_RESULT_FD=3 \
         python3 "$tui_path" 3>&1 1>&4
@@ -809,6 +810,47 @@ print(json.dumps(config, ensure_ascii=False))
         ui_error "A notificação contém uma sala inválida."
         ui_pause
       fi
+      ;;
+    review_submission)
+      slot_id=$(broker_response_field "$result" slot_id) || return 1
+      if [[ ! "$slot_id" =~ ^[0-9]+$ ]]; then
+        ui_error "A notificação contém um slot inválido."
+        ui_pause
+      elif ! broker_evaluation_review_prompt "$slot_id"; then
+        ui_warn "Não foi possível abrir a avaliação."
+        ui_pause
+      fi
+      detail_response=""
+      ;;
+    release_reservation)
+      slot_id=$(broker_response_field "$result" slot_id) || return 1
+      if [[ ! "$slot_id" =~ ^[0-9]+$ ]]; then
+        ui_error "A notificação contém um slot inválido."
+        ui_pause
+      elif ui_confirm "Liberar sua reserva desta avaliação?"; then
+        response=$(printf '%s\0%s\0' \
+          "$CURRENT_SESSION_TOKEN" "$slot_id" |
+          broker_request evaluations.cancel token slot_id) || return 1
+        if broker_check_response "$response"; then
+          ui_success "Reserva liberada. O exercício voltou às avaliações abertas."
+          ui_pause
+        else
+          ui_pause
+        fi
+      fi
+      detail_response=""
+      ;;
+    open_room)
+      slot_id=$(broker_response_field "$result" slot_id) || return 1
+      if [[ "$slot_id" =~ ^[0-9]+$ ]]; then
+        if ! evaluation_open_live_room "$slot_id"; then
+          ui_pause
+        fi
+      else
+        ui_error "A tela retornou uma sala inválida."
+        ui_pause
+      fi
+      detail_response=""
       ;;
     respond_review)
       local review_id
@@ -881,18 +923,6 @@ print(json.dumps(config, ensure_ascii=False))
       fi
       detail_response=""
       ;;
-    open_room)
-      slot_id=$(broker_response_field "$result" slot_id) || return 1
-      if [[ "$slot_id" =~ ^[0-9]+$ ]]; then
-        if ! evaluation_open_live_room "$slot_id"; then
-          ui_pause
-        fi
-      else
-        ui_error "A tela retornou uma sala inválida."
-        ui_pause
-      fi
-      detail_response=""
-      ;;
     *)
       ui_error "A tela retornou uma ação desconhecida."
       ui_pause
@@ -940,7 +970,7 @@ broker_submissions_menu() {
     ui_screen_begin "MINHAS ENTREGAS"
     ui_empty_state "Você ainda não registrou entregas."
     ui_wrap_text \
-      "Se um pedido seu foi aceito, encontre a entrega em Avaliações abertas." \
+      "Pedidos aceitos para você avaliar aparecem nas notificações de Meu espaço (F2)." \
       "$(ui_width)" 2
     if ! evaluation_handle_pending_requests; then
       ui_warn "Não foi possível carregar ou responder aos pedidos de avaliação."
@@ -978,7 +1008,7 @@ broker_submissions_menu() {
       menu_options+=("$submission_id|$label")
     done
     ui_wrap_text \
-      "Para avaliar uma entrega aceita, acesse Avaliações abertas." \
+      "Para avaliar uma entrega aceita, use a notificação em Meu espaço (F2)." \
       "$(ui_width)" 2
     menu_options+=("0|Voltar")
     ui_menu_choice choice "ABRIR EXERCÍCIO ENTREGUE" "${menu_options[@]}" || return 1
