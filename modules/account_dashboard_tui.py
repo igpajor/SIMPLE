@@ -17,6 +17,36 @@ STATUS_LABELS = {
     "rejected": "Reprovada",
 }
 
+BLOCK_GLYPHS = {
+    "A": ("01110", "10001", "11111", "10001", "10001"),
+    "B": ("11110", "10001", "11110", "10001", "11110"),
+    "C": ("01111", "10000", "10000", "10000", "01111"),
+    "D": ("11110", "10001", "10001", "10001", "11110"),
+    "E": ("11111", "10000", "11110", "10000", "11111"),
+    "F": ("11111", "10000", "11110", "10000", "10000"),
+    "G": ("01111", "10000", "10111", "10001", "01111"),
+    "H": ("10001", "10001", "11111", "10001", "10001"),
+    "I": ("11111", "00100", "00100", "00100", "11111"),
+    "J": ("00111", "00010", "00010", "10010", "01100"),
+    "K": ("10001", "10010", "11100", "10010", "10001"),
+    "L": ("10000", "10000", "10000", "10000", "11111"),
+    "M": ("10001", "11011", "10101", "10001", "10001"),
+    "N": ("10001", "11001", "10101", "10011", "10001"),
+    "O": ("01110", "10001", "10001", "10001", "01110"),
+    "P": ("11110", "10001", "11110", "10000", "10000"),
+    "Q": ("01110", "10001", "10101", "10010", "01101"),
+    "R": ("11110", "10001", "11110", "10010", "10001"),
+    "S": ("01111", "10000", "01110", "00001", "11110"),
+    "T": ("11111", "00100", "00100", "00100", "00100"),
+    "U": ("10001", "10001", "10001", "10001", "01110"),
+    "V": ("10001", "10001", "10001", "01010", "00100"),
+    "W": ("10001", "10001", "10101", "11011", "10001"),
+    "X": ("10001", "01010", "00100", "01010", "10001"),
+    "Y": ("10001", "01010", "00100", "00100", "00100"),
+    "Z": ("11111", "00010", "00100", "01000", "11111"),
+    "?": ("11110", "00010", "00100", "00000", "00100"),
+}
+
 
 def safe_text(value: Any) -> str:
     return "".join(
@@ -174,97 +204,270 @@ class AccountDashboardTui:
         slot_id = str(submission.get("slot_id") or "")
         return [item for item in self.requests if str(item.get("slot_id")) == slot_id]
 
-    def draw_header(self, screen: Any) -> None:
-        panel_width = min(112, self.width - 2)
-        left = max(0, (self.width - panel_width) // 2)
-        initials = "".join(
-            part[0] for part in (self.display_name or self.username).split()[:2]
-        ).upper()
-        self.draw_text(screen, 0, left + 1, f"◉ {initials or '?'}", "title", 8)
+    def profile_initials(self) -> str:
+        words = (self.display_name or self.username).split()
+        if not words:
+            return "?"
+        initials = words[0][0]
+        if len(words) > 1:
+            initials += words[-1][0]
+        normalized = unicodedata.normalize("NFKD", initials).upper()
+        return "".join(
+            char if char in BLOCK_GLYPHS else "?"
+            for char in normalized
+            if not unicodedata.combining(char)
+        ) or "?"
+
+    def draw_avatar(self, screen: Any, top: int, left: int) -> None:
+        avatar_width = 14
+        self.draw_frame(screen, top, left, avatar_width, 7)
+        glyphs = [BLOCK_GLYPHS[char] for char in self.profile_initials()]
+        for row in range(5):
+            pixels = "  ".join(glyph[row] for glyph in glyphs)
+            art = "".join("█" if pixel == "1" else " " for pixel in pixels)
+            self.draw_text(
+                screen,
+                top + 1 + row,
+                left + 1,
+                art,
+                "title",
+                avatar_width - 2,
+            )
+
+    def draw_identity(self, screen: Any, left: int, top: int, width: int) -> None:
+        height = 9
+        self.draw_frame(screen, top, left, width, height, "PERFIL")
+        avatar_left = left + 2
+        self.draw_avatar(screen, top + 1, avatar_left)
+        details_left = avatar_left + 16
+        details_width = width - (details_left - left) - 2
+        if details_width <= 0:
+            return
         self.draw_text(
             screen,
-            0,
-            left + 9,
+            top + 2,
+            details_left,
             self.display_name or self.username,
             "title",
-            panel_width - 12,
+            details_width,
         )
-        row = 1
+        row = top + 3
         if self.github_username:
             self.draw_text(
                 screen,
                 row,
-                left + 2,
+                details_left,
                 f"@{self.github_username}",
-                "muted",
-                panel_width - 4,
+                "selected",
+                details_width,
             )
             row += 1
         if self.bio:
-            bio_lines = wrap_text(self.bio.replace("\n", " "), panel_width - 4)
-            self.draw_text(screen, row, left + 2, bio_lines[0], "text", panel_width - 4)
-            row += 1
-        self.draw_text(
-            screen,
-            row,
-            left + 2,
-            (
-                f"Pontos {self.points}   ·   Aprovadas {self.counts.get('approved', 0)}"
-                f"   ·   Reprovadas {self.counts.get('rejected', 0)}"
-                f"   ·   Em avaliação {self.counts.get('pending', 0)}"
-            ),
-            "selected",
-            panel_width - 4,
-        )
+            bio_lines = wrap_text(self.bio.replace("\n", " "), details_width)
+            available = top + height - 1 - row
+            if len(bio_lines) > available:
+                bio_lines = bio_lines[:available]
+                if bio_lines and len(bio_lines[-1]) >= details_width:
+                    bio_lines[-1] = bio_lines[-1][: max(0, details_width - 1)] + "…"
+            for line in bio_lines:
+                self.draw_text(screen, row, details_left, line, "text", details_width)
+                row += 1
 
-    def draw_dashboard(self, screen: Any) -> None:
-        panel_width = min(112, self.width - 2)
-        left = max(0, (self.width - panel_width) // 2)
-        header_rows = 3 + bool(self.github_username) + bool(self.bio)
-        list_top = header_rows + 1
-        list_height = self.height - list_top - 3
-        if list_height < 3:
-            self.draw_text(screen, 0, 0, "Aumente a altura do terminal.", "warning")
+    def stats_columns(self, width: int) -> int:
+        if width >= 68:
+            return 4
+        if width >= 28:
+            return 2
+        return 1
+
+    def draw_stats(self, screen: Any, left: int, top: int, width: int) -> int:
+        columns = self.stats_columns(width - 2)
+        metrics = [
+            ("Pontos", self.points, "selected"),
+            ("Aprovadas", self.counts.get("approved", 0), "approved"),
+            ("Reprovadas", self.counts.get("rejected", 0), "rejected"),
+            (
+                "Em avaliação" if columns == 4 else "Em aval.",
+                self.counts.get("pending", 0),
+                "pending",
+            ),
+        ]
+        rows = (len(metrics) + columns - 1) // columns
+        height = rows + 2
+        self.draw_frame(screen, top, left, width, height, "RESUMO")
+        cell_width = max(1, (width - 2) // columns)
+        for index, (label, value, color) in enumerate(metrics):
+            row = index // columns
+            column = index % columns
+            self.draw_text(
+                screen,
+                top + 1 + row,
+                left + 1 + column * cell_width,
+                f"{label}: {value}",
+                color,
+                cell_width,
+            )
+        return height
+
+    def draw_submissions_panel(
+        self, screen: Any, left: int, top: int, width: int, height: int
+    ) -> None:
+        self.draw_frame(screen, top, left, width, height, "MINHAS ENTREGAS")
+        visible = height - 2
+        if visible <= 0:
             return
-        self.draw_header(screen)
-        self.draw_frame(
-            screen, list_top, left, panel_width, list_height, "MINHAS ENTREGAS"
-        )
-        visible = list_height - 2
+        if not self.submissions:
+            self.draw_text(
+                screen, top + 1, left + 1, "Nenhuma entrega.", "muted", width - 2
+            )
+            return
+        self.selection = max(0, min(self.selection, len(self.submissions) - 1))
         start = max(0, self.selection - visible // 2)
         start = min(start, max(0, len(self.submissions) - visible))
         end = min(len(self.submissions), start + visible)
-        if not self.submissions:
-            self.draw_text(
-                screen, list_top + 1, left + 2, "Nenhuma entrega registrada.", "muted"
-            )
-        for row, index in enumerate(range(start, end), start=list_top + 1):
+        for row, index in enumerate(range(start, end), start=top + 1):
             item = self.submissions[index]
             label = (
                 f"{item['exercise_code']} · {item['exercise_name']} "
                 f"[{STATUS_LABELS.get(item['status'], item['status'])}]"
             )
             if item.get("score") not in (None, ""):
-                label += f" · nota {item['score']}/5"
+                label += f" · {item['score']}/5"
             self.draw_text(
                 screen,
                 row,
-                left + 2,
+                left + 1,
                 f"› {label}" if index == self.selection else label,
                 "selected"
                 if index == self.selection
                 else item["status"]
                 if item["status"] in STATUS_LABELS
                 else "text",
-                panel_width - 4,
+                width - 2,
+            )
+
+    def draw_notifications_panel(
+        self, screen: Any, left: int, top: int, width: int, height: int
+    ) -> None:
+        self.draw_frame(
+            screen,
+            top,
+            left,
+            width,
+            height,
+            f"NOTIFICAÇÕES · {len(self.notifications)}",
+        )
+        visible = height - 2
+        if visible <= 0:
+            return
+        if not self.notifications:
+            self.draw_text(
+                screen,
+                top + 1,
+                left + 1,
+                "Nenhuma notificação nova.",
+                "muted",
+                width - 2,
+            )
+            return
+        shown = visible if visible == 1 else min(len(self.notifications), visible - 1)
+        for index, item in enumerate(self.notifications[:shown]):
+            kind = (
+                "Avaliação recebida"
+                if item.get("type") == "review_received"
+                else "Resposta recebida"
+            )
+            label = f"{item.get('exercise_code', '')} · {kind}"
+            if item.get("other_user"):
+                label += f" · {item['other_user']}"
+            self.draw_text(
+                screen,
+                top + 1 + index,
+                left + 1,
+                label,
+                "warning",
+                width - 2,
+            )
+        remaining = len(self.notifications) - shown
+        if remaining > 0 and visible > 1:
+            self.draw_text(
+                screen,
+                top + height - 2,
+                left + 1,
+                f"+{remaining} · P para ver todas",
+                "muted",
+                width - 2,
+            )
+
+    def draw_dashboard(self, screen: Any) -> None:
+        panel_width = min(120, self.width - 2)
+        left = max(0, (self.width - panel_width) // 2)
+        panel_height = self.height - 1
+        self.draw_frame(
+            screen,
+            0,
+            left,
+            panel_width,
+            panel_height,
+            "SIMPLE / MEU CADASTRO",
+        )
+        content_left = left + 2
+        content_width = panel_width - 4
+        identity_top = 1
+        stats_top = identity_top + 10
+        columns = self.stats_columns(content_width - 2)
+        stats_height = (4 + columns - 1) // columns + 2
+        body_top = stats_top + stats_height + 1
+        body_height = panel_height - 1 - body_top
+        minimum_body_height = 3 if content_width >= 70 else 6
+        if body_height < minimum_body_height:
+            self.draw_text(
+                screen,
+                self.height - 3,
+                left + 2,
+                "Aumente a altura do terminal.",
+                "warning",
+            )
+            return
+        self.draw_identity(screen, content_left, identity_top, content_width)
+        self.draw_stats(screen, content_left, stats_top, content_width)
+        if content_width >= 70:
+            gap = 1
+            submissions_width = (content_width - gap) // 2
+            notifications_width = content_width - gap - submissions_width
+            self.draw_submissions_panel(
+                screen, content_left, body_top, submissions_width, body_height
+            )
+            self.draw_notifications_panel(
+                screen,
+                content_left + submissions_width + gap,
+                body_top,
+                notifications_width,
+                body_height,
+            )
+        elif body_height >= 6:
+            submissions_height = body_height // 2
+            self.draw_submissions_panel(
+                screen,
+                content_left,
+                body_top,
+                content_width,
+                submissions_height,
+            )
+            self.draw_notifications_panel(
+                screen,
+                content_left,
+                body_top + submissions_height,
+                content_width,
+                body_height - submissions_height,
             )
         footer = (
-            "↑/↓ navegar · Enter detalhes · E editar perfil · "
-            "P progresso · F3 pontos · Esc voltar"
+            "↑/↓ entregas · Enter detalhes · E editar · P progresso · "
+            "F3 pontos · Esc voltar"
         )
         self.draw_text(
             screen,
-            self.height - 2,
+            self.height - 1,
             left + 1,
             footer,
             "muted",

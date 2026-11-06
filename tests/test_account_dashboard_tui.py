@@ -46,6 +46,28 @@ def dashboard_config() -> dict[str, object]:
 
 
 class AccountDashboardTuiTests(unittest.TestCase):
+    def draw_dashboard_at(
+        self,
+        width: int,
+        config: dict[str, object] | None = None,
+        height: int = 24,
+    ) -> tuple[AccountDashboardTui, Mock]:
+        tui = AccountDashboardTui(config or dashboard_config())
+        screen = Mock()
+        screen.getmaxyx.return_value = (height, width)
+        with patch.multiple(
+            "modules.account_dashboard_tui.curses",
+            create=True,
+            ACS_ULCORNER=0,
+            ACS_URCORNER=0,
+            ACS_LLCORNER=0,
+            ACS_LRCORNER=0,
+            ACS_HLINE=0,
+            ACS_VLINE=0,
+        ):
+            tui.draw(screen)
+        return tui, screen
+
     def run_tui(
         self, config: dict[str, object], keys: list[object]
     ) -> tuple[AccountDashboardTui, dict[str, object]]:
@@ -73,6 +95,72 @@ class AccountDashboardTuiTests(unittest.TestCase):
         ):
             result = tui.run(screen)
         return tui, result
+
+    def test_dashboard_draws_block_initials_profile_metrics_and_notifications(
+        self,
+    ) -> None:
+        config = dashboard_config()
+        config["display_name"] = "Ána Silva"
+        config["notifications"] = [
+            {
+                "type": "review_received",
+                "exercise_code": "EX-01",
+                "other_user": "reviewer",
+            }
+        ]
+        tui, screen = self.draw_dashboard_at(110, config)
+        rendered = [call.args[2] for call in screen.addnstr.call_args_list]
+        self.assertEqual("AS", tui.profile_initials())
+        self.assertTrue(any("█" in text for text in rendered))
+        self.assertTrue(any("MEU CADASTRO" in text for text in rendered))
+        self.assertIn("Aprovadas: 1", rendered)
+        self.assertIn("Reprovadas: 0", rendered)
+        self.assertIn("Em avaliação: 1", rendered)
+        self.assertTrue(any("Avaliação recebida" in text for text in rendered))
+
+    def test_dashboard_places_notifications_beside_deliveries_when_wide(self) -> None:
+        _tui, screen = self.draw_dashboard_at(110)
+        panel_titles = {
+            call.args[2].strip(): call.args[0]
+            for call in screen.addnstr.call_args_list
+            if "MINHAS ENTREGAS" in call.args[2] or "NOTIFICAÇÕES" in call.args[2]
+        }
+        self.assertEqual(
+            panel_titles["MINHAS ENTREGAS"],
+            panel_titles["NOTIFICAÇÕES · 0"],
+        )
+
+    def test_dashboard_stacks_notifications_below_deliveries_when_narrow(self) -> None:
+        config = dashboard_config()
+        config["notifications"] = [
+            {
+                "type": "review_received",
+                "exercise_code": "EX-01",
+                "other_user": "reviewer",
+            }
+        ]
+        _tui, screen = self.draw_dashboard_at(50, config)
+        panel_titles = {
+            call.args[2].strip(): call.args[0]
+            for call in screen.addnstr.call_args_list
+            if "MINHAS ENTREGAS" in call.args[2] or "NOTIFICAÇÕES" in call.args[2]
+        }
+        self.assertGreater(
+            panel_titles["NOTIFICAÇÕES · 1"],
+            panel_titles["MINHAS ENTREGAS"],
+        )
+        self.assertTrue(
+            any(
+                "EX-01 · Avaliação recebida" in call.args[2]
+                for call in screen.addnstr.call_args_list
+            )
+        )
+
+    def test_dashboard_requests_more_height_before_drawing_panels(self) -> None:
+        _tui, screen = self.draw_dashboard_at(50, height=18)
+        rendered = [call.args[2] for call in screen.addnstr.call_args_list]
+        self.assertTrue(any("Aumente a altura" in text for text in rendered))
+        self.assertFalse(any("PERFIL" in text for text in rendered))
 
     def test_selected_submission_is_preserved_and_opened(self) -> None:
         config = dashboard_config()
