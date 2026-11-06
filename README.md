@@ -48,7 +48,8 @@ Unix.
 6. No modo Broker/Proxy, consulte **Meu espaço** para acompanhar o perfil,
    entregas, avaliações, respostas, notificações e pontos. Em um terminal Curses,
    use F2 para abrir a notificação mais recente, P para notificações e
-   avaliações, ou F3 para o histórico de pontos.
+   avaliações, ou F3 para o histórico de pontos. Pedidos pendentes aparecem
+   ao entrar em Meu espaço; as notificações são atualizadas automaticamente.
 
 ## Recursos
 

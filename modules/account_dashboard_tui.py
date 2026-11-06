@@ -6,7 +6,9 @@ from __future__ import annotations
 import curses
 import json
 import os
+import subprocess
 import sys
+import time
 import unicodedata
 from typing import Any
 
@@ -73,6 +75,86 @@ def wrap_text(text: str, width: int) -> list[str]:
     return lines
 
 
+def build_notifications(
+    stored: list[dict[str, Any]],
+    submissions: list[dict[str, Any]],
+    requests: list[dict[str, Any]],
+    accepted_requests: list[dict[str, Any]],
+    chat_rooms: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    notifications = [
+        {**item, "category": item.get("type")}
+        for item in stored
+    ]
+    submission_by_slot = {
+        str(item.get("slot_id")): item
+        for item in submissions
+        if item.get("slot_id") is not None
+    }
+    accepted_ids: set[str] = set()
+    for request in requests:
+        submission = submission_by_slot.get(str(request.get("slot_id")), {})
+        if request.get("status") == "accepted":
+            accepted_ids.add(str(request.get("request_id")))
+            notifications.append(
+                {
+                    **request,
+                    "type": "evaluation_accepted",
+                    "category": "evaluation_accepted",
+                    "created_at": request.get("responded_at", ""),
+                    "other_user": request.get("reviewer", ""),
+                }
+            )
+        elif request.get("status") == "pending":
+            notifications.append(
+                {
+                    **request,
+                    "type": "evaluation_request",
+                    "category": "evaluation_request",
+                    "created_at": request.get("requested_at", ""),
+                    "submission_id": submission.get("id"),
+                    "other_user": request.get("reviewer", ""),
+                }
+            )
+    for request in accepted_requests:
+        if str(request.get("request_id")) in accepted_ids:
+            continue
+        notifications.append(
+            {
+                **request,
+                "type": "evaluation_accepted",
+                "category": "evaluation_accepted",
+                "created_at": request.get("accepted_at", ""),
+                "other_user": request.get("submitter", ""),
+            }
+        )
+    for room in chat_rooms:
+        if room.get("kind") != "direct" and not room.get("mention_count"):
+            continue
+        preview = room.get("preview") or {}
+        notifications.append(
+            {
+                "type": "chat_message",
+                "category": "chat_message",
+                "channel": room.get("channel", ""),
+                "room_name": room.get("name", ""),
+                "unread_count": room.get("unread_count", 0),
+                "mention_count": room.get("mention_count", 0),
+                "other_user": preview.get("username", ""),
+                "feedback": preview.get("body", ""),
+                "created_at": preview.get("created_at", ""),
+            }
+        )
+    notifications.sort(
+        key=lambda item: (
+            str(item.get("created_at", "")),
+            str(item.get("type", "")),
+        ),
+        reverse=True,
+    )
+    return notifications
+
+
 class AccountDashboardTui:
     def __init__(self, config: dict[str, Any]) -> None:
         self.config = config
@@ -115,11 +197,24 @@ class AccountDashboardTui:
         self.form_editing = False
         self.form_buffer = ""
         self.notification_popup = False
+        self.popup_request_id: int | None = None
+        self.live_refresh_error = ""
+        self.last_notification_poll = time.monotonic()
         self.width = 80
         self.height = 24
         self.colors: dict[str, int] = {}
         self.popup_colors: dict[str, int] = {}
         self.popup_background = curses.A_REVERSE
+        if any(
+            item.get("category", item.get("type")) == "evaluation_request"
+            for item in self.notifications
+        ):
+            self.notification_popup = True
+            first_request = next(
+                item for item in self.notifications
+                if item.get("category", item.get("type")) == "evaluation_request"
+            )
+            self.popup_request_id = first_request.get("request_id")
 
     def initialize_colors(self) -> None:
         if os.environ.get("NO_COLOR") or not curses.has_colors():
@@ -494,6 +589,22 @@ class AccountDashboardTui:
             lines.append(("Enter: abrir entrega", "selected"))
         return lines
 
+    def active_notification(self) -> dict[str, Any] | None:
+        if self.popup_request_id is not None:
+            pending = next(
+                (
+                    item
+                    for item in self.notifications
+                    if item.get("request_id") == self.popup_request_id
+                    and item.get("category", item.get("type"))
+                    == "evaluation_request"
+                ),
+                None,
+            )
+            if pending is not None:
+                return pending
+        return self.notifications[0] if self.notifications else None
+
     def draw_notification_popup(self, screen: Any) -> None:
         width = min(66, self.width - 4)
         height = min(12, self.height - 4)
@@ -530,7 +641,8 @@ class AccountDashboardTui:
                 opaque=True,
             )
         else:
-            item = self.notifications[0]
+            item = self.active_notification()
+            assert item is not None
             content = [
                 (wrapped, color)
                 for text, color in self.notification_lines(item)
@@ -623,6 +735,8 @@ class AccountDashboardTui:
             "↑/↓ entregas · Enter detalhes · E editar · F2 última notif. · "
             "P progresso · F3 pontos · Esc voltar"
         )
+        if self.live_refresh_error:
+            footer = f"Atualização falhou: {self.live_refresh_error}"
         self.draw_text(
             screen,
             self.height - 1,
@@ -893,24 +1007,111 @@ class AccountDashboardTui:
     def result(self, action: str, **values: Any) -> dict[str, Any]:
         return {"action": action, **values}
 
+    def broker_request(self, method: str) -> dict[str, Any]:
+        socket_path = os.environ.get("ACCOUNT_DASHBOARD_BROKER_SOCKET", "")
+        client_path = os.environ.get("ACCOUNT_DASHBOARD_BROKER_CLIENT", "")
+        token = os.environ.get("ACCOUNT_DASHBOARD_TOKEN", "")
+        if not socket_path or not client_path or not token:
+            raise RuntimeError("Configuração de atualização do Broker ausente.")
+        completed = subprocess.run(
+            [sys.executable, client_path, socket_path, method, "token"],
+            input=f"{token}\0".encode("utf-8"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=8,
+            check=False,
+        )
+        if completed.returncode:
+            error = completed.stderr.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(error or f"Broker recusou {method}.")
+        response = json.loads(completed.stdout.decode("utf-8"))
+        if not isinstance(response, dict) or response.get("ok") is not True:
+            raise RuntimeError(
+                str(response.get("error", "Resposta inválida do Broker."))
+                if isinstance(response, dict)
+                else "Resposta inválida do Broker."
+            )
+        return response
+
+    def refresh_notifications(self) -> None:
+        progress = self.broker_request("progress.get")
+        submissions = self.broker_request("submissions.list").get("submissions")
+        requests = self.broker_request("evaluations.requests.list").get("requests")
+        chat = self.broker_request("chat.dashboard")
+        if not all(
+            isinstance(value, list)
+            for value in (submissions, requests, progress.get("notifications"),
+                          chat.get("unread_rooms"))
+        ):
+            raise RuntimeError("O Broker retornou listas inválidas de notificações.")
+        fresh = build_notifications(
+            progress["notifications"],
+            submissions,
+            requests,
+            progress.get("accepted_evaluation_requests", []),
+            chat["unread_rooms"],
+        )
+        old_request_ids = {
+            item.get("request_id")
+            for item in self.notifications
+            if item.get("category", item.get("type")) == "evaluation_request"
+        }
+        new_requests = [
+            item
+            for item in fresh
+            if item.get("category", item.get("type")) == "evaluation_request"
+            and item.get("request_id") not in old_request_ids
+        ]
+        self.notifications = fresh
+        self.requests = requests
+        self.submissions = submissions
+        if new_requests:
+            self.notification_popup = True
+            self.popup_request_id = new_requests[0].get("request_id")
+        self.live_refresh_error = ""
+
+    def poll_notifications(self) -> None:
+        now = time.monotonic()
+        if now - self.last_notification_poll < 2:
+            return
+        self.last_notification_poll = now
+        try:
+            self.refresh_notifications()
+        except (
+            OSError,
+            RuntimeError,
+            subprocess.TimeoutExpired,
+            json.JSONDecodeError,
+        ) as error:
+            self.live_refresh_error = safe_text(error)
+
     def run(self, screen: Any) -> dict[str, Any]:
         curses.cbreak()
         curses.noecho()
         screen.keypad(True)
-        screen.timeout(-1)
+        screen.timeout(500)
         self.initialize_colors()
         while True:
             self.draw(screen)
-            key = screen.get_wch()
+            try:
+                key = screen.get_wch()
+            except curses.error:
+                self.poll_notifications()
+                continue
+            self.poll_notifications()
             if key == curses.KEY_RESIZE:
                 continue
             if self.notification_popup and self.screen == "dashboard":
                 if key in (curses.KEY_F2, "\x1b", 27):
                     self.notification_popup = False
+                    self.popup_request_id = None
                 elif not self.notifications:
                     self.notification_popup = False
                 else:
-                    item = self.notifications[0]
+                    item = self.active_notification()
+                    if item is None:
+                        self.notification_popup = False
+                        continue
                     notification_type = item.get("category", item.get("type"))
                     if notification_type == "evaluation_request":
                         if isinstance(key, str) and key.casefold() in {"a", "d"}:
@@ -982,6 +1183,7 @@ class AccountDashboardTui:
                     self.screen = "points"
                 elif key == curses.KEY_F2:
                     self.notification_popup = True
+                    self.popup_request_id = None
                 elif key in ("\x1b", 27):
                     return self.result("exit")
             elif self.screen == "detail":

@@ -581,6 +581,18 @@ broker_account_dashboard() {
   local mark_response
   local selected_submission_id=""
   local open_progress=0
+  local dashboard_broker_socket
+  local dashboard_broker_client="$SCRIPT_DIR/core/broker_client.py"
+
+  if [[ "${SIMPLE_MODE:-local}" == "proxy" ]]; then
+    dashboard_broker_socket="${PROXY_SOCKET:-}"
+  else
+    dashboard_broker_socket="${BROKER_SOCKET:-}"
+  fi
+  if [[ -z "$dashboard_broker_socket" ]]; then
+    ui_error "Socket do Broker/Proxy não configurado para atualizar notificações."
+    return 1
+  fi
 
   if ! ui_home_tui_available; then
     local choice
@@ -668,13 +680,18 @@ submission_by_slot = {
 for request in request_items:
     submission = submission_by_slot.get(str(request.get("slot_id")), {})
     if request.get("status") == "accepted":
-        notifications.append({
-            **request,
-            "type": "evaluation_accepted",
-            "category": "evaluation_accepted",
-            "created_at": request.get("responded_at", ""),
-            "other_user": request.get("reviewer", ""),
-        })
+        if not any(
+            item.get("category") == "evaluation_accepted"
+            and item.get("request_id") == request.get("request_id")
+            for item in notifications
+        ):
+            notifications.append({
+                **request,
+                "type": "evaluation_accepted",
+                "category": "evaluation_accepted",
+                "created_at": request.get("responded_at", ""),
+                "other_user": request.get("reviewer", ""),
+            })
         continue
     if request.get("status") != "pending":
         continue
@@ -695,6 +712,8 @@ for request in accepted_requests:
         "other_user": request.get("submitter", ""),
     })
 for room in chat_rooms:
+    if room.get("kind") != "direct" and not room.get("mention_count"):
+        continue
     preview = room.get("preview") or {}
     notifications.append({
         "type": "chat_message",
@@ -738,6 +757,9 @@ print(json.dumps(config, ensure_ascii=False))
     tui_path="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/account_dashboard_tui.py"
     exec 4>&1
     if result=$(
+      ACCOUNT_DASHBOARD_BROKER_SOCKET="$dashboard_broker_socket" \
+      ACCOUNT_DASHBOARD_BROKER_CLIENT="$dashboard_broker_client" \
+      ACCOUNT_DASHBOARD_TOKEN="$CURRENT_SESSION_TOKEN" \
       ACCOUNT_DASHBOARD_CONFIG="$config" \
         ACCOUNT_DASHBOARD_RESULT_FD=3 \
         python3 "$tui_path" 3>&1 1>&4

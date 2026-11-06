@@ -5,7 +5,11 @@ import json
 import unittest
 from unittest.mock import Mock, patch
 
-from modules.account_dashboard_tui import AccountDashboardTui, load_config
+from modules.account_dashboard_tui import (
+    AccountDashboardTui,
+    build_notifications,
+    load_config,
+)
 
 
 def submission(
@@ -219,7 +223,7 @@ class AccountDashboardTuiTests(unittest.TestCase):
                 "created_at": "today",
             }
         ]
-        _tui, result = self.run_tui(config, [curses.KEY_F2, "a"])
+        _tui, result = self.run_tui(config, ["a"])
         self.assertEqual(
             {
                 "action": "respond_request",
@@ -264,6 +268,170 @@ class AccountDashboardTuiTests(unittest.TestCase):
         ]
         _tui, result = self.run_tui(config, [curses.KEY_F2, "\n"])
         self.assertEqual({"action": "open_room", "slot_id": 10}, result)
+
+    def test_pending_evaluation_request_opens_popup_on_entry(self) -> None:
+        config = dashboard_config()
+        config["notifications"] = [
+            {
+                "type": "evaluation_request",
+                "request_id": 42,
+                "slot_id": 10,
+                "exercise_code": "EX-01",
+                "created_at": "today",
+            }
+        ]
+        tui = AccountDashboardTui(config)
+        self.assertTrue(tui.notification_popup)
+        self.assertEqual(42, tui.active_notification()["request_id"])
+
+    def test_live_poll_adds_new_request_and_opens_popup(self) -> None:
+        config = dashboard_config()
+        tui = AccountDashboardTui(config)
+        responses = {
+            "progress.get": {
+                "notifications": [],
+                "accepted_evaluation_requests": [],
+            },
+            "submissions.list": {
+                "submissions": [{**submission(), "id": 7}],
+            },
+            "evaluations.requests.list": {
+                "requests": [
+                    {
+                        "request_id": 42,
+                        "slot_id": 10,
+                        "reviewer": "reviewer",
+                        "exercise_code": "EX-01",
+                        "status": "pending",
+                        "requested_at": "now",
+                    }
+                ]
+            },
+            "chat.dashboard": {"unread_rooms": []},
+        }
+        with (
+            patch.object(
+                tui,
+                "broker_request",
+                side_effect=lambda method: responses[method],
+            ),
+            patch(
+                "modules.account_dashboard_tui.time.monotonic",
+                return_value=tui.last_notification_poll + 3,
+            ),
+        ):
+            tui.poll_notifications()
+        self.assertTrue(tui.notification_popup)
+        self.assertEqual(
+            "evaluation_request",
+            tui.active_notification()["category"],
+        )
+
+    def test_dashboard_timeout_polls_and_surfaces_new_request(self) -> None:
+        tui = AccountDashboardTui(dashboard_config())
+        screen = Mock()
+        screen.getmaxyx.return_value = (24, 80)
+        screen.get_wch.side_effect = [curses.error, "a"]
+        responses = {
+            "progress.get": {
+                "notifications": [],
+                "accepted_evaluation_requests": [],
+            },
+            "submissions.list": {
+                "submissions": [{**submission(), "id": 7}],
+            },
+            "evaluations.requests.list": {
+                "requests": [
+                    {
+                        "request_id": 42,
+                        "slot_id": 10,
+                        "reviewer": "reviewer",
+                        "exercise_code": "EX-01",
+                        "status": "pending",
+                        "requested_at": "now",
+                    }
+                ]
+            },
+            "chat.dashboard": {"unread_rooms": []},
+        }
+        with (
+            patch.object(
+                tui,
+                "broker_request",
+                side_effect=lambda method: responses[method],
+            ),
+            patch(
+                "modules.account_dashboard_tui.time.monotonic",
+                return_value=tui.last_notification_poll + 3,
+            ),
+            patch(
+                "modules.account_dashboard_tui.curses.has_colors",
+                return_value=False,
+            ),
+            patch("modules.account_dashboard_tui.curses.cbreak"),
+            patch("modules.account_dashboard_tui.curses.noecho"),
+            patch.multiple(
+                "modules.account_dashboard_tui.curses",
+                create=True,
+                ACS_ULCORNER=0,
+                ACS_URCORNER=0,
+                ACS_LLCORNER=0,
+                ACS_LRCORNER=0,
+                ACS_HLINE=0,
+                ACS_VLINE=0,
+            ),
+        ):
+            result = tui.run(screen)
+        self.assertEqual(
+            {
+                "action": "respond_request",
+                "request_id": 42,
+                "decision": "accept",
+            },
+            result,
+        )
+
+    def test_notification_aggregation_includes_directed_chat_and_evaluations(self) -> None:
+        notifications = build_notifications(
+            [
+                {
+                    "type": "review_received",
+                    "review_id": 8,
+                    "submission_id": 7,
+                    "created_at": "2026-11-05 10:00",
+                }
+            ],
+            [{**submission(), "id": 7}],
+            [
+                {
+                    "request_id": 42,
+                    "slot_id": 10,
+                    "status": "pending",
+                    "requested_at": "2026-11-05 11:00",
+                }
+            ],
+            [],
+            [
+                {
+                    "kind": "direct",
+                    "channel": "dm:1:2",
+                    "name": "DM · reviewer",
+                    "unread_count": 1,
+                    "preview": {"body": "Olá", "created_at": "2026-11-05 12:00"},
+                },
+                {
+                    "kind": "room",
+                    "channel": "global",
+                    "unread_count": 3,
+                    "mention_count": 0,
+                    "preview": {},
+                },
+            ],
+        )
+        self.assertEqual(
+            ["chat_message", "evaluation_request", "review_received"],
+            [item["category"] for item in notifications],
+        )
 
     def test_selected_submission_is_preserved_and_opened(self) -> None:
         config = dashboard_config()
