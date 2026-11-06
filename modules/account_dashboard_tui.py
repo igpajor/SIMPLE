@@ -95,16 +95,17 @@ def build_notifications(
     for request in requests:
         submission = submission_by_slot.get(str(request.get("slot_id")), {})
         if request.get("status") == "accepted":
-            accepted_ids.add(str(request.get("request_id")))
             notifications.append(
                 {
                     **request,
-                    "type": "evaluation_accepted",
-                    "category": "evaluation_accepted",
+                    "type": "evaluation_request_accepted",
+                    "category": "evaluation_request_accepted",
                     "created_at": request.get("responded_at", ""),
                     "other_user": request.get("reviewer", ""),
+                    "submission_id": submission.get("id"),
                 }
             )
+            accepted_ids.add(str(request.get("request_id")))
         elif request.get("status") == "pending":
             notifications.append(
                 {
@@ -553,6 +554,8 @@ class AccountDashboardTui:
             label = f"{item.get('exercise_code', '')} · Resposta de avaliação"
         elif notification_type == "evaluation_request":
             label = f"{item.get('exercise_code', '')} · Pedido de avaliação"
+        elif notification_type == "evaluation_request_accepted":
+            label = f"{item.get('exercise_code', '')} · Avaliador confirmado"
         elif notification_type == "evaluation_accepted":
             label = f"{item.get('exercise_code', '')} · Pedido aceito"
         elif notification_type == "chat_message":
@@ -583,6 +586,8 @@ class AccountDashboardTui:
                 lines.append((f"Detalhes: {item['feedback']}", "text"))
         if item.get("category", item.get("type")) == "evaluation_request":
             lines.append(("A: aceitar · D: recusar · Enter: abrir entrega", "selected"))
+        elif item.get("category", item.get("type")) == "evaluation_request_accepted":
+            lines.append(("Seu avaliador foi confirmado · Enter: abrir entrega", "selected"))
         elif item.get("category", item.get("type")) == "evaluation_accepted":
             if self.confirm_release_reservation:
                 lines.extend(
@@ -1148,6 +1153,14 @@ class AccountDashboardTui:
                                     "accept" if key.casefold() == "a" else "decline"
                                 ),
                             )
+                        if key in ("\n", "\r", curses.KEY_ENTER):
+                            submission_id = item.get("submission_id")
+                            if submission_id is not None:
+                                return self.result(
+                                    "open_submission",
+                                    submission_id=submission_id,
+                                )
+                    elif notification_type == "evaluation_request_accepted":
                         if key in ("\n", "\r", curses.KEY_ENTER):
                             submission_id = item.get("submission_id")
                             if submission_id is not None:

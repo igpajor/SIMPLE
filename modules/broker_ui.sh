@@ -681,16 +681,17 @@ for request in request_items:
     submission = submission_by_slot.get(str(request.get("slot_id")), {})
     if request.get("status") == "accepted":
         if not any(
-            item.get("category") == "evaluation_accepted"
+            item.get("category") == "evaluation_request_accepted"
             and item.get("request_id") == request.get("request_id")
             for item in notifications
         ):
             notifications.append({
                 **request,
-                "type": "evaluation_accepted",
-                "category": "evaluation_accepted",
+                "type": "evaluation_request_accepted",
+                "category": "evaluation_request_accepted",
                 "created_at": request.get("responded_at", ""),
                 "other_user": request.get("reviewer", ""),
+                "submission_id": submission.get("id"),
             })
         continue
     if request.get("status") != "pending":

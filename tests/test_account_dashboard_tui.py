@@ -270,6 +270,65 @@ class AccountDashboardTuiTests(unittest.TestCase):
         _tui, result = self.run_tui(config, [curses.KEY_F2, "1"])
         self.assertEqual({"action": "open_room", "slot_id": 10}, result)
 
+    def test_owner_and_reviewer_receive_role_specific_acceptance_notifications(self) -> None:
+        owner_notifications = build_notifications(
+            [],
+            [{**submission(), "id": 7}],
+            [
+                {
+                    "request_id": 42,
+                    "slot_id": 10,
+                    "status": "accepted",
+                    "reviewer": "reviewer",
+                    "responded_at": "today",
+                }
+            ],
+            [],
+            [],
+        )
+        reviewer_notifications = build_notifications(
+            [],
+            [],
+            [],
+            [
+                {
+                    "request_id": 42,
+                    "slot_id": 10,
+                    "submitter": "owner",
+                    "accepted_at": "today",
+                }
+            ],
+            [],
+        )
+        self.assertEqual(
+            "evaluation_request_accepted",
+            owner_notifications[0]["category"],
+        )
+        self.assertEqual(7, owner_notifications[0]["submission_id"])
+        self.assertEqual(
+            "evaluation_accepted",
+            reviewer_notifications[0]["category"],
+        )
+
+    def test_owner_acceptance_notification_opens_own_submission(self) -> None:
+        config = dashboard_config()
+        config["notifications"] = [
+            {
+                "type": "evaluation_request_accepted",
+                "category": "evaluation_request_accepted",
+                "request_id": 42,
+                "submission_id": 7,
+                "exercise_code": "EX-01",
+                "other_user": "reviewer",
+                "created_at": "today",
+            }
+        ]
+        _tui, result = self.run_tui(config, [curses.KEY_F2, "\n"])
+        self.assertEqual(
+            {"action": "open_submission", "submission_id": 7},
+            result,
+        )
+
     def test_f2_accepted_evaluation_can_open_review_submission(self) -> None:
         config = dashboard_config()
         config["notifications"] = [
