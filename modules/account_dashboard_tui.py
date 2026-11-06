@@ -1237,6 +1237,25 @@ class AccountDashboardTui:
         left = max(0, (self.width - panel_width) // 2)
         top = 1
         height = self.height - 3
+        available_height = height - 2
+        if available_height < 18 or panel_width < 30:
+            self.draw_text(
+                screen,
+                top + 2,
+                left + 3,
+                "Aumente o terminal para preencher a avaliação.",
+                "warning",
+                panel_width - 6,
+            )
+            self.draw_text(
+                screen,
+                self.height - 1,
+                left + 1,
+                "Esc cancelar",
+                "muted",
+                panel_width - 2,
+            )
+            return
         self.draw_frame(
             screen,
             top,
@@ -1245,44 +1264,218 @@ class AccountDashboardTui:
             height,
             safe_text(form.get("title", "AVALIAÇÃO")),
         )
-        details = form.get("details", [])
+
+        inner_left = left + 1
+        inner_width = panel_width - 2
         row = top + 1
-        for text in details:
-            for line in wrap_text(safe_text(text), panel_width - 6):
-                if row >= top + height - 6:
-                    break
+
+        def draw_pair(
+            y: int,
+            section_height: int,
+            first_title: str,
+            first_value: str,
+            second_title: str,
+            second_value: str,
+            first_ratio: float = 0.5,
+        ) -> None:
+            gap = 1
+            available_width = inner_width - gap
+            box_width = int(available_width * first_ratio)
+            second_width = available_width - box_width
+            second_left = inner_left + box_width + gap
+            self.draw_frame(
+                screen, y, inner_left, box_width, section_height, first_title
+            )
+            self.draw_frame(
+                screen, y, second_left, second_width, section_height, second_title
+            )
+            for index, line in enumerate(
+                wrap_text(first_value, box_width - 4)[: section_height - 2]
+            ):
                 self.draw_text(
-                    screen, row, left + 3, line, "text", panel_width - 6
+                    screen,
+                    y + 1 + index,
+                    inner_left + 2,
+                    line,
+                    "text",
+                    box_width - 4,
                 )
-                row += 1
-        self.draw_text(
-            screen,
-            top + height - 5,
-            left + 3,
-            f"Nota (0-5): {self.evaluation_form_score or '—'}",
-            "selected",
-            panel_width - 6,
+            for index, line in enumerate(
+                wrap_text(second_value, second_width - 4)[: section_height - 2]
+            ):
+                self.draw_text(
+                    screen,
+                    y + 1 + index,
+                    second_left + 2,
+                    line,
+                    "text",
+                    second_width - 4,
+                )
+
+        mode = form.get("mode")
+        exercise = safe_text(form.get("exercise", ""))
+        counterpart_title = "AVALIADO" if mode == "review" else "AVALIADOR"
+        counterpart = safe_text(
+            form.get("reviewee" if mode == "review" else "reviewer", "")
         )
-        feedback_lines = wrap_text(
-            self.evaluation_form_buffer or "(feedback obrigatório)",
-            panel_width - 8,
+        draw_pair(
+            row,
+            3,
+            "EXERCÍCIO",
+            exercise or "—",
+            counterpart_title,
+            counterpart or "—",
         )
-        self.draw_text(
-            screen,
-            top + height - 4,
-            left + 3,
-            "Feedback:",
-            "title",
-            panel_width - 6,
+        row += 3
+
+        content_height = (
+            5
+            if available_height < 22
+            else min(8, max(6, available_height // 3))
         )
-        for index, line in enumerate(feedback_lines[-2:]):
+        content_title = (
+            "DESCRIÇÃO E ENUNCIADO"
+            if mode == "review"
+            else "AVALIAÇÃO RECEBIDA"
+        )
+        self.draw_frame(
+            screen, row, inner_left, inner_width, content_height, content_title
+        )
+        divider_y = row + content_height // 2
+        try:
+            screen.hline(
+                divider_y,
+                inner_left + 1,
+                curses.ACS_HLINE,
+                inner_width - 2,
+                self.colors.get("muted", curses.A_NORMAL),
+            )
+        except curses.error:
+            pass
+
+        if mode == "review":
+            first_label = "Descrição"
+            first_value = safe_text(form.get("description", ""))
+            second_label = "Enunciado"
+            second_value = safe_text(form.get("statement", ""))
+        else:
+            first_label = "Nota recebida"
+            first_value = safe_text(form.get("received_score", ""))
+            second_label = "Feedback recebido"
+            second_value = safe_text(form.get("received_feedback", ""))
+
+        def draw_content(
+            start_y: int, end_y: int, label: str, value: str
+        ) -> None:
+            if start_y > end_y:
+                return
+            x = inner_left + 2
+            text_width = inner_width - 4
+            value_lines = wrap_text(value or "—", max(1, text_width - len(label) - 2))
+            available_rows = end_y - start_y + 1
+            is_truncated = len(value_lines) > available_rows
+            value_lines = value_lines[:available_rows]
+            first_line = f"{label}: {value_lines[0]}"
+            if is_truncated and available_rows == 1:
+                first_line = first_line[: max(0, text_width - 1)] + "…"
             self.draw_text(
                 screen,
-                top + height - 3 + index,
-                left + 3,
+                start_y,
+                x,
+                first_line,
+                "text",
+                text_width,
+            )
+            for offset, line in enumerate(value_lines[1:], start=1):
+                if start_y + offset > end_y:
+                    break
+                if is_truncated and offset == available_rows - 1:
+                    line = line[: max(0, text_width - 1)] + "…"
+                self.draw_text(
+                    screen, start_y + offset, x, line, "text", text_width
+                )
+
+        draw_content(row + 1, divider_y - 1, first_label, first_value)
+        self.draw_text(
+            screen,
+            divider_y,
+            inner_left + 2,
+            f" {second_label.upper()} ",
+            "title",
+            inner_width - 4,
+        )
+        draw_content(
+            divider_y + 1,
+            row + content_height - 2,
+            second_label,
+            second_value,
+        )
+        row += content_height
+
+        if mode == "review":
+            commit_value = safe_text(form.get("commit_url", ""))
+            if not commit_value:
+                commit_value = safe_text(form.get("content", "")) or "—"
+                commit_title = "CONTEÚDO"
+            else:
+                commit_title = "COMMIT"
+            directory_value = safe_text(form.get("delivery_directory", "")) or "—"
+            draw_pair(
+                row,
+                4,
+                commit_title,
+                commit_value,
+                "DIRETÓRIO",
+                directory_value,
+                first_ratio=0.66,
+            )
+            row += 4
+
+        score_height = 3
+        feedback_height = top + height - 1 - row
+        self.draw_frame(
+            screen,
+            row,
+            inner_left,
+            inner_width,
+            score_height,
+            (
+                "NOTA (0-5) · ATIVA"
+                if self.evaluation_form_field == "score"
+                else "NOTA (0-5)"
+            ),
+        )
+        self.draw_text(
+            screen,
+            row + 1,
+            inner_left + 2,
+            self.evaluation_form_score or "Digite uma nota de 0 a 5",
+            "selected",
+            inner_width - 4,
+        )
+        row += score_height
+        feedback_title = (
+            "FEEDBACK DETALHADO · ATIVO"
+            if self.evaluation_form_field == "feedback"
+            else "FEEDBACK DETALHADO"
+        )
+        self.draw_frame(
+            screen, row, inner_left, inner_width, feedback_height, feedback_title
+        )
+        feedback_lines = wrap_text(
+            self.evaluation_form_buffer or "Escreva aqui um feedback detalhado.",
+            inner_width - 4,
+        )
+        feedback_rows = max(1, feedback_height - 2)
+        visible_feedback = feedback_lines[-feedback_rows:]
+        for index, line in enumerate(visible_feedback):
+            self.draw_text(
+                screen,
+                row + 1 + index,
+                inner_left + 2,
                 line,
                 "text",
-                panel_width - 6,
+                inner_width - 4,
             )
         if self.live_refresh_error:
             self.draw_text(
@@ -1294,9 +1487,10 @@ class AccountDashboardTui:
                 panel_width - 2,
             )
         instructions = (
-            "Digite nota 0-5 e Enter; escreva feedback; Ctrl+S enviar · Esc cancelar"
+            "Nota 0-5 · Enter/Tab ir ao feedback · feedback multilinha · "
+            "Ctrl+S enviar · Esc cancelar"
             if self.evaluation_form_field == "score"
-            else "Feedback obrigatório · Enter nova linha · Ctrl+S enviar · Esc cancelar"
+            else "Feedback multilinha · Tab ir à nota · Ctrl+S enviar · Esc cancelar"
         )
         self.draw_text(
             screen,
@@ -1567,26 +1761,20 @@ class AccountDashboardTui:
                 slot = response.get("slot")
                 if not isinstance(slot, dict):
                     raise RuntimeError("O Broker retornou uma entrega inválida.")
-                details = [
-                    f"{slot.get('exercise_code', '')} — {slot.get('exercise_name', '')}",
-                    f"Avaliado: {slot.get('username', '')}",
-                    f"Descrição: {slot.get('description', '')}",
-                    f"Enunciado: {slot.get('statement', '')}",
-                ]
-                if slot.get("content_kind") == "github_commit":
-                    details.extend(
-                        (
-                            f"Commit: {slot.get('commit_url', '')}",
-                            f"Diretório: {slot.get('delivery_directory', '')}",
-                        )
-                    )
-                else:
-                    details.append(f"Conteúdo legado: {slot.get('content', '')}")
                 self.evaluation_form = {
                     "mode": "review",
                     "return_screen": item.get("return_screen", "evaluations"),
                     "title": f"AVALIAR · {slot.get('exercise_code', '')}",
-                    "details": details,
+                    "exercise": (
+                        f"{slot.get('exercise_code', '')} — "
+                        f"{slot.get('exercise_name', '')}"
+                    ),
+                    "reviewee": slot.get("username", ""),
+                    "description": slot.get("description", ""),
+                    "statement": slot.get("statement", ""),
+                    "commit_url": slot.get("commit_url", ""),
+                    "delivery_directory": slot.get("delivery_directory", ""),
+                    "content": slot.get("content", ""),
                     "slot_id": str(item["slot_id"]),
                 }
             elif item_type == "review_response":
@@ -1600,11 +1788,10 @@ class AccountDashboardTui:
                     "mode": "response",
                     "return_screen": item.get("return_screen", "evaluations"),
                     "title": f"RESPONDER · {review.get('exercise_code', '')}",
-                    "details": [
-                        f"Avaliador: {review.get('reviewer', '')}",
-                        f"Nota recebida: {review.get('score', '')}/5",
-                        f"Feedback: {review.get('feedback', '')}",
-                    ],
+                    "exercise": review.get("exercise_code", ""),
+                    "reviewer": review.get("reviewer", ""),
+                    "received_score": f"{review.get('score', '')}/5",
+                    "received_feedback": review.get("feedback", ""),
                     "review_id": str(item["review_id"]),
                 }
             else:
@@ -1955,6 +2142,12 @@ class AccountDashboardTui:
                     self.screen = return_screen
                 elif key == "\x13":
                     self.submit_evaluation_form()
+                elif key in ("\t", curses.KEY_BTAB):
+                    self.evaluation_form_field = (
+                        "feedback"
+                        if self.evaluation_form_field == "score"
+                        else "score"
+                    )
                 elif self.evaluation_form_field == "score":
                     if isinstance(key, str) and key in "012345":
                         self.evaluation_form_score = key
@@ -1962,6 +2155,8 @@ class AccountDashboardTui:
                         if self.evaluation_form_score:
                             self.evaluation_form_field = "feedback"
                             self.live_refresh_error = ""
+                    elif key in (curses.KEY_BACKSPACE, "\b", "\x7f"):
+                        self.evaluation_form_score = ""
                 elif isinstance(key, str) and key.isprintable():
                     if len(self.evaluation_form_buffer) < 2000:
                         self.evaluation_form_buffer += key

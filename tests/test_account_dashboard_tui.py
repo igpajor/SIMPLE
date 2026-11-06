@@ -702,7 +702,20 @@ class AccountDashboardTuiTests(unittest.TestCase):
         ]
         screen = Mock()
         screen.getmaxyx.return_value = (24, 80)
-        screen.get_wch.side_effect = ["2", "5", "\n", "B", "o", "a", "\x13", "\x1b"]
+        screen.get_wch.side_effect = [
+            "2",
+            "\t",
+            "x",
+            "\x7f",
+            "\t",
+            "5",
+            "\n",
+            "B",
+            "o",
+            "a",
+            "\x13",
+            "\x1b",
+        ]
         responses = {
             "evaluations.slot.get": {
                 "ok": True,
@@ -762,6 +775,57 @@ class AccountDashboardTuiTests(unittest.TestCase):
                 ),
             ],
             [(call.args, call.kwargs) for call in request.call_args_list],
+        )
+
+    def test_evaluation_form_draws_separate_review_and_input_frames(self) -> None:
+        tui = AccountDashboardTui(dashboard_config())
+        tui.screen = "evaluation_form"
+        tui.evaluation_form = {
+            "mode": "review",
+            "title": "AVALIAR · EX-01",
+            "exercise": "EX-01 — Exercício",
+            "reviewee": "student",
+            "description": "Descrição detalhada",
+            "statement": "Enunciado do exercício",
+            "commit_url": "https://github.com/user/repo/commit/abcdef0",
+            "delivery_directory": "src",
+        }
+        tui.height, tui.width = 31, 105
+        screen = Mock()
+        screen.getmaxyx.return_value = (31, 105)
+
+        with (
+            patch.multiple(
+                "modules.account_dashboard_tui.curses",
+                create=True,
+                ACS_ULCORNER=0,
+                ACS_URCORNER=0,
+                ACS_LLCORNER=0,
+                ACS_LRCORNER=0,
+                ACS_HLINE=0,
+                ACS_VLINE=0,
+            ),
+            patch.object(tui, "draw_frame", wraps=tui.draw_frame) as draw_frame,
+        ):
+            tui.draw(screen)
+
+        frame_titles = {
+            call.args[5]: call.args[4]
+            for call in draw_frame.call_args_list
+        }
+        rendered = [call.args[2] for call in screen.addnstr.call_args_list]
+        self.assertIn("EXERCÍCIO", frame_titles)
+        self.assertIn("AVALIADO", frame_titles)
+        self.assertIn("DESCRIÇÃO E ENUNCIADO", frame_titles)
+        self.assertIn("COMMIT", frame_titles)
+        self.assertIn("DIRETÓRIO", frame_titles)
+        self.assertIn("NOTA (0-5) · ATIVA", frame_titles)
+        self.assertIn("FEEDBACK DETALHADO", frame_titles)
+        self.assertTrue(any("Descrição detalhada" in text for text in rendered))
+        self.assertTrue(any("Enunciado do exercício" in text for text in rendered))
+        self.assertGreater(
+            frame_titles["FEEDBACK DETALHADO"],
+            frame_titles["NOTA (0-5) · ATIVA"],
         )
 
     def test_author_replies_to_review_inside_curses(self) -> None:
