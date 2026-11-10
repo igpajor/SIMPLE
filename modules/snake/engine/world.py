@@ -154,21 +154,54 @@ class World:
             if other.alive
             for position in other.body
         }
-        candidates = []
-        for selected_direction in directions:
-            dx, dy = DIRECTION_DELTAS[selected_direction]
-            for y in range(margin, self.height - margin):
-                for x in range(margin, self.width - margin):
-                    body = [(x - dx * offset, y - dy * offset) for offset in range(length)]
-                    if all(
-                        margin <= cell_x < self.width - margin
-                        and margin <= cell_y < self.height - margin
-                        for cell_x, cell_y in body
-                    ) and not occupied.intersection(body) and not self.food.keys() & set(body):
-                        candidates.append((selected_direction, body))
-        if not candidates:
+        selected_direction = None
+        body = None
+        food_cells = set(self.food)
+        x_min, x_max = margin, self.width - margin
+        y_min, y_max = margin, self.height - margin
+
+        def candidate_for(
+            direction: str, x: int, y: int
+        ) -> Optional[List[Position]]:
+            dx, dy = DIRECTION_DELTAS[direction]
+            candidate = [
+                (x - dx * offset, y - dy * offset)
+                for offset in range(length)
+            ]
+            if any(
+                not (x_min <= cell_x < x_max and y_min <= cell_y < y_max)
+                for cell_x, cell_y in candidate
+            ):
+                return None
+            if occupied.intersection(candidate) or food_cells.intersection(candidate):
+                return None
+            return candidate
+
+        for _ in range(64):
+            candidate_direction = self.random.choice(directions)
+            x = self.random.randrange(x_min, x_max)
+            y = self.random.randrange(y_min, y_max)
+            candidate = candidate_for(candidate_direction, x, y)
+            if candidate is not None:
+                selected_direction = candidate_direction
+                body = candidate
+                break
+
+        if body is None:
+            for candidate_direction in directions:
+                for y in range(y_min, y_max):
+                    for x in range(x_min, x_max):
+                        candidate = candidate_for(candidate_direction, x, y)
+                        if candidate is not None:
+                            selected_direction = candidate_direction
+                            body = candidate
+                            break
+                    if body is not None:
+                        break
+                if body is not None:
+                    break
+        if body is None or selected_direction is None:
             raise ValueError("Não há espaço livre para reaparecer.")
-        selected_direction, body = self.random.choice(candidates)
         snake.body = body
         snake.direction = selected_direction
         snake.alive = True
