@@ -208,5 +208,23 @@ systemctl is-active simple-broker.service simple-proxy.service
 ```
 
 Atualize também os arquivos do cliente antes de usar as salas e comandos novos.
-O Proxy libera automaticamente os métodos do chat por meio da allowlist
-derivada de `METHOD_FIELDS`.
+O Proxy libera automaticamente as operações por meio da allowlist derivada de
+`METHOD_FIELDS`. Assim, `users.search` e `users.profile.get` ficam disponíveis
+quando Broker e Proxy estão executando a versão que declara esses métodos.
+Se o Proxy responder `Operação não suportada pelo proxy`, atualize o checkout
+do servidor e reinicie os dois serviços para recarregar o código importado.
+Esses métodos não exigem migração do banco de dados.
+
+Como `root`, pare os serviços; como `ubuntu`, atualize o checkout; depois, como
+`root`, inicie Broker e Proxy nesta ordem:
+
+```bash
+sudo systemctl stop simple-proxy.service simple-broker.service
+sudo -u ubuntu git -C /opt/simple pull --ff-only origin main
+sudo systemctl start simple-broker.service
+sudo systemctl start simple-proxy.service
+systemctl is-active simple-broker.service simple-proxy.service
+```
+
+Consulte [Atualização pelo Git](./DEPLOYMENT_UBUNTU.md#atualização-pelo-git)
+para validar o checkout e revisar alterações antes de aplicá-las.
