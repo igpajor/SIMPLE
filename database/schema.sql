@@ -182,6 +182,15 @@ CREATE TABLE IF NOT EXISTS identity_bindings (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS snake_scores (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id),
+    best_length INTEGER NOT NULL CHECK (best_length BETWEEN 1 AND 7200),
+    kills_total INTEGER NOT NULL DEFAULT 0 CHECK (kills_total >= 0),
+    deaths_total INTEGER NOT NULL DEFAULT 0 CHECK (deaths_total >= 0),
+    games INTEGER NOT NULL DEFAULT 0 CHECK (games >= 0),
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_identity_bindings_active_uid
     ON identity_bindings(linux_uid) WHERE is_active = 1;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_identity_bindings_active_user

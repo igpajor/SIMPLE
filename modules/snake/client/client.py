@@ -88,6 +88,10 @@ def decode_server_message(raw: bytes) -> Dict[str, Any]:
         or not isinstance(message.get("snakes"), list)
         or not isinstance(message.get("food"), list)
         or not isinstance(message.get("leaderboard"), list)
+        or (
+            "records" in message
+            and not isinstance(message.get("records"), list)
+        )
     ):
         raise ValueError("Estado inválido do servidor Snake.")
     return message
@@ -284,6 +288,7 @@ class SoloGame:
                 for (x, y), value in self.world.food.items()
             ],
             "leaderboard": [],
+            "records": [],
         }
 
 

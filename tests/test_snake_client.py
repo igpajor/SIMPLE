@@ -42,6 +42,14 @@ class SnakeClientTests(unittest.TestCase):
             ],
             "food": [{"x": 6, "y": 6, "value": 1}],
             "leaderboard": [{"rank": 1, "nick": "Rival\x1b[31m", "length": 2}],
+            "records": [
+                {
+                    "rank": 1,
+                    "username": "Mestre\x1b[31m",
+                    "best_length": 42,
+                    "kills_total": 3,
+                }
+            ],
         }
 
         lines = render_world(snapshot, width=48, height=16, arena_cols=20, arena_rows=12)
@@ -52,6 +60,7 @@ class SnakeClientTests(unittest.TestCase):
         self.assertIn("@@", rendered)
         self.assertIn("oo", rendered)
         self.assertIn("**", rendered)
+        self.assertIn("Mestre", rendered)
         self.assertNotIn("\x1b", rendered)
         self.assertTrue(all(len(line) <= 48 for line in lines))
 

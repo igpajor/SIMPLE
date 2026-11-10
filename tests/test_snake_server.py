@@ -168,6 +168,53 @@ class SnakeServerTests(unittest.IsolatedAsyncioTestCase):
             "arquivo substituto", self.socket_path.read_text(encoding="utf-8")
         )
 
+    async def test_server_persists_death_and_includes_persisted_ranking(self) -> None:
+        from modules.snake.server.server import SnakeServer
+
+        class FakePersistence:
+            def __init__(self):
+                self.recorded = []
+
+            async def record_score(self, linux_uid, binding_id, length, kills):
+                self.recorded.append((linux_uid, binding_id, length, kills))
+
+            async def leaderboard(self, limit, offset):
+                return [
+                    {
+                        "rank": 1,
+                        "username": "tripulante",
+                        "best_length": 42,
+                        "kills_total": 3,
+                        "deaths_total": 2,
+                        "games": 2,
+                    }
+                ]
+
+        persistence = FakePersistence()
+        await self.server.close()
+        self.server = SnakeServer(
+            identity_resolver=self.resolve_identity,
+            score_persister=persistence,
+            bot_count=0,
+            tick_interval=0.01,
+        )
+        await self.server.start_unix(self.socket_path)
+        reader, _writer, welcome = await self.connect_and_hello()
+        session = self.server.sessions[73]
+        snake = self.server.world.snakes[session.player_id]
+        snake.kills = 3
+        snake.alive = False
+        self.server._broadcast_state_changes()
+        self.server.world.remove_snake(session.player_id)
+        await asyncio.sleep(0)
+        snapshot = self.server._snapshot(session, snake)
+
+        await asyncio.sleep(0.01)
+        self.assertEqual([(os.geteuid(), 45, 4, 3)], persistence.recorded)
+        self.assertEqual("tripulante", snapshot["records"][0]["username"])
+        self.assertEqual("welcome", welcome["t"])
+        await reader.readline()
+
     async def test_full_snapshot_queue_discards_old_state_without_blocking_tick(self) -> None:
         from modules.snake.server.server import ClientSession
 

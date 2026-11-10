@@ -167,6 +167,183 @@ class BrokerTests(unittest.TestCase):
             snake_thread.join(timeout=5)
             snake_socket_path.unlink(missing_ok=True)
 
+    def test_snake_score_recording_and_ranking_are_broker_only_and_bounded(self) -> None:
+        first = self.create_user("snake-record-first")
+        second = self.create_user("snake-record-second")
+        linux_uid = os.geteuid()
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            binding = connection.execute(
+                "INSERT INTO identity_bindings (linux_uid, user_id) VALUES (?, ?)",
+                (linux_uid, first["user_id"]),
+            ).lastrowid
+            second_uid = linux_uid + 101
+            second_binding = connection.execute(
+                "INSERT INTO identity_bindings (linux_uid, user_id) VALUES (?, ?)",
+                (second_uid, second["user_id"]),
+            ).lastrowid
+        snake_socket_path = self.root / "snake-broker.sock"
+        snake_server = BrokerServer(
+            snake_socket_path,
+            self.broker,
+            snake_service_uid=linux_uid,
+            snake_only=True,
+        )
+        os.chmod(snake_socket_path, 0o600)
+        snake_thread = threading.Thread(target=snake_server.serve_forever)
+        snake_thread.start()
+        try:
+            record = {
+                "protocol": "simple-snake-v1",
+                "method": "score.record",
+                "linux_uid": linux_uid,
+                "binding_id": binding,
+                "length": 45,
+                "kills": 2,
+            }
+            self.assertTrue(self.call(record, snake_socket_path)["ok"])
+            record["length"] = 38
+            record["kills"] = 1
+            self.assertTrue(self.call(record, snake_socket_path)["ok"])
+            invalid = dict(record, length=True)
+            self.assertFalse(self.call(invalid, snake_socket_path)["ok"])
+            invalid_binding = dict(record, binding_id=binding + 1)
+            self.assertFalse(self.call(invalid_binding, snake_socket_path)["ok"])
+            self.assertFalse(self.call(record, self.socket_path)["ok"])
+            self.assertTrue(
+                self.call(
+                    {
+                        "protocol": "simple-snake-v1",
+                        "method": "score.record",
+                        "linux_uid": second_uid,
+                        "binding_id": second_binding,
+                        "length": 50,
+                        "kills": 0,
+                    },
+                    snake_socket_path,
+                )["ok"]
+            )
+            ranking = self.call(
+                {
+                    "protocol": "simple-snake-v1",
+                    "method": "leaderboard.get",
+                    "limit": 1,
+                    "offset": 0,
+                },
+                snake_socket_path,
+            )
+            self.assertTrue(ranking["ok"], ranking)
+            self.assertEqual("snake-record-second", ranking["scores"][0]["username"])
+            page_two = self.call(
+                {
+                    "protocol": "simple-snake-v1",
+                    "method": "leaderboard.get",
+                    "limit": 1,
+                    "offset": 1,
+                },
+                snake_socket_path,
+            )
+            self.assertEqual(2, page_two["scores"][0]["rank"])
+            self.assertEqual(
+                "snake-record-first", page_two["scores"][0]["username"]
+            )
+            with closing(sqlite3.connect(self.database_path)) as connection, connection:
+                connection.execute(
+                    "UPDATE identity_bindings SET is_active = 0 WHERE id = ?",
+                    (second_binding,),
+                )
+            ranking_after_revoke = self.call(
+                {
+                    "protocol": "simple-snake-v1",
+                    "method": "leaderboard.get",
+                    "limit": 10,
+                    "offset": 0,
+                },
+                snake_socket_path,
+            )
+            self.assertEqual(
+                ["snake-record-first"],
+                [entry["username"] for entry in ranking_after_revoke["scores"]],
+            )
+            too_many = self.call(
+                {
+                    "protocol": "simple-snake-v1",
+                    "method": "leaderboard.get",
+                    "limit": 101,
+                    "offset": 0,
+                },
+                snake_socket_path,
+            )
+            self.assertFalse(too_many["ok"])
+            self.assertFalse(
+                self.call(
+                    {
+                        "protocol": "simple-snake-v1",
+                        "method": "leaderboard.get",
+                        "limit": 10,
+                        "offset": 0,
+                    },
+                    self.socket_path,
+                )["ok"]
+            )
+            with closing(sqlite3.connect(self.database_path)) as connection:
+                row = connection.execute(
+                    """
+                    SELECT best_length, kills_total, deaths_total, games
+                    FROM snake_scores WHERE user_id = ?
+                    """,
+                    (first["user_id"],),
+                ).fetchone()
+            self.assertEqual((45, 3, 2, 2), row)
+            with closing(sqlite3.connect(self.database_path)) as connection:
+                learning_points = connection.execute(
+                    "SELECT SUM(amount) FROM points_ledger WHERE user_id = ?",
+                    (first["user_id"],),
+                ).fetchone()[0]
+            self.assertEqual(1, learning_points)
+            self.assertIsNone(
+                self.call(
+                    {
+                        "protocol": "simple-snake-v1",
+                        "method": "score.record",
+                        "linux_uid": linux_uid,
+                        "binding_id": binding,
+                        "length": 20,
+                        "kills": 0,
+                    },
+                    snake_socket_path,
+                ).get("error")
+            )
+        finally:
+            snake_server.shutdown()
+            snake_server.server_close()
+            snake_thread.join(timeout=5)
+            snake_socket_path.unlink(missing_ok=True)
+
+    def test_snake_scores_table_is_created_by_repeatable_schema_initialization(self) -> None:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            connection.execute("DROP TABLE snake_scores")
+        initialize_database(self.database_path, ROOT_DIR / "database" / "schema.sql")
+        validate_database(self.database_path)
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(snake_scores)")
+            }
+            foreign_keys = connection.execute(
+                "PRAGMA foreign_key_list(snake_scores)"
+            ).fetchall()
+        self.assertEqual(
+            {
+                "user_id",
+                "best_length",
+                "kills_total",
+                "deaths_total",
+                "games",
+                "updated_at",
+            },
+            columns,
+        )
+        self.assertTrue(any(row[2] == "users" and row[3] == "user_id" for row in foreign_keys))
+
     def test_snake_broker_socket_requires_service_group_directory(self) -> None:
         socket_directory = self.root / "snake-broker"
         socket_directory.mkdir()

@@ -23,6 +23,7 @@ from ..engine import config
 from ..engine.bots import step_bots
 from ..engine.world import Snake, World
 from .identity import BrokerIdentityResolver
+from .persistence import BrokerSnakePersistence
 from .protocol import (
     MessageRateLimiter,
     UnsupportedVersionError,
@@ -51,6 +52,8 @@ class ClientSession:
     )
     writer_task: Optional[asyncio.Task] = None
     was_alive: bool = True
+    reported_kills: int = 0
+    score_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class SnakeServer:
@@ -63,6 +66,7 @@ class SnakeServer:
         tick_interval: Optional[float] = None,
         idle_timeout: float = config.CLIENT_IDLE_TIMEOUT_SECONDS,
         identity_revalidation_interval: float = config.IDENTITY_REVALIDATION_SECONDS,
+        score_persister: Optional[BrokerSnakePersistence] = None,
     ) -> None:
         if not callable(identity_resolver):
             raise ValueError("O resolvedor de identidade é obrigatório.")
@@ -101,6 +105,7 @@ class SnakeServer:
         if max_human_players + bot_count > 40:
             raise ValueError("A quantidade total de cobras excede a arena.")
         self.identity_resolver = identity_resolver
+        self.score_persister = score_persister
         self.world = world or World()
         self.max_human_players = max_human_players
         self.tick_interval = float(tick_interval)
@@ -116,6 +121,10 @@ class SnakeServer:
         self._identity_tasks: Dict[int, asyncio.Task] = {}
         self._server: Optional[asyncio.AbstractServer] = None
         self._tick_task: Optional[asyncio.Task] = None
+        self._leaderboard_task: Optional[asyncio.Task] = None
+        self._score_tasks: set = set()
+        self._persisted_records: List[Dict[str, Any]] = []
+        self._leaderboard_changed = asyncio.Event()
         self._socket_path: Optional[Path] = None
         self._socket_identity: Optional[Tuple[int, int]] = None
         self._active_connections = 0
@@ -195,6 +204,10 @@ class SnakeServer:
             )
             self._socket_path = path
             self._tick_task = asyncio.create_task(self._tick_loop())
+            if self.score_persister is not None:
+                self._leaderboard_task = asyncio.create_task(
+                    self._refresh_leaderboard_loop()
+                )
         except BaseException:
             listener.close()
             self._unlink_owned_socket()
@@ -212,6 +225,15 @@ class SnakeServer:
             except asyncio.CancelledError:
                 pass
             self._tick_task = None
+        if self._leaderboard_task is not None:
+            self._leaderboard_task.cancel()
+            try:
+                await self._leaderboard_task
+            except asyncio.CancelledError:
+                pass
+            self._leaderboard_task = None
+        if self._score_tasks:
+            await asyncio.gather(*list(self._score_tasks), return_exceptions=True)
         identity_tasks = list(self._identity_tasks.values())
         self._identity_tasks.clear()
         for task in identity_tasks:
@@ -676,6 +698,16 @@ class SnakeServer:
             if snake is None:
                 continue
             if session.was_alive and not snake.alive:
+                if self.score_persister is not None:
+                    task = asyncio.create_task(
+                        self._record_score(
+                            session,
+                            len(snake.body),
+                            snake.kills,
+                        )
+                    )
+                    self._score_tasks.add(task)
+                    task.add_done_callback(self._score_tasks.discard)
                 self._enqueue(
                     session,
                     {
@@ -690,6 +722,61 @@ class SnakeServer:
             elif snake.alive:
                 session.was_alive = True
             self._enqueue(session, self._snapshot(session, snake))
+
+    async def _record_score(
+        self, session: ClientSession, length: int, cumulative_kills: int
+    ) -> None:
+        if self.score_persister is None:
+            return
+        async with session.score_lock:
+            kills = max(0, cumulative_kills - session.reported_kills)
+            try:
+                await asyncio.wait_for(
+                    self.score_persister.record_score(
+                        session.linux_uid,
+                        session.binding_id,
+                        length,
+                        kills,
+                    ),
+                    timeout=2.0,
+                )
+            except (OSError, RuntimeError, ValueError, asyncio.TimeoutError):
+                logger.exception(
+                    "Não foi possível registrar o resultado Snake do usuário %s",
+                    session.user_id,
+                )
+                return
+            session.reported_kills = max(session.reported_kills, cumulative_kills)
+            self._leaderboard_changed.set()
+
+    async def _refresh_leaderboard_loop(self) -> None:
+        while True:
+            self._leaderboard_changed.clear()
+            try:
+                records = await asyncio.wait_for(
+                    self.score_persister.leaderboard(
+                        limit=config.LEADERBOARD_SIZE,
+                        offset=0,
+                    ),
+                    timeout=2.0,
+                )
+                if (
+                    isinstance(records, list)
+                    and len(records) <= config.LEADERBOARD_SIZE
+                    and all(isinstance(record, dict) for record in records)
+                ):
+                    self._persisted_records = [dict(record) for record in records]
+                else:
+                    raise ValueError("O Broker retornou um ranking Snake inválido.")
+            except (OSError, RuntimeError, ValueError, asyncio.TimeoutError):
+                logger.exception("Não foi possível atualizar o ranking persistido Snake")
+            try:
+                await asyncio.wait_for(
+                    self._leaderboard_changed.wait(),
+                    timeout=config.LEADERBOARD_REFRESH_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                pass
 
     def _snapshot(self, session: ClientSession, player: Snake) -> Dict[str, Any]:
         head_x, head_y = player.body[0]
@@ -752,13 +839,18 @@ class SnakeServer:
             "snakes": snakes,
             "food": food,
             "leaderboard": leaderboard,
+            "records": [dict(record) for record in self._persisted_records],
         }
 
 async def _run_service(
     socket_path: Path, broker_socket: Path, socket_gid: Optional[int] = None
 ) -> None:
     resolver = BrokerIdentityResolver(broker_socket)
-    server = SnakeServer(identity_resolver=resolver)
+    persistence = BrokerSnakePersistence(broker_socket)
+    server = SnakeServer(
+        identity_resolver=resolver,
+        score_persister=persistence,
+    )
     loop = asyncio.get_running_loop()
     stop_requested = asyncio.Event()
     for signum in (signal.SIGINT, signal.SIGTERM):

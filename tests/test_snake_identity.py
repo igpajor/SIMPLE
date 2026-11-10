@@ -103,6 +103,50 @@ class BrokerIdentityResolverTests(unittest.IsolatedAsyncioTestCase):
             await server.wait_closed()
             temporary_directory.cleanup()
 
+    async def test_score_client_sends_bounded_internal_operations(self) -> None:
+        temporary_directory = tempfile.TemporaryDirectory()
+        socket_path = Path(temporary_directory.name) / "broker.sock"
+        received = []
+
+        async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+            received.append(json.loads(await reader.readline()))
+            writer.write(b'{"ok":true,"scores":[]}\n')
+            await writer.drain()
+            writer.close()
+
+        server = await asyncio.start_unix_server(handle, path=str(socket_path))
+        try:
+            from modules.snake.server.persistence import BrokerSnakePersistence
+
+            persistence = BrokerSnakePersistence(socket_path)
+            await persistence.record_score(os.geteuid(), 45, 30, 2)
+            scores = await persistence.leaderboard(limit=10, offset=0)
+        finally:
+            server.close()
+            await server.wait_closed()
+            temporary_directory.cleanup()
+
+        self.assertEqual([], scores)
+        self.assertEqual(
+            [
+                {
+                    "protocol": "simple-snake-v1",
+                    "method": "score.record",
+                    "linux_uid": os.geteuid(),
+                    "binding_id": 45,
+                    "length": 30,
+                    "kills": 2,
+                },
+                {
+                    "protocol": "simple-snake-v1",
+                    "method": "leaderboard.get",
+                    "limit": 10,
+                    "offset": 0,
+                },
+            ],
+            received,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

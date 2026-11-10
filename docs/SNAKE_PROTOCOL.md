@@ -102,7 +102,9 @@ As formas são:
   Cada cobra visível tem `id`, `nick` (opcional), `body` como lista de pares
   `[x,y]` em células, `length`, `alive`, `color` e `glyph`. A lista de corpo é
   recortada à viewport mais margem. Cada comida tem `x`, `y` e `value`. O placar
-  contém até dez registros `{rank,nick,length}`.
+  ao vivo contém até dez registros `{rank,nick,length}`. A resposta também pode
+  incluir `records`, com até dez recordes persistidos
+  `{rank,username,best_length,kills_total,deaths_total,games}`.
 - `{"t":"dead","score":int,"length":int,"killer":string|null,"tick":int}`.
   `score` é o comprimento final; `killer` é o ID efêmero da cobra responsável,
   ou `null`.
@@ -114,6 +116,24 @@ Coordenadas e dimensões são inteiros; nomes são texto sanitizado. `state` tra
 somente cobras e comidas visíveis dentro da viewport mais margem, além do
 placar. `dead` informa o resultado final e o autor da colisão, se aplicável.
 `error` contém mensagem curta em português, sem stack trace nem dados internos.
+
+## Persistência pelo Broker
+
+O serviço Snake usa o canal Unix dedicado `simple-snake-v1`, autorizado pelo
+UID de serviço do servidor via `SO_PEERCRED`. Além de `identity.resolve`, são
+permitidas apenas estas operações:
+
+- `score.record`: recebe o UID Linux, o ID do vínculo resolvido pelo Broker, o
+  comprimento final e eliminações calculadas pelo servidor autoritativo. O
+  Broker revalida o vínculo e a conta ativa antes de atualizar
+  `snake_scores`. A atualização não altera pontos de aprendizagem.
+- `leaderboard.get`: recebe `limit` (1–100) e `offset` (0–10.000); retorna
+  somente usuários ativos, em ordem de melhor comprimento e eliminações, com
+  uma página limitada.
+
+O cliente do jogo não pode chamar o canal interno nem enviar resultados. O
+servidor atualiza o ranking persistido em segundo plano, separado do tick; o
+cliente apresenta os três primeiros recordes junto à arena.
 
 O cliente trata tipos de servidor desconhecidos como erro de protocolo e não
 renderiza texto recebido sem sanitização. Mensagens de servidor também ficam

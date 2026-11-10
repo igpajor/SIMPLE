@@ -64,7 +64,7 @@ def render_world(
     lines = [_clip(title, width)]
 
     view_cols = min(arena_cols, max(1, (width - 2) // 2))
-    view_rows = min(arena_rows, max(1, height - 5))
+    view_rows = min(arena_rows, max(1, height - 9))
     player_head: Optional[Tuple[int, int]] = None
     for snake in snakes:
         if not isinstance(snake, dict) or snake.get("id") != player_id:
@@ -118,6 +118,25 @@ def render_world(
                 grid[y - top][x - left] = glyph
 
     lines.extend("".join(row) for row in grid)
+    records = snapshot.get("records", [])
+    if isinstance(records, list) and records:
+        lines.append("RECORDES PERSISTENTES")
+        for record in records[:3]:
+            if not isinstance(record, dict):
+                continue
+            rank = _integer(record.get("rank"))
+            best_length = _integer(record.get("best_length"))
+            username = safe_text(record.get("username", "Tripulante"))
+            if rank is None or best_length is None:
+                continue
+            lines.append(
+                _clip(
+                    "{0}. {1}: {2}".format(rank, username, best_length),
+                    width,
+                )
+            )
+    else:
+        lines.append("Recordes persistentes indisponíveis.")
     if not alive:
         lines.append("Você foi eliminado. Aguardando respawn...")
     else:

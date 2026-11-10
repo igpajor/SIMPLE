@@ -30,6 +30,9 @@ MAX_REQUEST_BYTES = 65536
 BROKER_MAX_CONNECTIONS = 64
 PROXY_INTERNAL_PROTOCOL = "simple-proxy-v1"
 SNAKE_INTERNAL_PROTOCOL = "simple-snake-v1"
+SNAKE_MAX_SCORE_LENGTH = 120 * 60
+SNAKE_LEADERBOARD_MAX_PAGE_SIZE = 100
+SNAKE_LEADERBOARD_MAX_OFFSET = 10000
 SESSION_TTL_SECONDS = 8 * 60 * 60
 PDF_URL_MAX_LENGTH = 2048
 
@@ -372,6 +375,10 @@ def _validate_database_connection(
         "identity_bindings": {
             "id", "linux_uid", "user_id", "is_active", "created_at", "updated_at",
         },
+        "snake_scores": {
+            "user_id", "best_length", "kills_total", "deaths_total", "games",
+            "updated_at",
+        },
     }
     if allow_pre_migration_schema:
         for table, column, _definition in MIGRATIONS:
@@ -384,6 +391,7 @@ def _validate_database_connection(
         required_columns.pop("chat_direct_rooms", None)
         required_columns.pop("chat_reactions", None)
         required_columns.pop("chat_reports", None)
+        required_columns.pop("snake_scores", None)
 
     for table, expected_columns in required_columns.items():
         columns = {
@@ -1256,6 +1264,90 @@ class Broker:
                 "user_id": row["user_id"],
                 "username": row["username"],
             }
+
+    def record_snake_score(
+        self, linux_uid: Any, binding_id: Any, length: Any, kills: Any
+    ) -> dict[str, Any]:
+        linux_uid = self._integer(linux_uid, "UID Linux", minimum=1)
+        binding_id = self._integer(binding_id, "Vínculo de identidade", minimum=1)
+        length = self._integer(length, "Comprimento", minimum=1)
+        kills = self._integer(kills, "Eliminações", minimum=0)
+        if length > SNAKE_MAX_SCORE_LENGTH or kills > SNAKE_MAX_SCORE_LENGTH:
+            raise ValueError("Resultado Snake fora dos limites permitidos.")
+        with closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT users.id
+                FROM identity_bindings
+                JOIN users ON users.id = identity_bindings.user_id
+                WHERE identity_bindings.linux_uid = ?
+                  AND identity_bindings.id = ?
+                  AND identity_bindings.is_active = 1
+                  AND users.is_active = 1
+                """,
+                (linux_uid, binding_id),
+            ).fetchone()
+            if row is None:
+                raise PermissionError("UID Linux sem vínculo ativo com uma conta SIMPLE.")
+            connection.execute(
+                """
+                INSERT INTO snake_scores (
+                    user_id, best_length, kills_total, deaths_total, games
+                )
+                VALUES (?, ?, ?, 1, 1)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    best_length = MAX(snake_scores.best_length, excluded.best_length),
+                    kills_total = snake_scores.kills_total + excluded.kills_total,
+                    deaths_total = snake_scores.deaths_total + 1,
+                    games = snake_scores.games + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (row["id"], length, kills),
+            )
+        return {"ok": True}
+
+    def snake_leaderboard(self, limit: Any, offset: Any) -> dict[str, Any]:
+        limit = self._integer(limit, "Limite do ranking", minimum=1)
+        offset = self._integer(offset, "Deslocamento do ranking", minimum=0)
+        if (
+            limit > SNAKE_LEADERBOARD_MAX_PAGE_SIZE
+            or offset > SNAKE_LEADERBOARD_MAX_OFFSET
+        ):
+            raise ValueError("Página do ranking Snake fora dos limites permitidos.")
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                """
+                SELECT users.username, snake_scores.best_length,
+                       snake_scores.kills_total, snake_scores.deaths_total,
+                       snake_scores.games
+                FROM snake_scores
+                JOIN users ON users.id = snake_scores.user_id
+                WHERE users.is_active = 1
+                  AND EXISTS (
+                      SELECT 1 FROM identity_bindings
+                      WHERE identity_bindings.user_id = users.id
+                        AND identity_bindings.is_active = 1
+                  )
+                ORDER BY snake_scores.best_length DESC,
+                         snake_scores.kills_total DESC,
+                         users.id ASC
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset),
+            ).fetchall()
+            scores = [
+                {
+                    "rank": offset + index,
+                    "username": row["username"],
+                    "best_length": row["best_length"],
+                    "kills_total": row["kills_total"],
+                    "deaths_total": row["deaths_total"],
+                    "games": row["games"],
+                }
+                for index, row in enumerate(rows, start=1)
+            ]
+        return {"ok": True, "scores": scores}
 
     @staticmethod
     def _integer(value: Any, label: str, minimum: int = 1) -> int:
@@ -3553,13 +3645,40 @@ class BrokerRequestHandler(socketserver.StreamRequestHandler):
         service_uid = self.server.snake_service_uid  # type: ignore[attr-defined]
         if service_uid is None or peer_uid != service_uid:
             raise PermissionError("A operação interna não está autorizada.")
-        if set(request) != {"protocol", "method", "linux_uid"}:
-            raise ValueError("Campos inválidos para a operação interna.")
-        if request["method"] != "identity.resolve":
-            raise ValueError("Operação interna não suportada.")
-        return self.server.broker.resolve_proxy_identity(  # type: ignore[attr-defined]
-            request["linux_uid"]
-        )
+        method = request.get("method")
+        if method == "identity.resolve":
+            if set(request) != {"protocol", "method", "linux_uid"}:
+                raise ValueError("Campos inválidos para a operação interna.")
+            return self.server.broker.resolve_proxy_identity(  # type: ignore[attr-defined]
+                request["linux_uid"]
+            )
+        if method == "score.record":
+            if set(request) != {
+                "protocol", "method", "linux_uid", "binding_id", "length", "kills"
+            }:
+                raise ValueError("Campos inválidos para a operação interna.")
+            if any(
+                type(request[field]) is not int
+                for field in ("linux_uid", "binding_id", "length", "kills")
+            ):
+                raise ValueError("Campos inválidos para a operação interna.")
+            return self.server.broker.record_snake_score(  # type: ignore[attr-defined]
+                request["linux_uid"],
+                request["binding_id"],
+                request["length"],
+                request["kills"],
+            )
+        if method == "leaderboard.get":
+            if set(request) != {"protocol", "method", "limit", "offset"}:
+                raise ValueError("Campos inválidos para a operação interna.")
+            if any(
+                type(request[field]) is not int for field in ("limit", "offset")
+            ):
+                raise ValueError("Campos inválidos para a operação interna.")
+            return self.server.broker.snake_leaderboard(  # type: ignore[attr-defined]
+                request["limit"], request["offset"]
+            )
+        raise ValueError("Operação interna não suportada.")
 
     @staticmethod
     def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
