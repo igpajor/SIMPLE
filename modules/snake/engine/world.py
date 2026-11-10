@@ -55,6 +55,7 @@ class World:
         self.snakes: Dict[str, Snake] = {}
         self.food: Dict[Position, int] = {}
         self.tick_count = 0
+        self.kill_events: List[Tuple[str, Optional[str]]] = []
 
     def _inside(self, position: Position) -> bool:
         x, y = position
@@ -125,6 +126,48 @@ class World:
     def remove_snake(self, player_id: str) -> Optional[Snake]:
         """Remove a disconnected player without changing the world score."""
         return self.snakes.pop(player_id, None)
+
+    def minimap(
+        self,
+        player_id: str,
+        cols: int = config.MINIMAP_WIDTH,
+        rows: int = config.MINIMAP_HEIGHT,
+    ) -> List[str]:
+        """Return a coarse, bounded map without exposing exact remote positions."""
+        if not isinstance(player_id, str):
+            raise ValueError("O identificador do jogador é inválido.")
+        if (
+            type(cols) is not int
+            or type(rows) is not int
+            or not 1 <= cols <= config.MINIMAP_WIDTH
+            or not 1 <= rows <= config.MINIMAP_HEIGHT
+        ):
+            raise ValueError("As dimensões do minimapa são inválidas.")
+
+        grid = [[" " for _ in range(cols)] for _ in range(rows)]
+        priorities = [[0 for _ in range(cols)] for _ in range(rows)]
+
+        def mark(position: Position, glyph: str, priority: int) -> None:
+            x = position[0] * cols // self.width
+            y = position[1] * rows // self.height
+            if priority > priorities[y][x]:
+                grid[y][x] = glyph
+                priorities[y][x] = priority
+
+        for position in self.food:
+            mark(position, ".", 1)
+        for snake in self.snakes.values():
+            if not snake.alive:
+                continue
+            own = snake.player_id == player_id
+            for index, position in enumerate(snake.body):
+                if own and index == 0:
+                    mark(position, "@", 4)
+                elif index == 0:
+                    mark(position, "o", 3)
+                else:
+                    mark(position, "#", 2)
+        return ["".join(row) for row in grid]
 
     def respawn(
         self, player_id: str, direction: Optional[Direction] = None
@@ -307,6 +350,7 @@ class World:
         snake.alive = False
         snake.deaths += 1
         snake.last_killer = killer_id
+        self.kill_events.append((player_id, killer_id))
         if killer_id is not None and killer_id in self.snakes:
             self.snakes[killer_id].kills += 1
         self._drop_food(snake.body)
@@ -442,6 +486,7 @@ class World:
                 self._drop_food((dropped,))
 
     def tick(self) -> None:
+        self.kill_events.clear()
         self.tick_count += 1
         protected = {
             player_id

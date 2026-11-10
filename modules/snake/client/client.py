@@ -92,6 +92,41 @@ def decode_server_message(raw: bytes) -> Dict[str, Any]:
             "records" in message
             and not isinstance(message.get("records"), list)
         )
+        or (
+            "minimap" in message
+            and (
+                not isinstance(message["minimap"], list)
+                or len(message["minimap"]) != config.MINIMAP_HEIGHT
+                or any(
+                    not isinstance(row, str)
+                    or len(row) != config.MINIMAP_WIDTH
+                    or any(character not in " .#o@" for character in row)
+                    for row in message["minimap"]
+                )
+            )
+        )
+        or (
+            "kill_feed" in message
+            and (
+                not isinstance(message["kill_feed"], list)
+                or len(message["kill_feed"]) > config.KILL_FEED_SIZE
+                or any(
+                    not isinstance(event, dict)
+                    or set(event) != {"killer", "victim"}
+                    or (
+                        event["killer"] is not None
+                        and (
+                            not isinstance(event["killer"], str)
+                            or len(event["killer"]) > config.MAX_NICKNAME_LENGTH
+                        )
+                    )
+                    or not isinstance(event["victim"], str)
+                    or not event["victim"]
+                    or len(event["victim"]) > config.MAX_NICKNAME_LENGTH
+                    for event in message["kill_feed"]
+                )
+            )
+        )
     ):
         raise ValueError("Estado inválido do servidor Snake.")
     return message
@@ -231,6 +266,7 @@ class SoloGame:
         )
         self.world.replenish_food()
         self.boosting = False
+        self.kill_feed: List[Dict[str, Optional[str]]] = []
 
     def turn(self, direction: str) -> bool:
         return self.world.set_direction(self.player_id, direction)
@@ -248,6 +284,12 @@ class SoloGame:
                 except ValueError:
                     pass
         self.simulation.step()
+        for victim_id, killer_id in self.world.kill_events:
+            victim = self._nickname(victim_id)
+            killer = self._nickname(killer_id) if killer_id is not None else None
+            self.kill_feed.append({"killer": killer, "victim": victim})
+        if len(self.kill_feed) > config.KILL_FEED_SIZE:
+            del self.kill_feed[:-config.KILL_FEED_SIZE]
         player = self.world.snakes[self.player_id]
         if not player.alive:
             try:
@@ -289,7 +331,16 @@ class SoloGame:
             ],
             "leaderboard": [],
             "records": [],
+            "minimap": self.world.minimap(self.player_id),
+            "kill_feed": [dict(event) for event in self.kill_feed],
         }
+
+    def _nickname(self, player_id: str) -> str:
+        if player_id == self.player_id:
+            return "Você"
+        if player_id.startswith("bot-"):
+            return "Bot {0}".format(player_id[4:])
+        return "Tripulante"
 
 
 class SnakeClient:

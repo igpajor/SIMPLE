@@ -211,6 +211,24 @@ class SnakeEngineContractTests(unittest.TestCase):
 
         self.assertFalse(alice.alive)
         self.assertTrue(bob.alive)
+        self.assertEqual([("alice", "bob")], world.kill_events)
+
+    def test_minimap_is_coarse_and_marks_player_snakes_and_food(self) -> None:
+        world = self.make_world()
+        world.add_snake("alice", body=[(3, 3), (2, 3), (1, 3)], direction="R")
+        world.add_snake("bob", body=[(8, 6), (7, 6)], direction="L")
+        world.add_food((5, 5))
+
+        minimap = world.minimap("alice", cols=6, rows=4)
+
+        self.assertEqual(4, len(minimap))
+        self.assertTrue(all(len(row) == 6 for row in minimap))
+        self.assertEqual("@", minimap[1][1])
+        self.assertIn("o", "".join(minimap))
+        self.assertIn(".", "".join(minimap))
+        default_minimap = world.minimap("alice")
+        self.assertEqual(10, len(default_minimap))
+        self.assertTrue(all(len(row) == 20 for row in default_minimap))
 
     def test_head_to_head_collision_kills_shorter_snake(self) -> None:
         world = self.make_world()

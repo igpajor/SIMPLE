@@ -5,6 +5,8 @@ from __future__ import annotations
 import unicodedata
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..engine import config
+
 
 def safe_text(value: Any) -> str:
     return "".join(
@@ -20,6 +22,49 @@ def _integer(value: Any) -> Optional[int]:
 
 def _clip(text: str, width: int) -> str:
     return safe_text(text)[: max(0, width)]
+
+
+def _valid_minimap(value: Any) -> bool:
+    return (
+        isinstance(value, list)
+        and len(value) == config.MINIMAP_HEIGHT
+        and all(
+            isinstance(row, str)
+            and len(row) == config.MINIMAP_WIDTH
+            and all(character in " .#o@" for character in row)
+            for row in value
+        )
+    )
+
+
+def _compress_minimap(rows: List[str], target_rows: int) -> List[str]:
+    if target_rows >= len(rows):
+        return rows
+    priorities = {" ": 0, ".": 1, "#": 2, "o": 3, "@": 4}
+    compacted = []
+    for target_y in range(target_rows):
+        start = target_y * len(rows) // target_rows
+        end = max(start + 1, (target_y + 1) * len(rows) // target_rows)
+        compacted.append(
+            "".join(
+                max(
+                    (row[x] for row in rows[start:end]),
+                    key=priorities.__getitem__,
+                )
+                for x in range(config.MINIMAP_WIDTH)
+            )
+        )
+    return compacted
+
+
+def _kill_feed_text(event: Any) -> str:
+    if not isinstance(event, dict):
+        return ""
+    victim = safe_text(event.get("victim", "Tripulante"))
+    killer = event.get("killer")
+    if isinstance(killer, str) and killer:
+        return "{0} > {1}".format(safe_text(killer), victim)
+    return "{0} eliminado".format(victim)
 
 
 def render_world(
@@ -42,6 +87,11 @@ def render_world(
     if width < 32 or height < 10:
         return [_clip("Aumente o terminal para continuar.", width)]
 
+    minimap = snapshot.get("minimap")
+    kill_feed = snapshot.get("kill_feed")
+    has_minimap = _valid_minimap(minimap)
+    has_kill_feed = isinstance(kill_feed, list)
+    show_side_panel = width >= 48 and has_minimap
     player = snapshot.get("player", {})
     player_id = player.get("id") if isinstance(player, dict) else None
     length = _integer(player.get("length")) if isinstance(player, dict) else None
@@ -63,8 +113,20 @@ def render_world(
     title = "{0} · {1}".format(own_nick, title)
     lines = [_clip(title, width)]
 
-    view_cols = min(arena_cols, max(1, (width - 2) // 2))
-    view_rows = min(arena_rows, max(1, height - 9))
+    if show_side_panel:
+        panel_separator = " | "
+        panel_width = config.MINIMAP_WIDTH
+        view_cols = min(
+            arena_cols,
+            max(1, (width - 1 - len(panel_separator) - panel_width) // 2),
+        )
+        view_rows = min(arena_rows, max(1, height - 9))
+    else:
+        panel_separator = ""
+        panel_width = 0
+        view_cols = min(arena_cols, max(1, (width - 2) // 2))
+        reserved_rows = 13 if has_kill_feed else 9
+        view_rows = min(arena_rows, max(1, height - reserved_rows))
     player_head: Optional[Tuple[int, int]] = None
     for snake in snakes:
         if not isinstance(snake, dict) or snake.get("id") != player_id:
@@ -117,7 +179,47 @@ def render_world(
                 glyph = "@@" if own and index == 0 else ("##" if own else "oo")
                 grid[y - top][x - left] = glyph
 
-    lines.extend("".join(row) for row in grid)
+    map_rows = minimap if has_minimap else []
+    feed_items = (
+        [_kill_feed_text(event) for event in kill_feed[-config.KILL_FEED_SIZE :]]
+        if has_kill_feed
+        else []
+    )
+    if show_side_panel:
+        panel_feed = feed_items or ["Nenhuma eliminação recente."]
+        target_map_rows = max(
+            1,
+            min(len(map_rows), view_rows - 2 - len(panel_feed)),
+        )
+        panel_map_rows = _compress_minimap(map_rows, target_map_rows)
+        for row_index, row in enumerate(grid):
+            if row_index == 0:
+                panel = "MINIMAPA"
+            elif row_index <= len(panel_map_rows):
+                panel = panel_map_rows[row_index - 1]
+            elif row_index == len(panel_map_rows) + 1:
+                panel = "ELIMINAÇÕES"
+            else:
+                event_index = row_index - len(panel_map_rows) - 2
+                panel = (
+                    panel_feed[event_index]
+                    if event_index < len(panel_feed)
+                    else ""
+                )
+            lines.append(
+                "".join(row).ljust(view_cols * 2)
+                + panel_separator
+                + _clip(panel, panel_width)
+            )
+    else:
+        lines.extend("".join(row) for row in grid)
+        if has_kill_feed:
+            lines.append("ELIMINAÇÕES RECENTES")
+            if feed_items:
+                lines.extend(_clip(item, width) for item in feed_items)
+            else:
+                lines.append("Nenhuma eliminação recente.")
+
     records = snapshot.get("records", [])
     if isinstance(records, list) and records:
         lines.append("RECORDES PERSISTENTES")

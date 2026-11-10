@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 
 
@@ -41,6 +42,11 @@ class SnakeClientTests(unittest.TestCase):
                 },
             ],
             "food": [{"x": 6, "y": 6, "value": 1}],
+            "minimap": ["@                   "] + [" " * 20 for _ in range(9)],
+            "kill_feed": [
+                {"killer": "Rival", "victim": "Navegante"},
+                {"killer": None, "victim": "Bot 01"},
+            ],
             "leaderboard": [{"rank": 1, "nick": "Rival\x1b[31m", "length": 2}],
             "records": [
                 {
@@ -60,6 +66,9 @@ class SnakeClientTests(unittest.TestCase):
         self.assertIn("@@", rendered)
         self.assertIn("oo", rendered)
         self.assertIn("**", rendered)
+        self.assertIn("MINIMAPA", rendered)
+        self.assertIn("Rival", rendered)
+        self.assertIn("Bot 01", rendered)
         self.assertIn("Mestre", rendered)
         self.assertNotIn("\x1b", rendered)
         self.assertTrue(all(len(line) <= 48 for line in lines))
@@ -90,6 +99,40 @@ class SnakeClientTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             decode_server_message(b'{"t":[]}')
 
+    def test_server_message_decoder_rejects_malformed_optional_hud_fields(self) -> None:
+        from modules.snake.client.client import decode_server_message
+
+        message = {
+            "t": "state",
+            "tick": 1,
+            "player": {},
+            "snakes": [],
+            "food": [],
+            "leaderboard": [],
+            "minimap": ["row", 1],
+            "kill_feed": [],
+        }
+
+        with self.assertRaises(ValueError):
+            decode_server_message(json.dumps(message).encode("utf-8"))
+
+    def test_server_message_decoder_accepts_legacy_state_without_hud_fields(self) -> None:
+        from modules.snake.client.client import decode_server_message
+
+        message = {
+            "t": "state",
+            "tick": 1,
+            "player": {},
+            "snakes": [],
+            "food": [],
+            "leaderboard": [],
+        }
+
+        self.assertEqual(
+            message,
+            decode_server_message(json.dumps(message).encode("utf-8")),
+        )
+
     def test_solo_simulation_moves_player_without_socket_or_account_identity(self) -> None:
         from modules.snake.client.client import SoloGame
 
@@ -103,6 +146,9 @@ class SnakeClientTests(unittest.TestCase):
         self.assertNotEqual(starting_position, player.body[0])
         self.assertEqual((starting_position[0], starting_position[1] + 1), player.body[0])
         self.assertEqual(1, game.world.tick_count)
+        snapshot = game.snapshot()
+        self.assertEqual(10, len(snapshot["minimap"]))
+        self.assertEqual([], snapshot["kill_feed"])
 
 
 if __name__ == "__main__":

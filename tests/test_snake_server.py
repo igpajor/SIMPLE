@@ -78,11 +78,59 @@ class SnakeServerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual("state", state["t"])
         self.assertEqual(welcome["player_id"], state["player"]["id"])
+        self.assertEqual(10, len(state["minimap"]))
+        self.assertTrue(all(len(row) == 20 for row in state["minimap"]))
+        self.assertEqual([], state["kill_feed"])
 
     async def test_game_socket_file_mode_excludes_world_access(self) -> None:
         socket_mode = stat.S_IMODE(self.socket_path.stat().st_mode)
 
         self.assertEqual(0o660, socket_mode)
+
+    async def test_kill_feed_is_bounded_and_uses_server_known_nicknames(self) -> None:
+        self.server.player_nicks.update(
+            {
+                "killer": "Rival",
+                "victim-1": "Navegante",
+                "victim-2": "Bot 01",
+                "victim-3": "Bot 02",
+                "victim-4": "Bot 03",
+            }
+        )
+        self.server.world.kill_events = [
+            ("victim-1", "killer"),
+            ("victim-2", None),
+            ("victim-3", "killer"),
+            ("victim-4", "killer"),
+        ]
+
+        self.server._capture_kill_events()
+
+        self.assertEqual(
+            [
+                {"killer": None, "victim": "Bot 01"},
+                {"killer": "Rival", "victim": "Bot 02"},
+                {"killer": "Rival", "victim": "Bot 03"},
+            ],
+            self.server._kill_feed,
+        )
+
+    async def test_tick_publishes_death_in_the_shared_arena_kill_feed(self) -> None:
+        reader, _writer, welcome = await self.connect_and_hello()
+        await reader.readline()
+        snake = self.server.world.snakes[welcome["player_id"]]
+        snake.body = [(119, 20), (118, 20), (117, 20), (116, 20)]
+        snake.direction = "R"
+
+        while True:
+            response = json.loads(await asyncio.wait_for(reader.readline(), 1))
+            if response["t"] == "state" and response["kill_feed"]:
+                break
+
+        self.assertEqual(
+            {"killer": None, "victim": "Navegante"},
+            response["kill_feed"][-1],
+        )
 
     async def test_unbound_peer_is_rejected_without_creating_a_session(self) -> None:
         async def unbound_identity(_linux_uid: int):

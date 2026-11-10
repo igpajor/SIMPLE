@@ -124,6 +124,7 @@ class SnakeServer:
         self._leaderboard_task: Optional[asyncio.Task] = None
         self._score_tasks: set = set()
         self._persisted_records: List[Dict[str, Any]] = []
+        self._kill_feed: List[Dict[str, Optional[str]]] = []
         self._leaderboard_changed = asyncio.Event()
         self._socket_path: Optional[Path] = None
         self._socket_identity: Optional[Tuple[int, int]] = None
@@ -639,6 +640,7 @@ class SnakeServer:
                         self._respawn_waiting.discard(player_id)
             step_bots(self.world, self.bot_ids)
             self.world.tick()
+            self._capture_kill_events()
             self.world.replenish_food()
             self._broadcast_state_changes()
             delay = max(0.0, self.tick_interval - (time.monotonic() - started))
@@ -778,6 +780,16 @@ class SnakeServer:
             except asyncio.TimeoutError:
                 pass
 
+    def _capture_kill_events(self) -> None:
+        for victim_id, killer_id in self.world.kill_events:
+            event = {
+                "killer": self.player_nicks.get(killer_id) if killer_id else None,
+                "victim": self.player_nicks.get(victim_id, "Tripulante"),
+            }
+            self._kill_feed.append(event)
+        if len(self._kill_feed) > config.KILL_FEED_SIZE:
+            del self._kill_feed[:-config.KILL_FEED_SIZE]
+
     def _snapshot(self, session: ClientSession, player: Snake) -> Dict[str, Any]:
         head_x, head_y = player.body[0]
         left = max(0, min(self.world.width - session.cols, head_x - session.cols // 2))
@@ -840,6 +852,8 @@ class SnakeServer:
             "food": food,
             "leaderboard": leaderboard,
             "records": [dict(record) for record in self._persisted_records],
+            "minimap": self.world.minimap(session.player_id),
+            "kill_feed": [dict(event) for event in self._kill_feed],
         }
 
 async def _run_service(

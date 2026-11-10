@@ -16,14 +16,18 @@ Controles:
 - Espaço: alternar o boost.
 - `Q` ou `Esc`: sair.
 
-O terminal deve ter pelo menos 32 colunas por 10 linhas. Aumente a janela se o
-cliente pedir. O campo de jogo acompanha a cobra; recordes persistidos podem
-demorar até 30 segundos para atualizar.
+O terminal deve ter pelo menos 32 colunas por 10 linhas; o minimapa lateral
+aparece a partir de 48 colunas. Em terminais mais estreitos, as eliminações
+recentes aparecem abaixo do campo. Aumente a janela se o cliente pedir. O campo
+de jogo acompanha a cobra; recordes persistidos podem demorar até 30 segundos
+para atualizar.
 
 ## Regras e limites
 
 - Arena única de 120 × 60 células, com tick de 10 Hz.
 - Multiplayer limitado a 32 pessoas, além de dois bots padrão.
+- Todos compartilham a mesma arena; não há salas separadas. O HUD inclui um
+  minimapa aproximado e até três eliminações recentes, sem avisos no chat global.
 - A cobra inicia com quatro segmentos; comida aumenta o comprimento.
 - O boost exige comprimento mínimo de seis segmentos e consome segmentos
   periodicamente.
@@ -35,6 +39,8 @@ demorar até 30 segundos para atualizar.
 - Os recordes persistem melhor comprimento, eliminações, mortes e partidas.
   Só contas ativas com vínculo UID ativo aparecem no ranking persistido.
 - Não há portas TCP/UDP; o jogo usa sockets Unix.
+- Os corpos e as comidas continuam recortados à viewport; o minimapa transmite
+  apenas posições grosseiras (grade de 20 × 10) para orientar a navegação.
 
 ## Modo solo
 

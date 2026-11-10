@@ -104,7 +104,11 @@ As formas são:
   recortada à viewport mais margem. Cada comida tem `x`, `y` e `value`. O placar
   ao vivo contém até dez registros `{rank,nick,length}`. A resposta também pode
   incluir `records`, com até dez recordes persistidos
-  `{rank,username,best_length,kills_total,deaths_total,games}`.
+  `{rank,username,best_length,kills_total,deaths_total,games}`. A resposta
+  inclui ainda `minimap` (grade aproximada de 20 × 10 caracteres, sem
+  coordenadas exatas) e `kill_feed` (até três eventos recentes
+  `{killer:string|null,victim:string}`); ambos são campos aditivos e opcionais
+  para compatibilidade com servidores anteriores.
 - `{"t":"dead","score":int,"length":int,"killer":string|null,"tick":int}`.
   `score` é o comprimento final; `killer` é o ID efêmero da cobra responsável,
   ou `null`.
@@ -113,9 +117,11 @@ As formas são:
   `server_error`.
 
 Coordenadas e dimensões são inteiros; nomes são texto sanitizado. `state` traz
-somente cobras e comidas visíveis dentro da viewport mais margem, além do
-placar. `dead` informa o resultado final e o autor da colisão, se aplicável.
-`error` contém mensagem curta em português, sem stack trace nem dados internos.
+somente corpos e comidas visíveis dentro da viewport mais margem, além do
+placar e da posição aproximada das cobras no minimapa. `kill_feed` é somente
+uma informação da arena do jogo, não uma mensagem no chat global. `dead`
+informa o resultado final e o autor da colisão, se aplicável. `error` contém
+mensagem curta em português, sem stack trace nem dados internos.
 
 ## Persistência pelo Broker
 
@@ -147,6 +153,8 @@ sujeitas ao limite máximo acima.
   não são anunciados no chat global.
 - Elegibilidade exige conta SIMPLE ativa e vínculo UID ativo. A arquitetura
   escolhida é servidor separado, com IPC Unix estreito autorizado pelo Broker.
+- Todos jogam na mesma arena; não há salas separadas. O minimapa mostra
+  posições aproximadas, e eliminações recentes aparecem somente no HUD do jogo.
 - A cobra inicia com quatro segmentos; comida alvo de uma unidade por 40
   células; comida consumida soma um segmento.
 - Boost exige seis segmentos, tem velocidade de 1,5× e solta um segmento a cada
