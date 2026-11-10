@@ -44,11 +44,11 @@ por `--snake-socket`, e UID/GID dedicados informados ao Broker. O diretório do
 canal deve ser previamente criado, pertencer ao Broker, ter o GID do serviço
 Snake e modo `2710` (setgid, sem escrita do grupo); o socket é
 publicado como `0660` e herda esse GID. O serviço Snake só é
-autorizado por `SO_PEERCRED` e a única operação aceita é `identity.resolve`,
-que reaproveita a validação de vínculo Linux ativo e conta SIMPLE ativa do
-Broker. A interface de persistência e ranking ainda não existe; a Fase 6
-precisará de operações específicas, limitadas e autorizadas, nunca de SQL
-genérico.
+autorizado por `SO_PEERCRED`. O protocolo aceita `identity.resolve`,
+`score.record` e `leaderboard.get`; as duas últimas operações revalidam o
+vínculo ativo, persistem resultados e retornam páginas limitadas sem oferecer
+SQL genérico. A tabela `snake_scores` foi adicionada sem alterar tabelas
+existentes; pontos do jogo não alteram pontos de aprendizagem.
 
 O Broker não observa diretamente o peer do participante conectado ao Snake:
 o processo do jogo retransmite somente o UID obtido do kernel, e deve ser

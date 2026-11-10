@@ -62,6 +62,40 @@ class DeploymentTests(unittest.TestCase):
         self.assertIn("/run/simple-private/broker.sock", proxy["[Service]:ExecStart"][0])
         self.assertIn("/run/simple-public/proxy.sock", proxy["[Service]:ExecStart"][0])
 
+    def test_snake_deployment_drafts_keep_unix_sockets_and_broker_only_storage(self) -> None:
+        snake = unit_settings(
+            ROOT_DIR / "deploy" / "systemd" / "simple-snake.service"
+        )
+        broker_dropin = unit_settings(
+            ROOT_DIR
+            / "deploy"
+            / "systemd"
+            / "simple-broker.service.d"
+            / "30-snake.conf"
+        )
+        tmpfiles = (
+            ROOT_DIR / "deploy" / "tmpfiles.d" / "simple-snake.conf"
+        ).read_text(encoding="utf-8")
+        entrypoint = (
+            ROOT_DIR / "deploy" / "simple-ssh-entrypoint.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertEqual(["simple-snake"], snake["[Service]:User"])
+        self.assertEqual(["simple-users"], snake["[Service]:Group"])
+        self.assertEqual(["simple-snake"], snake["[Service]:SupplementaryGroups"])
+        self.assertIn("simple-broker.service", snake["[Unit]:Requires"])
+        self.assertIn("AF_UNIX", snake["[Service]:RestrictAddressFamilies"])
+        self.assertIn("/run/simple-snake/game.sock", snake["[Service]:ExecStart"][0])
+        self.assertIn(
+            "/run/simple-snake-private/identity.sock",
+            snake["[Service]:ExecStart"][0],
+        )
+        self.assertNotIn("/var/lib/simple", snake["[Service]:ExecStart"][0])
+        self.assertIn("SNAKE_SERVICE_UID", broker_dropin["[Service]:ExecStart"][-1])
+        self.assertIn("SNAKE_SERVICE_GID", broker_dropin["[Service]:ExecStart"][-1])
+        self.assertIn("2710 simple-broker simple-snake", tmpfiles)
+        self.assertIn("SNAKE_SOCKET=/run/simple-snake/game.sock", entrypoint)
+
     def test_production_initializer_uses_only_broker_one_shot_operations(self) -> None:
         script = (
             ROOT_DIR / "deploy" / "init-production-database.sh"

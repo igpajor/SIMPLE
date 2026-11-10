@@ -26,4 +26,5 @@ exec /usr/bin/env -i \
   PATH=/usr/bin:/bin \
   SIMPLE_MODE=proxy \
   PROXY_SOCKET=/run/simple-public/proxy.sock \
+  SNAKE_SOCKET=/run/simple-snake/game.sock \
   /usr/bin/bash /opt/simple/simple.sh

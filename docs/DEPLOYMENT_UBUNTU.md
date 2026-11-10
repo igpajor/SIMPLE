@@ -41,13 +41,19 @@ O Proxy não abre portas TCP. Senhas e tokens não são registrados.
 | `/run/simple-private/broker.sock` | `simple-broker:simple-broker` | `0600` | Broker |
 | `/run/simple-public` | `simple-broker:simple-users` | `0710` | systemd `RuntimeDirectory` |
 | `/run/simple-public/proxy.sock` | `simple-broker:simple-users` | `0660` | Proxy |
+| `/run/simple-snake-private` | `simple-broker:simple-snake` | `2710` | tmpfiles.d (rascunho Snake) |
+| `/run/simple-snake-private/identity.sock` | `simple-broker:simple-snake` | `0660` | Broker (rascunho Snake) |
+| `/run/simple-snake` | `simple-snake:simple-users` | `0710` | systemd (rascunho Snake) |
+| `/run/simple-snake/game.sock` | `simple-snake:simple-users` | `0660` | Snake (rascunho) |
 | `/etc/systemd/system/*.service` | `root:root` | `0644` | instalação administrativa |
 
 O modo `0710` permite aos membros de `simple-users` atravessar o diretório sem
 listar seu conteúdo nem criar/remover arquivos. O socket público concede
 conexão ao grupo, mas não escrita no diretório. `RuntimeDirectory` recria os
-diretórios sob `/run` em cada início; não é necessário um arquivo tmpfiles
-separado. O Broker valida as permissões do banco e auxiliares e falha fechado.
+diretórios ativos sob `/run` em cada início. O rascunho do canal dedicado Snake
+usa tmpfiles para seu diretório separado; consulte a seção de implantação
+supervisionada abaixo. O Broker valida as permissões do banco e auxiliares e
+falha fechado.
 
 ## Provisionamento
 
@@ -432,6 +438,41 @@ instaladas por `root` e seguidas de `systemctl daemon-reload`. Após validar,
 como `root`, inicie Broker e Proxy na ordem indicada acima. Se qualquer teste
 ou validação falhar, mantenha os serviços parados e investigue; não publique
 uma atualização parcialmente validada.
+
+### Snake multiplayer (rascunho, não aplicar)
+
+O serviço multiplayer não faz parte da configuração de produção ativa. Os
+arquivos [simple-snake.service](../deploy/systemd/simple-snake.service),
+[30-snake.conf](../deploy/systemd/simple-broker.service.d/30-snake.conf) e
+[simple-snake.conf](../deploy/tmpfiles.d/simple-snake.conf) são rascunhos
+somente; não foram instalados, habilitados nem validados em um host de
+produção.
+
+Antes de qualquer instalação supervisionada, é necessário revisar e planejar:
+
+- conta de serviço `simple-snake` sem login, grupo primário `simple-snake` e
+  participação no grupo existente `simple-users`;
+- valores numéricos de `SNAKE_SERVICE_UID` e `SNAKE_SERVICE_GID` em
+  `/etc/simple/snake-broker.env`, arquivo de configuração root-owned
+  referenciado pelo drop-in do Broker;
+- diretório temporário dedicado do canal Broker, criado por tmpfiles como
+  `simple-broker:simple-snake` no modo `2710`;
+- drop-in do Broker com `--snake-socket`, UID/GID configurados e permissão de
+  escrita somente no diretório de runtime dedicado;
+- serviço Snake restrito a `AF_UNIX`, sem acesso de escrita ao banco ou a
+  outros diretórios; o socket de jogo fica separado do socket de identidade;
+- atualização do entrypoint SSH para expor somente o caminho fixo do socket de
+  jogo, enquanto preserva o ambiente limpo e as restrições de comando atuais.
+
+A migração `snake_scores` também deve ser revisada, copiada de segurança e
+aplicada explicitamente pelo procedimento `--migrate-database-only` do Broker
+antes de iniciar um serviço que dependa dela. Não adicione os arquivos de
+rascunho à instalação, não execute comandos de provisionamento desta seção e
+não altere SSH, grupos, serviços ou diretórios de produção como parte desta
+fase. A validação do servidor é supervisionada pelo administrador.
+
+O endpoint multiplayer local usado pelo entrypoint é
+`/run/simple-snake/game.sock`; o modo solo não requer serviço nem socket.
 
 ## SSH e isolamento futuro
 

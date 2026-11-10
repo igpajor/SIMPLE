@@ -1,0 +1,38 @@
+[Unit]
+Description=SIMPLE authoritative Snake server
+Requires=simple-broker.service
+BindsTo=simple-broker.service
+PartOf=simple-broker.service
+After=systemd-tmpfiles-setup.service simple-broker.service
+RequiresMountsFor=/opt/simple
+
+[Service]
+Type=simple
+User=simple-snake
+Group=simple-users
+SupplementaryGroups=simple-snake
+WorkingDirectory=/opt/simple
+ExecStart=/usr/bin/python3 -m modules.snake.server.server --socket /run/simple-snake/game.sock --broker-socket /run/simple-snake-private/identity.sock
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=15s
+KillSignal=SIGTERM
+UMask=0117
+RuntimeDirectory=simple-snake
+RuntimeDirectoryMode=0710
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX
+ReadOnlyPaths=/run/simple-snake-private
+ReadWritePaths=/run/simple-snake
+
+[Install]
+WantedBy=multi-user.target
