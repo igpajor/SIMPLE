@@ -816,7 +816,9 @@ class SnakeServer:
                     "body": body,
                     "length": len(snake.body),
                     "alive": snake.alive,
-                    "color": 0,
+                    "color": self.player_slots.get(
+                        player_id, 0
+                    ) % config.SNAKE_COLOR_COUNT,
                     "glyph": "@",
                 }
             )

@@ -28,6 +28,8 @@ para atualizar.
 - Multiplayer limitado a 32 pessoas, além de dois bots padrão.
 - Todos compartilham a mesma arena; não há salas separadas. O HUD inclui um
   minimapa aproximado e até três eliminações recentes, sem avisos no chat global.
+- As cobras usam cores variadas (ciano, verde, amarelo, azul, magenta e branco);
+  comida é vermelha e vermelho não faz parte da paleta das cobras.
 - A cobra inicia com quatro segmentos; comida aumenta o comprimento.
 - O boost exige comprimento mínimo de seis segmentos e consome segmentos
   periodicamente.

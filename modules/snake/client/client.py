@@ -16,7 +16,13 @@ from typing import Any, Dict, List, Optional
 from ..engine import config
 from ..engine.simulation import HeadlessSimulation
 from ..engine.world import Snake, World
-from .render import render_world, safe_text
+from .render import (
+    FOOD_COLOR,
+    SNAKE_COLOR_PALETTE,
+    render_world,
+    render_world_styled,
+    safe_text,
+)
 
 CLIENT_SCHEMAS = {
     "dir": {"d"},
@@ -88,6 +94,17 @@ def decode_server_message(raw: bytes) -> Dict[str, Any]:
         or not isinstance(message.get("snakes"), list)
         or not isinstance(message.get("food"), list)
         or not isinstance(message.get("leaderboard"), list)
+        or any(
+            not isinstance(snake, dict)
+            or (
+                "color" in snake
+                and (
+                    type(snake["color"]) is not int
+                    or not 0 <= snake["color"] < config.SNAKE_COLOR_COUNT
+                )
+            )
+            for snake in message.get("snakes", [])
+        )
         or (
             "records" in message
             and not isinstance(message.get("records"), list)
@@ -299,7 +316,7 @@ class SoloGame:
 
     def snapshot(self) -> Dict[str, Any]:
         snakes = []
-        for player_id, snake in self.world.snakes.items():
+        for index, (player_id, snake) in enumerate(self.world.snakes.items()):
             if snake.alive:
                 snakes.append(
                     {
@@ -308,7 +325,7 @@ class SoloGame:
                         "body": [list(position) for position in snake.body],
                         "length": len(snake.body),
                         "alive": True,
-                        "color": 0,
+                        "color": index % config.SNAKE_COLOR_COUNT,
                         "glyph": "@",
                     }
                 )
@@ -351,14 +368,18 @@ class SnakeClient:
         self.game = SoloGame() if solo else None
         self.socket_path = socket_path
         self.network: Optional[NetworkSession] = None
-        self.snapshot: Dict[str, Any] = {}
+        self.snapshot: Dict[str, Any] = (
+            self.game.snapshot() if self.game is not None else {}
+        )
         self.arena_cols = config.ARENA_WIDTH
         self.arena_rows = config.ARENA_HEIGHT
         self.status = "Modo solo" if solo else "Conectando ao servidor..."
         self.boost_enabled = False
+        self.color_pairs: Dict[str, int] = {}
 
     def run(self, screen: Any) -> int:
         curses.curs_set(0)
+        self._initialize_colors()
         screen.keypad(True)
         screen.timeout(50)
         if not self.solo:
@@ -430,7 +451,7 @@ class SnakeClient:
 
     def _handle_server_message(self, message: Dict[str, Any]) -> None:
         if message["t"] == "welcome":
-            self.status = "Conectado · Q sair"
+            self.status = "Conectado · aguardando arena..."
             arena = message.get("arena", {})
             if type(arena.get("cols")) is int:
                 self.arena_cols = arena["cols"]
@@ -438,6 +459,7 @@ class SnakeClient:
                 self.arena_rows = arena["rows"]
         elif message["t"] == "state":
             self.snapshot = message
+            self.status = "Conectado · Q sair"
         elif message["t"] == "dead":
             self.status = "Eliminado · aguardando respawn"
         elif message["t"] == "error":
@@ -446,10 +468,32 @@ class SnakeClient:
     def _draw(self, screen: Any) -> None:
         height, width = screen.getmaxyx()
         screen.erase()
-        lines = render_world(
+        if self.snapshot.get("t") != "state":
+            message = (
+                "Aguardando estado inicial da arena..."
+                if self.status.startswith("Conectando")
+                or self.status.startswith("Conectado")
+                else safe_text(self.status)
+            )
+            if height > 0 and width > 1:
+                row = max(0, (height - 1) // 2)
+                column = max(0, (width - len(message)) // 2)
+                try:
+                    screen.addnstr(row, column, message, max(0, width - column - 1))
+                except curses.error:
+                    pass
+            if height > 0:
+                try:
+                    screen.addnstr(height - 1, 0, self.status, max(0, width - 1))
+                except curses.error:
+                    pass
+            screen.refresh()
+            return
+
+        lines, styles = render_world_styled(
             self.snapshot,
             width,
-            height - 1,
+            max(1, height - 1),
             arena_cols=self.arena_cols,
             arena_rows=self.arena_rows,
         )
@@ -458,12 +502,50 @@ class SnakeClient:
                 screen.addnstr(y, 0, line, max(0, width - 1))
             except curses.error:
                 pass
+        for y, column, text, color in styles:
+            pair = self.color_pairs.get(color)
+            if pair is None or y >= height - 1 or column >= width - 1:
+                continue
+            try:
+                attributes = curses.color_pair(pair)
+                if color == FOOD_COLOR or text == "@@":
+                    attributes |= curses.A_BOLD
+                screen.addnstr(
+                    y,
+                    column,
+                    text,
+                    min(len(text), width - column - 1),
+                    attributes,
+                )
+            except curses.error:
+                pass
         if height > 0:
             try:
                 screen.addnstr(height - 1, 0, self.status, max(0, width - 1))
             except curses.error:
                 pass
         screen.refresh()
+
+    def _initialize_colors(self) -> None:
+        self.color_pairs = {}
+        if not curses.has_colors():
+            return
+        try:
+            curses.start_color()
+        except curses.error:
+            return
+        try:
+            curses.use_default_colors()
+            background = -1
+        except curses.error:
+            background = curses.COLOR_BLACK
+        for pair, name in enumerate(SNAKE_COLOR_PALETTE + (FOOD_COLOR,), start=1):
+            color = getattr(curses, "COLOR_" + name.upper())
+            try:
+                curses.init_pair(pair, color, background)
+            except curses.error:
+                continue
+            self.color_pairs[name] = pair
 
 
 def main(argv: Optional[List[str]] = None) -> int:

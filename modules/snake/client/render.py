@@ -7,6 +7,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..engine import config
 
+SNAKE_COLOR_PALETTE = ("cyan", "green", "yellow", "blue", "magenta", "white")
+FOOD_COLOR = "red"
+
 
 def safe_text(value: Any) -> str:
     return "".join(
@@ -67,14 +70,14 @@ def _kill_feed_text(event: Any) -> str:
     return "{0} eliminado".format(victim)
 
 
-def render_world(
+def render_world_styled(
     snapshot: Dict[str, Any],
     width: int,
     height: int,
     arena_cols: int = 120,
     arena_rows: int = 60,
-) -> List[str]:
-    """Render a server state or local-game state to plain, control-free lines."""
+) -> Tuple[List[str], List[Tuple[int, int, str, str]]]:
+    """Render plain lines plus bounded colored cell overlays."""
     if type(width) is not int or type(height) is not int or width < 1 or height < 1:
         raise ValueError("As dimensões do terminal devem ser inteiros positivos.")
     if (
@@ -84,8 +87,8 @@ def render_world(
         or arena_rows < 1
     ):
         raise ValueError("As dimensões da arena devem ser inteiros positivos.")
-    if width < 32 or height < 10:
-        return [_clip("Aumente o terminal para continuar.", width)]
+    if width < 32 or height < 9:
+        return [_clip("Aumente o terminal para continuar.", width)], []
 
     minimap = snapshot.get("minimap")
     kill_feed = snapshot.get("kill_feed")
@@ -146,6 +149,7 @@ def render_world(
     left = max(0, min(arena_cols - view_cols, head_x - view_cols // 2))
     top = max(0, min(arena_rows - view_rows, head_y - view_rows // 2))
     grid = [["  " for _ in range(view_cols)] for _ in range(view_rows)]
+    styled_cells: Dict[Tuple[int, int], Tuple[str, str]] = {}
 
     food = snapshot.get("food", [])
     if isinstance(food, list):
@@ -158,14 +162,19 @@ def render_world(
                 continue
             if left <= x < left + view_cols and top <= y < top + view_rows:
                 grid[y - top][x - left] = "**"
+                styled_cells[(1 + y - top, (x - left) * 2)] = ("**", FOOD_COLOR)
 
-    for snake in snakes:
+    for snake_index, snake in enumerate(snakes):
         if not isinstance(snake, dict):
             continue
         body = snake.get("body")
         if not isinstance(body, list):
             continue
         own = snake.get("id") == player_id
+        color_index = snake.get("color")
+        if type(color_index) is not int or not 0 <= color_index < len(SNAKE_COLOR_PALETTE):
+            color_index = snake_index % len(SNAKE_COLOR_PALETTE)
+        snake_color = SNAKE_COLOR_PALETTE[color_index]
         for index, position in enumerate(body):
             if (
                 not isinstance(position, list)
@@ -178,6 +187,10 @@ def render_world(
             if left <= x < left + view_cols and top <= y < top + view_rows:
                 glyph = "@@" if own and index == 0 else ("##" if own else "oo")
                 grid[y - top][x - left] = glyph
+                styled_cells[(1 + y - top, (x - left) * 2)] = (
+                    glyph,
+                    snake_color,
+                )
 
     map_rows = minimap if has_minimap else []
     feed_items = (
@@ -243,4 +256,24 @@ def render_world(
         lines.append("Você foi eliminado. Aguardando respawn...")
     else:
         lines.append("Setas/WASD/HJKL mover · Espaço boost · Q sair")
-    return [_clip(line, width) for line in lines[:height]]
+    clipped_lines = [_clip(line, width) for line in lines[:height]]
+    styles = [
+        (line, column, text, color)
+        for (line, column), (text, color) in styled_cells.items()
+        if line < len(clipped_lines) and column < width - 1
+    ]
+    return clipped_lines, styles
+
+
+def render_world(
+    snapshot: Dict[str, Any],
+    width: int,
+    height: int,
+    arena_cols: int = 120,
+    arena_rows: int = 60,
+) -> List[str]:
+    """Render a server state or local-game state to plain, control-free lines."""
+    lines, _styles = render_world_styled(
+        snapshot, width, height, arena_cols=arena_cols, arena_rows=arena_rows
+    )
+    return lines

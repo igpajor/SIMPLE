@@ -78,6 +78,8 @@ class SnakeServerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual("state", state["t"])
         self.assertEqual(welcome["player_id"], state["player"]["id"])
+        self.assertGreaterEqual(state["snakes"][0]["color"], 0)
+        self.assertLess(state["snakes"][0]["color"], 6)
         self.assertEqual(10, len(state["minimap"]))
         self.assertTrue(all(len(row) == 20 for row in state["minimap"]))
         self.assertEqual([], state["kill_feed"])
