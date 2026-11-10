@@ -42,6 +42,35 @@ desconhecidos, inclusive esses campos de identidade/estado, são erro de
 protocolo. Identidade e autorização vêm do UID de peer (`SO_PEERCRED`) e do
 vínculo ativo validado no Broker.
 
+## Autenticação e sessão no servidor
+
+O servidor obtém o UID do peer no socket Unix com `SO_PEERCRED`; não lê o UID
+do JSON. O `hello` é obrigatório antes das demais mensagens e solicita ao
+Broker a resolução do UID. O servidor recebe `user_id`, `binding_id` e
+`username` apenas pela resposta interna; valida que o UID retornado corresponde
+ao peer e não expõe os identificadores SIMPLE no protocolo do cliente. Um
+segundo `hello` para a mesma conta substitui a sessão anterior. O limite é de
+32 sessões humanas, além de dois bots padrão.
+
+Para não ampliar o acesso ao socket privado já usado pelo Proxy, o Broker
+oferece um canal Unix opcional dedicado (`--snake-socket`), protegido por um UID
+e GID de serviço configurados. O protocolo interno `simple-snake-v1` aceita
+somente `identity.resolve`; não oferece consulta SQL nem persistência. A
+configuração requer um diretório de socket previamente provisionado, de
+propriedade do Broker, grupo do serviço Snake e modo `2710` (setgid, sem
+escrita pelo grupo); o socket fica com modo `0660` e herda esse GID. O serviço
+Snake não abre SQLite. A configuração de produção e o provisionamento
+permanecem para a fase supervisionada de deploy.
+
+O servidor assíncrono aplica o limite de mensagens, fecha a conexão após três
+mensagens inválidas, desconecta clientes inativos e usa uma fila de saída
+limitada a dois snapshots; snapshots de estado antigos podem ser descartados
+sem bloquear o tick. A mensagem `ping` atualiza a atividade da sessão. Erros
+de versão e de autorização encerram a conexão com códigos estáveis. O vínculo
+e a conta são revalidados pelo Broker a cada 30 segundos; revogação ou falha
+de validação encerra a sessão. Excesso de taxa retorna `rate_limited` e fecha
+a conexão.
+
 ## Interface pura da engine
 
 Os testes da Fase 1 fixam a interface pública da engine, sem I/O:

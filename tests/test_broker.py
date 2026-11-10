@@ -22,6 +22,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
+from typing import Optional
 from unittest.mock import patch
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -58,10 +59,12 @@ class BrokerTests(unittest.TestCase):
         self.socket_path.unlink(missing_ok=True)
         self.temporary_directory.cleanup()
 
-    def call(self, request: dict[str, object]) -> dict[str, object]:
+    def call(
+        self, request: dict[str, object], socket_path: Optional[Path] = None
+    ) -> dict[str, object]:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
             connection.settimeout(3)
-            connection.connect(str(self.socket_path))
+            connection.connect(str(socket_path or self.socket_path))
             connection.sendall(json.dumps(request).encode("utf-8") + b"\n")
             return json.loads(connection.makefile("rb").readline())
 
@@ -93,6 +96,92 @@ class BrokerTests(unittest.TestCase):
         profile = self.call({"method": "profile.get", "token": login["token"]})
         self.assertEqual("student", profile["username"])
         self.assertEqual(1, profile["points"])
+
+    def test_snake_internal_identity_resolution_requires_configured_service_uid(self) -> None:
+        registered = self.create_user("snake-service-user")
+        linux_uid = os.geteuid()
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.execute(
+                "INSERT INTO identity_bindings (linux_uid, user_id) VALUES (?, ?)",
+                (linux_uid, registered["user_id"]),
+            )
+            connection.commit()
+
+        request = {
+            "protocol": "simple-snake-v1",
+            "method": "identity.resolve",
+            "linux_uid": linux_uid,
+        }
+        self.assertFalse(self.call(request)["ok"])
+        self.assertFalse(self.call(request, self.socket_path)["ok"])
+
+        snake_socket_path = self.root / "snake-broker.sock"
+        snake_server = BrokerServer(
+            snake_socket_path,
+            self.broker,
+            snake_service_uid=linux_uid + 1,
+            snake_only=True,
+        )
+        os.chmod(snake_socket_path, 0o600)
+        snake_thread = threading.Thread(target=snake_server.serve_forever)
+        snake_thread.start()
+        try:
+            denied = self.call(request, snake_socket_path)
+            self.assertFalse(denied["ok"])
+
+            snake_server.snake_service_uid = linux_uid
+            identity = self.call(request, snake_socket_path)
+            self.assertTrue(identity["ok"], identity)
+            self.assertEqual(linux_uid, identity["linux_uid"])
+            self.assertEqual(registered["user_id"], identity["user_id"])
+            self.assertEqual("snake-service-user", identity["username"])
+
+            unsupported = self.call(
+                {
+                    "protocol": "simple-snake-v1",
+                    "method": "sql.execute",
+                    "linux_uid": linux_uid,
+                },
+                snake_socket_path,
+            )
+            self.assertFalse(unsupported["ok"])
+            public_operation = self.call(
+                {
+                    "method": "auth.register",
+                    "username": "snake-should-not-register",
+                    "password": "secure-pass-123",
+                },
+                snake_socket_path,
+            )
+            self.assertFalse(public_operation["ok"])
+            with closing(sqlite3.connect(self.database_path)) as connection:
+                self.assertIsNone(
+                    connection.execute(
+                        "SELECT id FROM users WHERE username = ?",
+                        ("snake-should-not-register",),
+                    ).fetchone()
+                )
+        finally:
+            snake_server.shutdown()
+            snake_server.server_close()
+            snake_thread.join(timeout=5)
+            snake_socket_path.unlink(missing_ok=True)
+
+    def test_snake_broker_socket_requires_service_group_directory(self) -> None:
+        socket_directory = self.root / "snake-broker"
+        socket_directory.mkdir()
+        os.chmod(socket_directory, 0o2710)
+        socket_path = socket_directory / "identity.sock"
+        simple_broker._prepare_snake_socket_path(
+            socket_path, socket_directory.stat().st_gid
+        )
+        self.assertFalse(socket_path.exists())
+
+        os.chmod(socket_directory, 0o2770)
+        with self.assertRaises(RuntimeError):
+            simple_broker._prepare_snake_socket_path(
+                socket_path, socket_directory.stat().st_gid
+            )
 
     def test_home_dashboard_is_authenticated_and_returns_minimal_user_summary(self) -> None:
         alice = self.create_user("home-alice")

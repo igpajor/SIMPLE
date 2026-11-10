@@ -20,6 +20,10 @@ CLIENT_MESSAGE_SCHEMAS = {
 }
 
 
+class UnsupportedVersionError(ValueError):
+    """Raised when a client hello uses an unsupported protocol version."""
+
+
 def _reject_duplicate_keys(pairs: Iterable[Tuple[str, Any]]) -> Dict[str, Any]:
     result: Dict[str, Any] = {}
     for key, value in pairs:
@@ -86,7 +90,7 @@ def parse_client_message(raw: bytes) -> Dict[str, Any]:
         if set(message) - allowed or not required.issubset(message):
             raise ValueError("Campos inválidos para hello.")
         if type(message["v"]) is not int or message["v"] != config.PROTOCOL_VERSION:
-            raise ValueError("Versão de protocolo não suportada.")
+            raise UnsupportedVersionError("Versão de protocolo não suportada.")
         _validate_viewport(message)
         if "nick" in message and not _valid_nickname(message["nick"]):
             raise ValueError("Apelido inválido.")

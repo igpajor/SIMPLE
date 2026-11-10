@@ -36,19 +36,26 @@ Broker. A allowlist pública do Proxy é derivada de `METHOD_FIELDS` e exclui
 `auth.register`. O Broker mantém as sessões SIMPLE e é o componente normal da
 aplicação que abre SQLite.
 
-**Implicação para o servidor do jogo:** um servidor separado pode obter o UID
-do jogador com `SO_PEERCRED` em seu próprio socket Unix, mas não pode chamar a
-operação interna atual se rodar com uma identidade de serviço distinta. Rodá-lo
-como `simple-broker` contornaria essa limitação à custa de dar ao processo o
-mesmo acesso de sistema de arquivos ao banco; isso não deve ser assumido como
-compatível com a regra de não acessar SQLite fora do Broker. A arquitetura
-separada requer um canal Unix estreito, autorizado pelo Broker para uma
-identidade de serviço dedicada, com operações explícitas de resolução de
-identidade, registro de pontuação e consulta de ranking. O Broker não observa
-diretamente o peer do cliente conectado ao Snake: o processo do jogo terá de
-ser tratado como componente confiável ao retransmitir o UID que obteve do
-kernel. Esse limite de confiança precisa ser decidido e testado; nenhum método
-genérico de SQL deve ser exposto.
+**Implicação para o servidor do jogo:** o Broker original só aceitava chamadas
+internas do próprio UID de serviço, e seu socket privado não é acessível a outro
+usuário. Na Fase 4 foi implementado um canal separado e opcional, sem alterar
+o socket privado existente: protocolo `simple-snake-v1`, socket configurado
+por `--snake-socket`, e UID/GID dedicados informados ao Broker. O diretório do
+canal deve ser previamente criado, pertencer ao Broker, ter o GID do serviço
+Snake e modo `2710` (setgid, sem escrita do grupo); o socket é
+publicado como `0660` e herda esse GID. O serviço Snake só é
+autorizado por `SO_PEERCRED` e a única operação aceita é `identity.resolve`,
+que reaproveita a validação de vínculo Linux ativo e conta SIMPLE ativa do
+Broker. A interface de persistência e ranking ainda não existe; a Fase 6
+precisará de operações específicas, limitadas e autorizadas, nunca de SQL
+genérico.
+
+O Broker não observa diretamente o peer do participante conectado ao Snake:
+o processo do jogo retransmite somente o UID obtido do kernel, e deve ser
+tratado como componente confiável. A validação da integração usa sockets
+temporários; nenhuma unidade systemd, usuário/grupo de produção ou permissão
+em servidor foi alterada. O provisionamento e a configuração desse canal
+continuam pendentes para a fase de deploy supervisionada.
 
 ## Convenções e padrões existentes
 

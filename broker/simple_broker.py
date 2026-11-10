@@ -22,13 +22,14 @@ import time
 import unicodedata
 from contextlib import closing
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Optional, Protocol
 from urllib.parse import urlsplit
 
 
 MAX_REQUEST_BYTES = 65536
 BROKER_MAX_CONNECTIONS = 64
 PROXY_INTERNAL_PROTOCOL = "simple-proxy-v1"
+SNAKE_INTERNAL_PROTOCOL = "simple-snake-v1"
 SESSION_TTL_SECONDS = 8 * 60 * 60
 PDF_URL_MAX_LENGTH = 2048
 
@@ -3495,6 +3496,15 @@ class BrokerRequestHandler(socketserver.StreamRequestHandler):
                 and request.get("protocol") == PROXY_INTERNAL_PROTOCOL
             ):
                 response = self._dispatch_proxy_internal(request)
+            elif (
+                isinstance(request, dict)
+                and request.get("protocol") == SNAKE_INTERNAL_PROTOCOL
+            ):
+                if not self.server.snake_only:  # type: ignore[attr-defined]
+                    raise PermissionError("O protocolo Snake não está habilitado neste socket.")
+                response = self._dispatch_snake_internal(request)
+            elif self.server.snake_only:  # type: ignore[attr-defined]
+                raise PermissionError("Este socket aceita somente operações internas Snake.")
             else:
                 response = self.server.broker.dispatch(request)  # type: ignore[attr-defined]
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
@@ -3531,6 +3541,26 @@ class BrokerRequestHandler(socketserver.StreamRequestHandler):
             request["linux_uid"]
         )
 
+    def _dispatch_snake_internal(self, request: Any) -> dict[str, Any]:
+        if not hasattr(socket, "SO_PEERCRED"):
+            raise PermissionError("O protocolo interno exige credenciais Unix do kernel.")
+        _peer_pid, peer_uid, _peer_gid = struct.unpack(
+            "3i",
+            self.request.getsockopt(
+                socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")
+            ),
+        )
+        service_uid = self.server.snake_service_uid  # type: ignore[attr-defined]
+        if service_uid is None or peer_uid != service_uid:
+            raise PermissionError("A operação interna não está autorizada.")
+        if set(request) != {"protocol", "method", "linux_uid"}:
+            raise ValueError("Campos inválidos para a operação interna.")
+        if request["method"] != "identity.resolve":
+            raise ValueError("Operação interna não suportada.")
+        return self.server.broker.resolve_proxy_identity(  # type: ignore[attr-defined]
+            request["linux_uid"]
+        )
+
     @staticmethod
     def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         result: dict[str, Any] = {}
@@ -3559,8 +3589,24 @@ class BrokerServer(socketserver.ThreadingUnixStreamServer):
     allow_reuse_address = False
     request_queue_size = BROKER_MAX_CONNECTIONS
 
-    def __init__(self, socket_path: Path, broker: Broker):
+    def __init__(
+        self,
+        socket_path: Path,
+        broker: Broker,
+        snake_service_uid: Optional[int] = None,
+        snake_only: bool = False,
+    ):
+        if type(snake_only) is not bool:
+            raise ValueError("A configuração do canal Snake é inválida.")
+        if snake_only and snake_service_uid is None:
+            raise ValueError("O canal Snake exige UID de serviço configurado.")
+        if snake_service_uid is not None and (
+            type(snake_service_uid) is not int or snake_service_uid < 1
+        ):
+            raise ValueError("UID do serviço Snake inválido.")
         self.broker = broker
+        self.snake_service_uid = snake_service_uid
+        self.snake_only = snake_only
         self.connection_slots = threading.BoundedSemaphore(BROKER_MAX_CONNECTIONS)
         self.serve_ready = threading.Event()
         super().__init__(str(socket_path), BrokerRequestHandler)
@@ -3619,10 +3665,70 @@ def _prepare_socket_path(socket_path: Path) -> None:
         probe.close()
 
 
+def _prepare_snake_socket_path(socket_path: Path, service_gid: int) -> None:
+    if not socket_path.is_absolute():
+        raise RuntimeError("O socket do serviço Snake deve usar caminho absoluto.")
+    normalized = Path(os.path.abspath(socket_path))
+    current = Path("/")
+    for component in normalized.parts[1:-1]:
+        current = current / component
+        try:
+            component_stat = current.lstat()
+        except OSError as error:
+            raise RuntimeError("Não foi possível validar o caminho do Snake.") from error
+        if stat.S_ISLNK(component_stat.st_mode) or not stat.S_ISDIR(
+            component_stat.st_mode
+        ):
+            raise RuntimeError("O caminho do socket do Snake contém componente inseguro.")
+        if component_stat.st_mode & 0o022:
+            sticky_root_directory = (
+                component_stat.st_uid == 0
+                and component_stat.st_mode & stat.S_ISVTX
+            )
+            if not sticky_root_directory:
+                raise RuntimeError(
+                    "Um diretório ancestral do socket do Snake permite escrita."
+                )
+    try:
+        parent_stat = normalized.parent.lstat()
+    except OSError as error:
+        raise RuntimeError("O diretório do socket do Snake deve existir.") from error
+    if (
+        stat.S_ISLNK(parent_stat.st_mode)
+        or not stat.S_ISDIR(parent_stat.st_mode)
+        or parent_stat.st_uid != os.geteuid()
+        or parent_stat.st_gid != service_gid
+        or stat.S_IMODE(parent_stat.st_mode) != 0o2710
+    ):
+        raise RuntimeError(
+            "O diretório do socket Snake deve pertencer ao Broker e ter grupo/modo 2710."
+        )
+    try:
+        normalized.lstat()
+    except FileNotFoundError:
+        return
+    raise RuntimeError("O caminho do socket Snake já existe.")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Broker local do SIMPLE")
     parser.add_argument("--socket", type=Path)
     parser.add_argument("--database", required=True, type=Path)
+    parser.add_argument(
+        "--snake-socket",
+        type=Path,
+        help="socket Unix dedicado à consulta de identidade do serviço Snake",
+    )
+    parser.add_argument(
+        "--snake-service-uid",
+        type=int,
+        help="UID exclusivo autorizado a consultar identidade pelo socket Snake",
+    )
+    parser.add_argument(
+        "--snake-service-gid",
+        type=int,
+        help="GID do serviço Snake autorizado a conectar ao socket dedicado",
+    )
     parser.add_argument(
         "--schema",
         type=Path,
@@ -3665,6 +3771,26 @@ def main() -> int:
     )
     if sum(one_shot_modes) > 1:
         parser.error("selecione apenas um modo one-shot")
+    snake_options = (
+        arguments.snake_socket,
+        arguments.snake_service_uid,
+        arguments.snake_service_gid,
+    )
+    if any(value is not None for value in snake_options) and not all(
+        value is not None for value in snake_options
+    ):
+        parser.error(
+            "--snake-socket, --snake-service-uid e --snake-service-gid são obrigatórios em conjunto"
+        )
+    if any(one_shot_modes) and any(value is not None for value in snake_options):
+        parser.error("opções do serviço Snake não podem ser usadas no modo one-shot")
+    if arguments.snake_service_uid is not None and (
+        arguments.snake_service_uid < 1
+        or arguments.snake_service_uid == os.geteuid()
+    ):
+        parser.error("o serviço Snake deve usar um UID dedicado, diferente do Broker")
+    if arguments.snake_service_gid is not None and arguments.snake_service_gid < 1:
+        parser.error("o serviço Snake deve usar um GID dedicado válido")
     if any(one_shot_modes) and arguments.initialize_database:
         parser.error("--initialize-database não pode ser combinado com um modo one-shot")
     if arguments.initialize_database_only:
@@ -3712,11 +3838,59 @@ def main() -> int:
         if backup_path is not None:
             logging.info("Backup do banco existente criado em %s", backup_path)
     validate_database(arguments.database)
+    if arguments.snake_socket is not None:
+        _prepare_snake_socket_path(
+            arguments.snake_socket, arguments.snake_service_gid
+        )
     _prepare_socket_path(arguments.socket)
-    server = BrokerServer(arguments.socket, Broker(arguments.database))
+    broker = Broker(arguments.database)
+    server = BrokerServer(arguments.socket, broker)
     os.chmod(arguments.socket, 0o600)
     logging.info("Broker SIMPLE iniciado em %s", arguments.socket)
-    _serve_until_stopped(server, arguments.socket, "Broker SIMPLE")
+    snake_server = None
+    snake_server_thread = None
+    snake_socket_identity = None
+    try:
+        if arguments.snake_socket is not None:
+            snake_server = BrokerServer(
+                arguments.snake_socket,
+                broker,
+                snake_service_uid=arguments.snake_service_uid,
+                snake_only=True,
+            )
+            snake_stat = arguments.snake_socket.lstat()
+            snake_socket_identity = (snake_stat.st_dev, snake_stat.st_ino)
+            if snake_stat.st_gid != arguments.snake_service_gid:
+                raise RuntimeError(
+                    "O socket Snake não herdou o GID do diretório dedicado."
+                )
+            os.chmod(arguments.snake_socket, 0o660)
+            snake_server_thread = threading.Thread(
+                target=snake_server.serve_forever,
+                name="Broker-Snake-server",
+            )
+            snake_server_thread.start()
+            logging.info(
+                "Canal interno do Snake iniciado em %s", arguments.snake_socket
+            )
+        _serve_until_stopped(server, arguments.socket, "Broker SIMPLE")
+    finally:
+        if snake_server is not None:
+            if snake_server_thread is not None and snake_server_thread.is_alive():
+                snake_server.shutdown()
+            snake_server.server_close()
+            if snake_server_thread is not None:
+                snake_server_thread.join(timeout=5)
+            try:
+                snake_stat = arguments.snake_socket.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                if (
+                    stat.S_ISSOCK(snake_stat.st_mode)
+                    and (snake_stat.st_dev, snake_stat.st_ino) == snake_socket_identity
+                ):
+                    arguments.snake_socket.unlink()
     logging.info("Broker SIMPLE encerrado")
     return 0
 
