@@ -65,12 +65,26 @@ Os testes da Fase 1 fixam a interface pública da engine, sem I/O:
 
 As respostas são também objetos JSON por linha. `welcome` retorna `v`, o
 identificador efêmero da sessão, dimensões da arena e frequência de tick.
-`state` contém o tick, resumo do jogador, cobras e comidas visíveis dentro da
-viewport mais margem e os dez primeiros do placar. Coordenadas são pares de
-inteiros em células da arena; nomes são texto sanitizado. `dead` informa o
-resultado final e o autor da colisão, se aplicável. `error` contém apenas um
-código estável e mensagem curta em português, sem stack trace nem dados
-internos.
+As formas são:
+
+- `{"t":"welcome","v":1,"session_id":string,"player_id":string,"arena":{"cols":int,"rows":int},"tick_hz":10}`.
+  IDs são opacos e efêmeros, não revelam UID nem ID SIMPLE.
+- `{"t":"state","tick":int,"player":{"id":string,"length":int,"alive":bool,"kills":int,"deaths":int,"boosting":bool},"snakes":[...],"food":[...],"leaderboard":[...]}`.
+  Cada cobra visível tem `id`, `nick` (opcional), `body` como lista de pares
+  `[x,y]` em células, `length`, `alive`, `color` e `glyph`. A lista de corpo é
+  recortada à viewport mais margem. Cada comida tem `x`, `y` e `value`. O placar
+  contém até dez registros `{rank,nick,length}`.
+- `{"t":"dead","score":int,"length":int,"killer":string|null,"tick":int}`.
+  `score` é o comprimento final; `killer` é o ID efêmero da cobra responsável,
+  ou `null`.
+- `{"t":"error","code":string,"message":string}`. Códigos estáveis incluem
+  `invalid_request`, `unauthorized`, `capacity`, `version_unsupported` e
+  `server_error`.
+
+Coordenadas e dimensões são inteiros; nomes são texto sanitizado. `state` traz
+somente cobras e comidas visíveis dentro da viewport mais margem, além do
+placar. `dead` informa o resultado final e o autor da colisão, se aplicável.
+`error` contém mensagem curta em português, sem stack trace nem dados internos.
 
 O cliente trata tipos de servidor desconhecidos como erro de protocolo e não
 renderiza texto recebido sem sanitização. Mensagens de servidor também ficam
