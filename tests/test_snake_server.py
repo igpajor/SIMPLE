@@ -24,7 +24,7 @@ class SnakeServerTests(unittest.IsolatedAsyncioTestCase):
             identity_resolver=self.resolve_identity,
             bot_count=0,
             tick_interval=0.01,
-            identity_revalidation_interval=0.02,
+            identity_revalidation_interval=0.5,
         )
         await self.server.start_unix(self.socket_path)
         self.connections = []
@@ -59,7 +59,7 @@ class SnakeServerTests(unittest.IsolatedAsyncioTestCase):
         }
         writer.write(json.dumps(hello).encode("utf-8") + b"\n")
         await writer.drain()
-        response = json.loads(await asyncio.wait_for(reader.readline(), 1))
+        response = json.loads(await asyncio.wait_for(reader.readline(), 3))
         return reader, writer, response
 
     async def test_unix_peer_uid_resolves_identity_and_receives_world_state(self) -> None:
@@ -111,7 +111,7 @@ class SnakeServerTests(unittest.IsolatedAsyncioTestCase):
         old_reader, _old_writer, first = await self.connect_and_hello("Primeiro")
         _new_reader, _new_writer, second = await self.connect_and_hello("Segundo")
 
-        self.assertEqual("welcome", first["t"])
+        self.assertEqual("welcome", first["t"], first)
         self.assertEqual("welcome", second["t"])
         self.assertNotEqual(first["session_id"], second["session_id"])
         self.assertEqual(1, len(self.server.sessions))

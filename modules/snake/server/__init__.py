@@ -1,1 +1,1 @@
-"""Unix-socket game server and protocol."""
+"""Authoritative Snake game server."""

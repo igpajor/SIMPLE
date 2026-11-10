@@ -2145,9 +2145,9 @@ print(sum(
     "3|Meu espaço"
   )
   if [[ "$CURRENT_USER_IS_ADMIN" == "True" ]]; then
-    menu_options+=("4|Administração" "5|$chat_label")
+    menu_options+=("4|Administração" "5|$chat_label" "6|Jogos > Snake")
   else
-    menu_options+=("4|$chat_label")
+    menu_options+=("4|$chat_label" "5|Jogos > Snake")
   fi
   menu_options+=("0|Sair")
   if ((use_home_tui)); then
@@ -2198,8 +2198,20 @@ print(sum(
     fi
     ;;
   5)
-    if ! chat_menu; then
-      ui_error "Não foi possível acessar o chat global."
+    if [[ "$CURRENT_USER_IS_ADMIN" == "True" ]]; then
+      if ! chat_menu; then
+        ui_error "Não foi possível acessar o chat global."
+        ui_pause
+      fi
+    else
+      snake_menu
+    fi
+    ;;
+  6)
+    if [[ "$CURRENT_USER_IS_ADMIN" == "True" ]]; then
+      snake_menu
+    else
+      ui_message "Opção inválida."
       ui_pause
     fi
     ;;

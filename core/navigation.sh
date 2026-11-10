@@ -42,8 +42,10 @@ menu_principal() {
   if users_is_admin "$CURRENT_USER_ID"; then
     menu_options+=("5|Administração")
     menu_options+=("6|Minhas entregas")
+    menu_options+=("7|Jogos > Snake")
   else
     menu_options+=("5|Minhas entregas")
+    menu_options+=("6|Jogos > Snake")
   fi
   menu_options+=("0|Sair")
 

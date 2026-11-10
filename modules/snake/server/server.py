@@ -440,7 +440,26 @@ class SnakeServer:
         player_id = secrets.token_urlsafe(12)
         nick = hello.get("nick") or self._sanitize_nickname(identity["username"])
         occupied_slots = set(self.player_slots.values())
-        slot = next((candidate for candidate in range(40) if candidate not in occupied_slots), None)
+        occupied_cells = {
+            position
+            for snake in self.world.snakes.values()
+            if snake.alive
+            for position in snake.body
+        }
+        slot = None
+        for candidate in range(40):
+            if candidate in occupied_slots:
+                continue
+            x = 5 + (candidate % 10) * 11
+            y = 5 + (candidate // 10) * 12
+            body = [
+                (x - offset, y)
+                for offset in range(config.INITIAL_SNAKE_LENGTH)
+            ]
+            food_collision = bool(self.world.food.keys() & set(body))
+            if not food_collision and not occupied_cells.intersection(body):
+                slot = candidate
+                break
         if slot is None:
             await self._send_direct(
                 writer, self._error("capacity", "Não há posição livre na arena.")

@@ -36,6 +36,21 @@ source "$ROOT_DIR/core/auth.sh"
 source "$ROOT_DIR/core/broker_client.sh"
 source "$ROOT_DIR/core/ui.sh"
 source "$ROOT_DIR/core/navigation.sh"
+source "$ROOT_DIR/modules/snake/snake.sh"
+python3() {
+  printf 'PYTHON_ARGS=%s\n' "$*"
+}
+solo_launcher=$(SIMPLE_MODE=local snake_menu)
+assert_equals "PYTHON_ARGS=-m modules.snake.client.client --solo" \
+  "$solo_launcher" "launcher inicia Snake solo sem socket"
+missing_socket_output=$(SIMPLE_MODE=broker SNAKE_SOCKET='' snake_menu </dev/null 2>&1)
+if [[ "$missing_socket_output" == *"PYTHON_ARGS="* ]]; then
+  fail "launcher não inicia o multiplayer sem socket configurado"
+fi
+broker_launcher=$(SIMPLE_MODE=broker SNAKE_SOCKET=/run/simple/snake.sock snake_menu)
+assert_equals "PYTHON_ARGS=-m modules.snake.client.client --socket /run/simple/snake.sock" \
+  "$broker_launcher" "launcher inicia Snake multiplayer com socket"
+unset -f python3
 source "$ROOT_DIR/modules/points.sh"
 CURRENT_USER_ID=999
 CURRENT_USERNAME="spoofed"
@@ -285,6 +300,17 @@ if [[ "$regular_menu_output" != *"[5] Minhas entregas"* ]] ||
   [[ "$regular_menu_output" == *"[6] Minhas entregas"* ]]; then
   fail "menu principal oferece acompanhamento das próprias entregas"
 fi
+if [[ "$regular_menu_output" != *"[6] Jogos > Snake"* ]]; then
+  fail "menu principal oferece Snake para contas comuns"
+fi
+
+db_query "UPDATE users SET is_admin = 1 WHERE id = $alice_id;"
+CURRENT_USER_ID="$alice_id"
+admin_menu_output=$(printf '0\n' | menu_principal)
+if [[ "$admin_menu_output" != *"[7] Jogos > Snake"* ]]; then
+  fail "menu principal oferece Snake sem deslocar ações administrativas"
+fi
+CURRENT_USER_ID="$alice_id"
 
 cat >"$TEST_DIR/admin-input" <<'INPUT'
 NEW-EX
@@ -374,6 +400,7 @@ if [[ "$exercise_output" != *"Diretório de entrega"* ]] ||
   [[ "$exercise_output" != *"https://example.org/exercise.pdf"* ]]; then
   fail "visualização apresenta todas as especificações"
 fi
+CURRENT_USER_ID="$bob_id"
 if admin_archive_exercise NEW-EX >/dev/null 2>&1; then
   fail "conta sem papel administrativo não pode arquivar exercícios"
 fi

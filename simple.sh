@@ -17,6 +17,7 @@ source "$SCRIPT_DIR/modules/progress.sh"
 source "$SCRIPT_DIR/modules/chat.sh"
 source "$SCRIPT_DIR/modules/admin.sh"
 source "$SCRIPT_DIR/modules/broker_ui.sh"
+source "$SCRIPT_DIR/modules/snake/snake.sh"
 
 BROKER_MODE="0"
 
@@ -104,6 +105,13 @@ while true; do
         ui_error "Não foi possível carregar Minhas entregas. Consulte a mensagem acima."
         ui_pause
       fi
+    else
+      snake_menu
+    fi
+    ;;
+  7)
+    if users_is_admin "$CURRENT_USER_ID"; then
+      snake_menu
     else
       ui_error "Opção inválida. Escolha uma opção do menu."
       ui_pause
